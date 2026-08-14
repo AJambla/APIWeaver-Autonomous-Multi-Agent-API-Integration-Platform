@@ -2,29 +2,43 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
 from app.core.deps import get_current_principal, get_db, get_object_storage
 from app.core.errors import UnprocessableEntityError
-from app.models.enums import ActorType, HTTPMethod
+from app.models.enums import ActorType, HTTPMethod, WorkflowStatus
 from app.models.project import Project
 from app.models.spec import APISpec, Endpoint
+from app.models.workflow import WorkflowRun
 from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.document import EndpointResponse, SpecResponse, UploadResponse
 from app.services import audit_service
 from app.services.ingestion_service import ingest_document
 from app.services.storage_service import ObjectStorage
+from app.workflows.orchestrator import Orchestrator
+from app.workflows.state import WorkflowState
 
 router = APIRouter(prefix="/projects", tags=["documents"])
 
 
-@router.post("/{id}/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{id}/upload", response_model=UploadResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_document(
     request: Request,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     format_hint: str | None = Form(default=None),
     project: Project = Depends(require_project_permission(Permission.DOCUMENT_UPLOAD)),
@@ -51,6 +65,16 @@ async def upload_document(
         content_type=file.content_type,
         format_hint=format_hint,
     )
+
+    # Create associated workflow run for parsing & planning pipeline
+    run = WorkflowRun(
+        project_id=project.id,
+        triggered_by=principal.user_id,
+        status=WorkflowStatus.RUNNING,
+    )
+    session.add(run)
+    await session.flush()
+
     await audit_service.record(
         session,
         action="document.uploaded",
@@ -62,8 +86,35 @@ async def upload_document(
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
     )
-    return UploadResponse(document_id=document.id, api_spec_id=api_spec.id,
-                          endpoints_discovered=len(normalized.endpoints))
+
+    # Launch orchestrator in background
+    initial_state: WorkflowState = {
+        "project_id": str(project.id),
+        "organization_id": str(project.organization_id),
+        "workflow_run_id": str(run.id),
+        "document_id": str(document.id),
+        "raw_document_bytes": content,
+        "document_filename": file.filename,
+        "format_hint": format_hint,
+        "stages": ["plan"],
+        "normalized_spec": normalized.raw_normalized,
+        "generated_files": [],
+        "test_suite": [],
+        "errors": [],
+    }
+    engine_session_factory = async_sessionmaker(
+        bind=session.bind, class_=AsyncSession, expire_on_commit=False
+    )
+    orchestrator = Orchestrator(engine_session_factory)
+    background_tasks.add_task(orchestrator.run, run.id, initial_state)
+
+    return UploadResponse(
+        document_id=document.id,
+        status="processing",
+        workflow_run_id=run.id,
+        api_spec_id=api_spec.id,
+        endpoints_discovered=len(normalized.endpoints),
+    )
 
 
 @router.get("/{id}/spec", response_model=SpecResponse)

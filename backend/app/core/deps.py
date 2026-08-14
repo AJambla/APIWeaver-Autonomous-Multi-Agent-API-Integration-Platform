@@ -124,12 +124,12 @@ async def _principal_from_api_key(api_key: str, session: AsyncSession) -> Princi
         # them would tell a prober which of their guesses was once valid.
         raise UnauthenticatedError("API key is invalid or has been revoked.")
 
-    result = await session.execute(
+    role_result = await session.execute(
         select(OrganizationMember.role)
         .where(OrganizationMember.organization_id == key.organization_id)
         .where(OrganizationMember.user_id == key.created_by)
     )
-    creator_role = result.scalar_one_or_none()
+    creator_role: str | None = role_result.scalar_one_or_none()
 
     return Principal(
         user_id=None,

@@ -6,7 +6,7 @@ prefix is the version boundary.
 
 from fastapi import APIRouter, Depends
 
-from app.api.v1 import auth, documents, projects
+from app.api.v1 import auth, auth_config, documents, projects, workflows
 from app.core.ratelimit import enforce_org_rate_limit
 
 api_router = APIRouter(prefix="/api/v1")
@@ -21,3 +21,5 @@ api_router.include_router(auth.router)
 # (`API.md §3`) attached once here rather than repeated per route.
 api_router.include_router(projects.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(documents.router, dependencies=[Depends(enforce_org_rate_limit)])
+api_router.include_router(auth_config.router, dependencies=[Depends(enforce_org_rate_limit)])
+api_router.include_router(workflows.router, dependencies=[Depends(enforce_org_rate_limit)])
