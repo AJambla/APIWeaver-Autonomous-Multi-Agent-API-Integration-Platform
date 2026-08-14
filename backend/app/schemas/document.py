@@ -12,9 +12,10 @@ from app.schemas.common import ResponseModel
 
 class UploadResponse(ResponseModel):
     document_id: uuid.UUID
-    api_spec_id: uuid.UUID
-    status: str = "parsed"
-    endpoints_discovered: int
+    status: str = "processing"
+    workflow_run_id: uuid.UUID | None = None
+    api_spec_id: uuid.UUID | None = None
+    endpoints_discovered: int | None = None
 
 
 class EndpointResponse(ResponseModel):
