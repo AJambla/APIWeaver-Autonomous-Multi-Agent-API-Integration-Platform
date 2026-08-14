@@ -14,6 +14,8 @@ from app.core.config import Settings
 
 
 class ObjectStorage(Protocol):
+    async def get(self, *, key: str) -> bytes | None: ...
+
     async def put(self, *, key: str, content: bytes, content_type: str | None) -> None: ...
 
     async def delete(self, *, key: str) -> None: ...
@@ -34,6 +36,20 @@ class S3ObjectStorage:
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
         )
+
+    async def get(self, *, key: str) -> bytes | None:
+        import botocore.exceptions
+
+        try:
+            response = await asyncio.to_thread(
+                self._client.get_object, Bucket=self._bucket, Key=key
+            )
+            body = await asyncio.to_thread(response["Body"].read)
+            return body  # type: ignore[no-any-return]
+        except botocore.exceptions.ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                return None
+            raise
 
     async def put(self, *, key: str, content: bytes, content_type: str | None) -> None:
         extra = {"ContentType": content_type} if content_type else {}

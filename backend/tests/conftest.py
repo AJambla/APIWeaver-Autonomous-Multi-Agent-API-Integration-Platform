@@ -28,6 +28,8 @@ from app.models.enums import OrgRole, ProjectRole
 from app.models.organization import Organization, OrganizationMember
 from app.models.project import Project, ProjectMember
 from app.models.user import User
+from app.services.qdrant_service import FakeQdrantClient, create_qdrant_client
+from app.services.vault_service import FakeVaultClient, create_vault_client
 
 TEST_PASSWORD = "correct-horse-battery-staple"
 
@@ -84,6 +86,9 @@ class FakeObjectStorage:
 
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
+
+    async def get(self, *, key: str) -> bytes | None:
+        return self.objects.get(key)
 
     async def put(self, *, key: str, content: bytes, content_type: str | None) -> None:
         self.objects[key] = content
@@ -194,11 +199,23 @@ def fake_storage() -> FakeObjectStorage:
 
 
 @pytest.fixture
+def fake_vault() -> FakeVaultClient:
+    return FakeVaultClient()
+
+
+@pytest.fixture
+def fake_qdrant() -> FakeQdrantClient:
+    return FakeQdrantClient()
+
+
+@pytest.fixture
 async def app(
     test_settings: Settings,
     session_factory: async_sessionmaker[AsyncSession],
     fake_redis: FakeRedis,
     fake_storage: FakeObjectStorage,
+    fake_vault: FakeVaultClient,
+    fake_qdrant: FakeQdrantClient,
 ) -> AsyncIterator[FastAPI]:
     """The real app with the database and Redis dependencies overridden.
 
@@ -220,6 +237,8 @@ async def app(
     application.dependency_overrides[get_db] = override_get_db
     application.dependency_overrides[get_redis] = lambda: fake_redis
     application.dependency_overrides[get_object_storage] = lambda: fake_storage
+    application.dependency_overrides[create_vault_client] = lambda: fake_vault
+    application.dependency_overrides[create_qdrant_client] = lambda: fake_qdrant
     application.dependency_overrides[get_settings] = lambda: test_settings
     # Middleware reads the client off app.state rather than through the dependency.
     application.state.redis = fake_redis

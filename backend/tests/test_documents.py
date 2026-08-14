@@ -79,8 +79,9 @@ async def test_upload_openapi_persists_normalized_spec_and_endpoints(client: Asy
         headers=headers,
         files={"file": ("petstore.yaml", OPENAPI, "application/yaml")},
     )
-    assert response.status_code == 201, response.text
-    assert response.json()["status"] == "parsed"
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "processing"
+    assert response.json()["workflow_run_id"] is not None
     assert response.json()["endpoints_discovered"] == 2
 
     spec = await client.get(f"/api/v1/projects/{project_id}/spec", headers=headers)
@@ -115,7 +116,7 @@ async def test_upload_rejects_duplicate_document_content(client: AsyncClient) ->
     first = await client.post(
         f"/api/v1/projects/{project_id}/upload", headers=headers, files=files
     )
-    assert first.status_code == 201
+    assert first.status_code == 202
     duplicate = await client.post(
         f"/api/v1/projects/{project_id}/upload", headers=headers, files=files
     )
@@ -129,7 +130,7 @@ async def test_upload_normalizes_swagger_2(client: AsyncClient) -> None:
         headers=headers,
         files={"file": ("legacy.json", SWAGGER, "application/json")},
     )
-    assert response.status_code == 201, response.text
+    assert response.status_code == 202, response.text
     spec = await client.get(f"/api/v1/projects/{project_id}/spec", headers=headers)
     assert spec.json()["base_url"] == "https://legacy.example.test/api"
 
@@ -141,6 +142,6 @@ async def test_upload_normalizes_postman_v21(client: AsyncClient) -> None:
         headers=headers,
         files={"file": ("payments.json", POSTMAN, "application/json")},
     )
-    assert response.status_code == 201, response.text
+    assert response.status_code == 202, response.text
     endpoints = await client.get(f"/api/v1/projects/{project_id}/endpoints", headers=headers)
     assert endpoints.json()[0]["path"] == "/payments"
