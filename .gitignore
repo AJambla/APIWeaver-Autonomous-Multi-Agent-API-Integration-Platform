@@ -1,38 +1,73 @@
-# Secrets — never commit key material or resolved env files
-.env
-.env.*
-!.env.example
-secrets/
-*.pem
-*.key
-
-# Python
-__pycache__/
-*.py[cod]
+# Build artifacts
+dist/
+build/
+*.egg
 *.egg-info/
-.venv/
-venv/
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
-.coverage
-coverage.xml
-htmlcov/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Node / Next.js
-node_modules/
-.next/
-out/
-npm-debug.log*
-
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.*
-.terraform.lock.hcl
-
-# Editors / OS
+# IDE extensions & settings
+.vscode/extensions/
+.vscode/settings.json
 .idea/
-.vscode/
-.DS_Store
-Thumbs.db
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# Python virtual environments
+env/
+ENV/
+.Python
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# Local configuration
+.env.local
+.env.*.local
+
+# Node.js / Frontend
+.nuxt/
+.cache/
+dist/
+yarn-error.log*
+.pnpm-debug.log*
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# OS-specific
+.AppleDouble
+.LSOverride
+.TemporaryItems
+.VolumeIcon.icns
+.fseventsd
+.Spotlight-V100
+*.cab
+*.lnk
+
+# Cache directories
+pytest-cache-files-*/
+.cache/
+
+# Alembic (SQLAlchemy migrations)
+alembic.db
+
+# Docker
+.dockerignore
+
+# IDE plugins
+*.sublime-project
+*.sublime-workspace
+
+# Makefile artifacts
+.make_output
