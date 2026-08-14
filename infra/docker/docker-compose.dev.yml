@@ -1,0 +1,42 @@
+# Local development dependencies for Phase 1 (Deployment.md §1).
+#
+# Phase 1 needs only the system of record and the cache/broker. Qdrant, MinIO, and Vault
+# join this file in Phase 2; the application services (web, api, agent-worker) and the
+# full single-node topology land in Phase 6 per Deployment.md §4.
+#
+# Credentials here are development-only and match .env.example. Production credentials
+# come from Vault (Security.md §7) — never from a compose file.
+services:
+  postgres:
+    image: postgres:16
+    container_name: apiweaver-postgres
+    environment:
+      POSTGRES_DB: apiweaver
+      POSTGRES_USER: apiweaver
+      POSTGRES_PASSWORD: apiweaver
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apiweaver -d apiweaver"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: apiweaver-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
