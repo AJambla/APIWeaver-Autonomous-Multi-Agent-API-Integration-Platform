@@ -1,0 +1,37 @@
+{
+  "name": "{{ title.lower().replace(' ', '-').replace('_', '-') }}-client",
+  "version": "0.1.0",
+  "description": "Auto-generated {{ title }} API client for Node.js/TypeScript",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "lint": "eslint . --ext .ts",
+    "prepublishOnly": "npm run build && npm run test"
+  },
+  "keywords": ["api", "client", "typescript", "{{ title.lower().replace(' ', '-') }}"],
+  "author": "APIWeaver <support@apiweaver.dev>",
+  "license": "MIT",
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "eslint": "^9.0.0",
+    "@eslint/js": "^9.0.0",
+    "typescript-eslint": "^8.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

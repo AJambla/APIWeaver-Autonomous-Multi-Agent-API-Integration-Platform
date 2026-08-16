@@ -20,7 +20,6 @@ pip-delete-this-directory.txt
 env/
 ENV/
 .Python
-
 # Database files
 *.db
 *.sqlite
@@ -31,8 +30,9 @@ logs/
 *.log
 
 # Local configuration
-.env.local
-.env.*.local
+.env
+.env.*
+!.env.example
 
 # Node.js / Frontend
 .nuxt/

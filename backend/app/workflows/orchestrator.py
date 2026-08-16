@@ -29,7 +29,6 @@ async def record_checkpoint(
     state: WorkflowState | dict[str, Any],
 ) -> WorkflowCheckpoint:
     """Checkpoints intermediate state snapshot to PostgreSQL."""
-    # Filter out non-serializable elements like raw bytes before checkpointing
     serializable_state = {k: v for k, v in dict(state).items() if k != "raw_document_bytes"}
     checkpoint = WorkflowCheckpoint(
         workflow_run_id=workflow_run_id,
@@ -70,6 +69,7 @@ class Orchestrator:
         try:
             # 1. Documentation Stage (always needed if normalized spec is not ready)
             if not current_dict.get("normalized_spec"):
+                from app.workflows.agents.doc_agent import run_doc_agent
                 doc_updates = await run_doc_agent(cast(WorkflowState, current_dict))
                 current_dict.update(doc_updates)
 
@@ -96,16 +96,94 @@ class Orchestrator:
                     )
                     await session.commit()
 
-            # 3. Check for human-in-the-loop gate or completion
-            final_status = (
-                WorkflowStatus.PAUSED_FOR_APPROVAL
-                if "generate" in stages and not current_dict.get("plan_approved")
-                else WorkflowStatus.COMPLETED
-            )
+            # 3. Code Generation Stage
+            if "generate" in stages and current_dict.get("plan_approved"):
+                from app.workflows.agents.code_agent import run_code_agent
+
+                plan = current_dict.get("execution_plan", {})
+                phases = plan.get("phases", [])
+
+                for phase in phases:
+                    phase_number = phase.get("phase_number")
+                    logger.info("code_generation_phase", phase=phase_number)
+                    code_updates = await run_code_agent(
+                        cast(WorkflowState, current_dict),
+                        phase_number=phase_number,
+                    )
+                    current_dict.update(code_updates)
+
+                    async with self.session_factory() as session:
+                        await record_checkpoint(
+                            session,
+                            workflow_run_id=workflow_run_id,
+                            node_name=f"code_agent_phase_{phase_number}",
+                            state=current_dict,
+                        )
+                        await session.commit()
+
+                # Cross-chunk consistency pass
+                logger.info("code_generation_consistency")
+                consistency_updates = await run_code_agent(
+                    cast(WorkflowState, current_dict),
+                    phase_number=None,
+                )
+                current_dict.update(consistency_updates)
+
+                async with self.session_factory() as session:
+                    await record_checkpoint(
+                        session,
+                        workflow_run_id=workflow_run_id,
+                        node_name="code_agent_consistency",
+                        state=current_dict,
+                    )
+                    await session.commit()
+
+            # 4. Testing Stage
+            if "test" in stages and current_dict.get("generated_files"):
+                from app.workflows.agents.test_agent import run_test_agent
+
+                test_updates = await run_test_agent(cast(WorkflowState, current_dict))
+                current_dict.update(test_updates)
+
+                async with self.session_factory() as session:
+                    await record_checkpoint(
+                        session,
+                        workflow_run_id=workflow_run_id,
+                        node_name="test_agent",
+                        state=current_dict,
+                    )
+                    await session.commit()
+
+            # 5. Export Stage
+            if "export" in stages and current_dict.get("test_suite"):
+                from app.workflows.agents.export_agent import ExportAgent
+
+                export_agent = ExportAgent()
+                export_updates = await export_agent.run(cast(WorkflowState, current_dict))
+                current_dict.update(export_updates)
+
+                async with self.session_factory() as session:
+                    await record_checkpoint(
+                        session,
+                        workflow_run_id=workflow_run_id,
+                        node_name="export_agent",
+                        state=current_dict,
+                    )
+                    await session.commit()
+
+            # 6. Determine final status
+            final_status = WorkflowStatus.COMPLETED
+            if current_dict.get("repair_attempts"):
+                escalated = any(
+                    ra.get("outcome") == "escalated"
+                    for ra in current_dict.get("repair_attempts", [])
+                )
+                if escalated:
+                    final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
 
             current_dict["status"] = final_status
             is_done = final_status == WorkflowStatus.COMPLETED
-            current_dict["progress_percent"] = 100 if is_done else 50
+            current_dict["progress_percent"] = 100 if is_done else 90
 
             async with self.session_factory() as session:
                 run_obj = await session.get(WorkflowRun, workflow_run_id)
