@@ -20,6 +20,10 @@ class ObjectStorage(Protocol):
 
     async def delete(self, *, key: str) -> None: ...
 
+    async def upload(self, key: str, content: bytes) -> None: ...
+
+    async def download(self, key: str) -> bytes: ...
+
 
 class S3ObjectStorage:
     """S3-compatible storage client; works with AWS S3 and MinIO."""
@@ -64,6 +68,32 @@ class S3ObjectStorage:
     async def delete(self, *, key: str) -> None:
         await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=key)
 
+    async def upload(self, key: str, content: bytes) -> None:
+        await self.put(key=key, content=content, content_type="text/plain")
+
+    async def download(self, key: str) -> bytes:
+        result = await self.get(key=key)
+        if result is None:
+            raise FileNotFoundError(f"Object not found: {key}")
+        return result
+
 
 def create_object_storage(settings: Settings) -> ObjectStorage:
     return S3ObjectStorage(settings)
+
+
+# Global instance for agents to use
+_storage_instance: ObjectStorage | None = None
+
+
+def get_storage() -> ObjectStorage:
+    global _storage_instance
+    if _storage_instance is None:
+        from app.core.config import get_settings
+
+        _storage_instance = create_object_storage(get_settings())
+    return _storage_instance
+
+
+# Backwards compatible alias
+storage_service = get_storage()
