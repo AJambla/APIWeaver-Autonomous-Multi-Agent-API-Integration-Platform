@@ -23,6 +23,8 @@ structlog = "^24.4.0"
 python-multipart = "^0.0.17"
 boto3 = "^1.35.0"
 pyyaml = "^6.0.2"
+celery = { extras = ["redis"], version = "^5.4.0" }
+flower = "^2.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"

@@ -208,7 +208,7 @@ Returns the normalized API spec once parsing completes.
 Triggers the multi-agent pipeline.
 ```json
 // Request
-{ "stages": ["plan","generate","test","export"], "target_languages": ["python","node"] }
+{ "stages": ["plan","generate","test","export"], "target_languages": ["python","node"], "execution_mode": "sync" }
 ```
 **Response 202:**
 ```json
@@ -238,9 +238,41 @@ Cancels an in-progress workflow (idempotent).
 #### `GET /api/v1/workflows/{run_id}/tool-calls`
 Returns the tool-call trace for the run (paginated).
 
+#### `GET /api/v1/workflows/{run_id}/sse`
+Server-Sent Events stream for real-time workflow progress. Returns `text/event-stream`.
+Authenticated via standard bearer token. Subscribe to events: `workflow.started`, `workflow.progress`, `node_completed`, `workflow.completed`, `test.result`, `repair.attempt`, `export.progress`.
+
+#### `GET /ws/workflows/{run_id}`
+WebSocket endpoint for real-time workflow events.
+Client must send an initial JSON message: `{"token": "<jwt>"}`.
+Subsequent server messages: `{"event_type": "...", "payload": {...}, "id": "..."}`.
+
 ---
 
-### 6.5 Endpoints & Dependency Graph
+### 6.5 GitHub Integration
+
+#### `POST /api/v1/github/connect`
+Initiates GitHub OAuth flow. Redirects user to GitHub authorization page or returns a state token.
+
+#### `GET /api/v1/github/status`
+Returns the current GitHub connection status for the authenticated user.
+```json
+{
+  "connected": true,
+  "github_username": "octocat",
+  "scopes": ["repo", "read:user"]
+}
+```
+
+#### `POST /api/v1/github/disconnect`
+Revokes the current GitHub connection.
+
+#### `GET /api/v1/github/repos`
+Lists repositories accessible via the connected GitHub account.
+
+---
+
+### 6.6 Endpoints & Dependency Graph
 
 #### `GET /api/v1/projects/{id}/endpoints`
 Filterable by `method`, `deprecated`, `confidence_min`.
