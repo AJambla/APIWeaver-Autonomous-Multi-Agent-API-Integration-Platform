@@ -96,6 +96,8 @@ class Permission(StrEnum):
     TEST_READ = "test:read"
     EXPORT_CREATE = "export:create"
     EXPORT_READ = "export:read"
+    GITHUB_CONNECT = "github:connect"
+    GITHUB_EXPORT = "github:export"
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +154,10 @@ PERMISSIONS: dict[Permission, RoleRequirement] = {
     # Exporting publishes outward (GitHub push, Docker image) — owner only.
     Permission.EXPORT_CREATE: RoleRequirement(project_role=ProjectRole.OWNER),
     Permission.EXPORT_READ: RoleRequirement(project_role=ProjectRole.VIEWER),
+
+    # GitHub integration
+    Permission.GITHUB_CONNECT: RoleRequirement(project_role=ProjectRole.MEMBER),
+    Permission.GITHUB_EXPORT: RoleRequirement(project_role=ProjectRole.OWNER),
 }
 
 
