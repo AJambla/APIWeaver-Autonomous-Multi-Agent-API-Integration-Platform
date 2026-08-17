@@ -5,11 +5,12 @@ from __future__ import annotations
 import datetime
 import uuid
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.deps import get_current_principal, get_db
+from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError, UnprocessableEntityError
 from app.models.enums import ActorType, WorkflowStatus
 from app.models.project import Project
@@ -26,6 +27,7 @@ from app.schemas.workflow import (
     WorkflowRunResponse,
 )
 from app.services import audit_service
+from app.services.event_publisher import EventPublisher
 from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
 
@@ -43,6 +45,7 @@ async def trigger_workflow(
     project: Project = Depends(require_project_permission(Permission.WORKFLOW_TRIGGER)),
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ) -> TriggerWorkflowResponse:
     """Trigger multi-agent orchestration for a project."""
     # Find latest spec if available
@@ -83,12 +86,27 @@ async def trigger_workflow(
         "errors": [],
     }
 
-    # Execute workflow in background task
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = Orchestrator(engine_session_factory)
-    background_tasks.add_task(orchestrator.run, run.id, initial_state)
+    event_publisher = EventPublisher(redis_client)
+    orchestrator = Orchestrator(
+        engine_session_factory,
+        event_publisher=event_publisher,
+        execution_mode=payload.execution_mode,
+    )
+
+    if payload.execution_mode == "async":
+        try:
+            from agent_worker.celery_app import app as celery_app
+            celery_app.send_task(
+                "agent_worker.tasks.run_workflow",
+                args=[str(run.id), initial_state],
+            )
+        except Exception:
+            background_tasks.add_task(orchestrator.run, run.id, initial_state)
+    else:
+        background_tasks.add_task(orchestrator.run, run.id, initial_state)
 
     return TriggerWorkflowResponse(workflow_run_id=run.id, status=WorkflowStatus.QUEUED)
 

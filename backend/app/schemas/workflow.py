@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -14,6 +14,7 @@ from app.schemas.common import ResponseModel, StrictModel
 class TriggerWorkflowRequest(StrictModel):
     stages: list[str] = Field(default_factory=lambda: ["plan", "generate", "test", "export"])
     target_languages: list[str] = Field(default_factory=lambda: ["python", "node"])
+    execution_mode: Literal["sync", "async"] = "sync"
 
 
 class TriggerWorkflowResponse(ResponseModel):
