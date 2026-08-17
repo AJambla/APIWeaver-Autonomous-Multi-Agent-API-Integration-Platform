@@ -68,9 +68,13 @@ class Settings(BaseSettings):
     jwt_algorithm: Literal["RS256"] = "RS256"
     jwt_issuer: str = "apiweaver"
 
-    # --- GitHub Export (conditional, Phase 5) ---------------------------------
+    # --- GitHub Export (Phase 4) -------------------------------------------------
     github_app_id: str | None = None
     github_app_private_key_path: Path | None = None
+    github_app_client_id: str | None = None
+    github_app_client_secret_vault_path: str | None = None
+    github_oauth_redirect_uri: str | None = None
+    github_webhook_secret: str | None = None
 
     # --- Sandbox quotas (required by §9; enforced in Phase 4) -----------------
     sandbox_max_cpu: str = "1"
