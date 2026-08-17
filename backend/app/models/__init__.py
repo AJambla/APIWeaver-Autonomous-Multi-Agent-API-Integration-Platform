@@ -13,6 +13,7 @@ from app.models.auth_config import AuthConfig, SecretRef
 from app.models.codegen import CodeGenerationRun, GeneratedFile
 from app.models.document import Document, DocumentVersion
 from app.models.export import Export, GitHubExport, MCPTool, SDKPackage, SDKVersion
+from app.models.github import GitHubConnection, GitHubOAuthState
 from app.models.metrics import UsageMetric
 from app.models.organization import Organization, OrganizationMember
 from app.models.project import Project, ProjectMember
@@ -53,7 +54,9 @@ __all__ = [
     "EndpointParameter",
     "Export",
     "GeneratedFile",
+    "GitHubConnection",
     "GitHubExport",
+    "GitHubOAuthState",
     "MCPTool",
     "Organization",
     "OrganizationMember",

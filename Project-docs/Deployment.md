@@ -101,6 +101,10 @@ services:
     depends_on: [postgres, redis, qdrant]
     deploy:
       replicas: 2
+    command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
 
   postgres:
     image: postgres:16
@@ -341,6 +345,9 @@ jobs:
 | `ANTHROPIC_API_KEY` | Model provider key | conditional |
 | `JWT_PUBLIC_KEY` / `JWT_PRIVATE_KEY` | RS256 signing keys | yes |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` | GitHub Export integration | conditional |
+| `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` | GitHub OAuth integration | conditional |
+| `GITHUB_OAUTH_REDIRECT_URI` | OAuth callback URL | conditional |
+| `GITHUB_WEBHOOK_SECRET` | Webhook verification secret | conditional |
 | `SANDBOX_MAX_CPU` / `SANDBOX_MAX_MEMORY` / `SANDBOX_TIMEOUT_SECONDS` | Sandbox resource quotas | yes |
 | `LANGSMITH_API_KEY` | Agent tracing | recommended |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Observability collector | recommended |
