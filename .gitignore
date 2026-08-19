@@ -36,10 +36,15 @@ logs/
 
 # Node.js / Frontend
 .nuxt/
-.cache/
-dist/
 yarn-error.log*
 .pnpm-debug.log*
+node_modules/
+.next/
+.turbo/
+.vercel
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
