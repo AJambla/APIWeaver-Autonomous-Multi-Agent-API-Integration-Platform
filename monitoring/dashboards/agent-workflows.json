@@ -1,0 +1,60 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "APIWeaver — Agent Workflows",
+    "tags": ["apiweaver"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Workflow Run Duration",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(apiweaver_workflow_duration_seconds_bucket[5m])) by (le, status))",
+            "legendFormat": "p95 {{status}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+      },
+      {
+        "id": 2,
+        "title": "Agent Step Latency",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "avg(apiweaver_agent_step_duration_seconds) by (agent_type)",
+            "legendFormat": "{{agent_type}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+      },
+      {
+        "id": 3,
+        "title": "Repair Attempt Frequency",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(rate(apiweaver_repair_attempts_total[5m])) by (agent_type, success)",
+            "legendFormat": "{{agent_type}} success={{success}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+      },
+      {
+        "id": 4,
+        "title": "LLM Token Spend per Org",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(rate(apiweaver_llm_tokens_spent_total[1h])) by (org_id)",
+            "legendFormat": "org {{org_id}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+      }
+    ]
+  }
+}
