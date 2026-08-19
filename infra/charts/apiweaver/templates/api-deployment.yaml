@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "apiweaver.fullname" . }}-api
+  labels:
+    {{- include "apiweaver.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "apiweaver.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "apiweaver.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: api
+          image: {{ printf "%s/%s:%s" .Values.image.registry .Values.api.image.repository .Values.api.image.tag }}
+          ports:
+            - containerPort: {{ .Values.api.servicePort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "apiweaver.fullname" . }}
+            - secretRef:
+                name: {{ include "apiweaver.fullname" . }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.api.servicePort }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.api.servicePort }}
+            initialDelaySeconds: 5
+            periodSeconds: 5

@@ -1,0 +1,86 @@
+image:
+  registry: ghcr.io/apiweaver
+
+api:
+  replicaCount: 5
+  image:
+    repository: api
+    tag: latest
+  servicePort: 8000
+  resources:
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPU: 65
+
+agentWorker:
+  replicaCount: 10
+  image:
+    repository: agent-worker
+    tag: latest
+  servicePort: 8000
+  nodeSelector:
+    workload: agents
+  tolerations:
+    - key: workload
+      value: agents
+      effect: NoSchedule
+  resources:
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+  autoscaling:
+    enabled: true
+    minReplicas: 4
+    maxReplicas: 50
+    queueDepthTarget: 20
+
+web:
+  replicaCount: 3
+  image:
+    repository: web
+    tag: latest
+  servicePort: 3000
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+
+ingress:
+  enabled: true
+  host: apiweaver.dev
+  tls:
+    secretName: apiweaver-tls
+
+postgresql:
+  enabled: false
+
+redis:
+  enabled: false
+
+configmap:
+  corsOrigins: "https://apiweaver.dev,https://app.apiweaver.dev"
+  logLevel: "info"
+  rateLimitTiers: |
+    tier_free:
+      requests_per_minute: 60
+      burst: 10
+    tier_pro:
+      requests_per_minute: 300
+      burst: 50
+    tier_enterprise:
+      requests_per_minute: 1000
+      burst: 200

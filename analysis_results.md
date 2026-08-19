@@ -265,6 +265,12 @@ Both `infra/charts/` and `infra/terraform/` contain only `.gitkeep` files. No Ku
 ### 2.11 — DB Permission Enforcement Is Future Work
 Append-only enforcement on `audit_logs` is implemented at the application layer (`audit_service` exposes no update/delete path). The `GRANT` at the database level (withholding `UPDATE`/`DELETE` from the application role) belongs to infrastructure provisioning (Phase 6 / Terraform).
 
+### 2.6 — Frontend Feature Gaps
+The Next.js frontend is built with core pages (login, dashboard, projects, build, logs) but lacks:
+- Spec visualization
+- Workflow configuration UI
+- Settings pages
+
 ---
 
 ## 3. What Is Broken / Mismatched 🔴
@@ -295,7 +301,7 @@ Append-only enforcement on `audit_logs` is implemented at the application layer 
 | 4.2 | **WebSocket/SSE gateway** — Redis Streams → real-time progress to frontend (backend done, frontend consumer missing) | Architecture.md §8 |
 | 4.3 | **OpenTelemetry instrumentation** — spans per agent node, correlated with LangSmith | Architecture.md §13, AI_Instruction.md §19 |
 
-### Phase 5 — Frontend & Remaining API
+### Phase 5 — Frontend Feature Completion
 
 | # | Task | Spec Refs |
 |---|---|---|
@@ -303,7 +309,7 @@ Append-only enforcement on `audit_logs` is implemented at the application layer 
 | 5.2 | **Retry policy config endpoint** — `PUT /projects/{id}/settings/retry-policy` | Feature.md §15 |
 | 5.3 | **Logs API route** — `GET /api/v1/projects/{id}/logs` | Feature.md §16 |
 
-### Phase 6 — Infrastructure & Observability
+### Phase 7 — Next Horizons (Future)
 
 | # | Task | Spec Refs |
 |---|---|---|
