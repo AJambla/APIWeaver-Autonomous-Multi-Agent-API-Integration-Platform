@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import health
@@ -21,9 +22,11 @@ from app.api.v1.router import api_router
 from app.core.config import Settings, get_settings
 from app.core.errors import APIError, ErrorCode, build_error_body
 from app.core.logging import configure_logging, get_logger
+from app.core.metrics import registry as metrics_registry
 from app.core.middleware import RequestIDMiddleware
 from app.core.ratelimit import RateLimitMiddleware
 from app.core.security import load_keys
+from app.core.telemetry import instrument_app
 from app.db.session import dispose_engine, get_engine
 from app.services.storage_service import create_object_storage
 
@@ -52,8 +55,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Open shared clients on startup, close them on shutdown."""
     settings = get_settings()
 
-    # Load the JWT keypair now rather than on the first authenticated request, so a
-    # missing or unreadable key is a startup failure instead of a runtime 500.
     load_keys(settings)
 
     app.state.redis = aioredis.from_url(
@@ -63,8 +64,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         health_check_interval=30,
     )
     app.state.object_storage = create_object_storage(settings)
-    # Build the engine eagerly so pool configuration errors surface at boot.
-    get_engine(settings)
+    engine = get_engine(settings)
+
+    instrument_app(app, engine)
 
     logger.info("application_started", app_env=settings.app_env)
     try:
@@ -185,6 +187,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     register_exception_handlers(app)
+
+    Instrumentator(registry=metrics_registry).instrument(app).expose(app, include_in_schema=False)
 
     # Probes sit outside /api/v1: they are infrastructure contracts, not part of the
     # versioned product API, and must not move when v2 ships (`Architecture.md §11`).

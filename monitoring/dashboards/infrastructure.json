@@ -1,0 +1,72 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "APIWeaver — Infrastructure",
+    "tags": ["apiweaver"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "refresh": "60s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "EKS Node CPU Usage",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "avg(rate(container_cpu_usage_seconds_total[5m])) by (node)",
+            "legendFormat": "{{node}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+      },
+      {
+        "id": 2,
+        "title": "EKS Node Memory Usage",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "avg(container_memory_usage_bytes / container_spec_memory_limit_bytes) by (node)",
+            "legendFormat": "{{node}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+      },
+      {
+        "id": 3,
+        "title": "RDS Connections",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "aws_rds_database_connections",
+            "legendFormat": "{{DBInstanceIdentifier}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+      },
+      {
+        "id": 4,
+        "title": "Redis Hit Rate",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(redis_keyspace_hits_total[5m]) / (rate(redis_keyspace_hits_total[5m]) + rate(redis_keyspace_misses_total[5m])) * 100",
+            "legendFormat": "hit rate %"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+      },
+      {
+        "id": 5,
+        "title": "S3 Request Metrics",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(rate(aws_s3_requests_total[5m])) by (bucket, type)",
+            "legendFormat": "{{bucket}} {{type}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 }
+      }
+    ]
+  }
+}

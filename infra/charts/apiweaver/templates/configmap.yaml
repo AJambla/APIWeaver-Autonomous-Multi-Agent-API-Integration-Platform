@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "apiweaver.fullname" . }}
+  labels:
+    {{- include "apiweaver.labels" . | nindent 4 }}
+data:
+  CORS_ORIGINS: {{ .Values.configmap.corsOrigins | quote }}
+  LOG_LEVEL: {{ .Values.configmap.logLevel | quote }}
+  RATE_LIMIT_TIERS: |
+    {{- .Values.configmap.rateLimitTiers | nindent 4 }}
