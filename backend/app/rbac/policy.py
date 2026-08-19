@@ -99,6 +99,15 @@ class Permission(StrEnum):
     GITHUB_CONNECT = "github:connect"
     GITHUB_EXPORT = "github:export"
 
+    # History & Versioning (Phase 5)
+    HISTORY_READ = "history:read"
+    VERSION_READ = "version:read"
+    VERSION_ROLLBACK = "version:rollback"
+
+    # Monitoring Metrics (Phase 5)
+    PROJECT_METRICS_READ = "project:metrics_read"
+    ORG_METRICS_READ = "org:metrics_read"
+
 
 @dataclass(frozen=True, slots=True)
 class RoleRequirement:
@@ -156,8 +165,17 @@ PERMISSIONS: dict[Permission, RoleRequirement] = {
     Permission.EXPORT_READ: RoleRequirement(project_role=ProjectRole.VIEWER),
 
     # GitHub integration
-    Permission.GITHUB_CONNECT: RoleRequirement(project_role=ProjectRole.MEMBER),
+    Permission.GITHUB_CONNECT: RoleRequirement(project_role=OrgRole.MEMBER),
     Permission.GITHUB_EXPORT: RoleRequirement(project_role=ProjectRole.OWNER),
+
+    # History & Versioning (Phase 5)
+    Permission.HISTORY_READ: RoleRequirement(project_role=ProjectRole.VIEWER),
+    Permission.VERSION_READ: RoleRequirement(project_role=ProjectRole.VIEWER),
+    Permission.VERSION_ROLLBACK: RoleRequirement(project_role=ProjectRole.OWNER),
+
+    # Monitoring Metrics (Phase 5)
+    Permission.PROJECT_METRICS_READ: RoleRequirement(project_role=ProjectRole.VIEWER),
+    Permission.ORG_METRICS_READ: RoleRequirement(org_role=OrgRole.MEMBER),
 }
 
 

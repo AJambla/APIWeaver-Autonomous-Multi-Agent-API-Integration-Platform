@@ -7,13 +7,17 @@ prefix is the version boundary.
 from fastapi import APIRouter, Depends
 
 from app.api.v1 import (
+    api_keys,
     auth,
     auth_config,
+    dependency,
     documents,
     events,
     export,
     generate,
     github,
+    history,
+    metrics,
     projects,
     testing,
     workflows,
@@ -40,4 +44,8 @@ api_router.include_router(testing.router, dependencies=[Depends(enforce_org_rate
 api_router.include_router(export.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(github.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(events.router, dependencies=[Depends(enforce_org_rate_limit)])
+api_router.include_router(history.router, dependencies=[Depends(enforce_org_rate_limit)])
+api_router.include_router(metrics.router, dependencies=[Depends(enforce_org_rate_limit)])
+api_router.include_router(api_keys.router, dependencies=[Depends(enforce_org_rate_limit)])
+api_router.include_router(dependency.router, dependencies=[Depends(enforce_org_rate_limit)])
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -26,6 +28,7 @@ from app.models.workflow import WorkflowRun
 from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.document import EndpointResponse, SpecResponse, UploadResponse
+from app.schemas.spec import EndpointPatchRequest, EndpointPatchResponse
 from app.services import audit_service
 from app.services.ingestion_service import ingest_document
 from app.services.storage_service import ObjectStorage
@@ -150,3 +153,104 @@ async def list_endpoints(
         stmt = stmt.where(Endpoint.confidence_score >= confidence_min)
     rows = list((await session.execute(stmt.order_by(Endpoint.path, Endpoint.method))).scalars())
     return [EndpointResponse.model_validate(row) for row in rows]
+
+
+@router.patch("/{id}/spec/endpoints/{endpoint_id}", response_model=EndpointPatchResponse)
+async def patch_endpoint(
+    endpoint_id: uuid.UUID,
+    payload: EndpointPatchRequest,
+    project: Project = Depends(require_project_permission(Permission.SPEC_UPDATE)),
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_db),
+    request: Request | None = None,
+) -> EndpointPatchResponse:
+    """Manual correction of a low-confidence endpoint."""
+    current_spec = await session.scalar(
+        select(APISpec)
+        .where(APISpec.project_id == project.id)
+        .order_by(APISpec.created_at.desc())
+        .limit(1)
+    )
+    if current_spec is None:
+        from app.core.errors import NotFoundError
+        raise NotFoundError("No spec exists for this project.")
+
+    endpoint = await session.get(Endpoint, endpoint_id)
+    if endpoint is None or endpoint.api_spec_id != current_spec.id:
+        from app.core.errors import NotFoundError
+        raise NotFoundError("Endpoint not found in current spec.")
+
+    updated_fields: list[str] = []
+    before: dict[str, object] = {}
+    after: dict[str, object] = {}
+
+    if payload.path is not None and payload.path != endpoint.path:
+        before["path"] = endpoint.path
+        endpoint.path = payload.path
+        after["path"] = payload.path
+        updated_fields.append("path")
+
+    if payload.method is not None and payload.method != endpoint.method:
+        before["method"] = endpoint.method
+        endpoint.method = payload.method
+        after["method"] = payload.method
+        updated_fields.append("method")
+
+    if payload.summary is not None and payload.summary != endpoint.summary:
+        before["summary"] = endpoint.summary
+        endpoint.summary = payload.summary
+        after["summary"] = payload.summary
+        updated_fields.append("summary")
+
+    if payload.request_schema is not None and payload.request_schema != endpoint.request_schema:
+        before["request_schema"] = endpoint.request_schema
+        endpoint.request_schema = payload.request_schema
+        after["request_schema"] = payload.request_schema
+        updated_fields.append("request_schema")
+
+    if (
+        payload.response_schemas is not None
+        and payload.response_schemas != endpoint.response_schemas
+    ):
+        before["response_schemas"] = endpoint.response_schemas
+        endpoint.response_schemas = payload.response_schemas
+        after["response_schemas"] = payload.response_schemas
+        updated_fields.append("response_schemas")
+
+    import decimal
+
+    new_confidence = (
+        payload.confidence_score if payload.confidence_score is not None else decimal.Decimal("1.0")
+    )
+    if endpoint.confidence_score != new_confidence:
+        before["confidence_score"] = (
+            float(endpoint.confidence_score) if endpoint.confidence_score else None
+        )
+        endpoint.confidence_score = new_confidence
+        after["confidence_score"] = float(new_confidence)
+        updated_fields.append("confidence_score")
+
+    if updated_fields:
+        await session.flush()
+
+        await audit_service.record(
+            session,
+            action="endpoint.patched",
+            actor_type=ActorType.USER,
+            organization_id=project.organization_id,
+            actor_user_id=principal.user_id,
+            resource_type="endpoint",
+            resource_id=str(endpoint.id),
+            ip_address=request.client.host if request and request.client else None,
+            metadata={
+                "updated_fields": updated_fields,
+                "before": before,
+                "after": after,
+            },
+        )
+
+    return EndpointPatchResponse(
+        endpoint_id=endpoint.id,
+        updated_fields=updated_fields,
+        confidence_score=float(endpoint.confidence_score) if endpoint.confidence_score else 1.0,
+    )
