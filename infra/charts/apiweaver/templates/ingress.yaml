@@ -1,0 +1,44 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "apiweaver.fullname" . }}
+  labels:
+    {{- include "apiweaver.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+spec:
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /api/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ include "apiweaver.fullname" . }}-api
+                port:
+                  number: {{ .Values.api.servicePort }}
+          - path: /ws/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ include "apiweaver.fullname" . }}-api
+                port:
+                  number: {{ .Values.api.servicePort }}
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ include "apiweaver.fullname" . }}-web
+                port:
+                  number: {{ .Values.web.servicePort }}
+{{- end }}
