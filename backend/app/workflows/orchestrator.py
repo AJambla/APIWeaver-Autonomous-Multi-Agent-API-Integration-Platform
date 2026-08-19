@@ -21,6 +21,19 @@ from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
 
+DEFAULT_TOKEN_BUDGET = 1_000_000
+
+
+async def _check_token_budget(current_dict: dict[str, Any]) -> None:
+    """Halt workflow if token budget is exhausted (`Security.md §15`, `AI_Instruction.md §22`)."""
+    budget = current_dict.get("token_budget") or DEFAULT_TOKEN_BUDGET
+    used = current_dict.get("total_tokens_used", 0)
+    if used >= budget:
+        from app.models.enums import WorkflowStatus
+        current_dict["status"] = WorkflowStatus.FAILED
+        current_dict.setdefault("errors", []).append(f"token_budget_exceeded: {used}/{budget}")
+        raise RuntimeError(f"token_budget_exceeded: {used}/{budget}")
+
 
 async def record_checkpoint(
     session: AsyncSession,
@@ -105,6 +118,7 @@ class Orchestrator:
         try:
             # 1. Documentation Stage (always needed if normalized spec is not ready)
             if not current_dict.get("normalized_spec"):
+                await _check_token_budget(current_dict)
                 from app.workflows.agents.doc_agent import run_doc_agent
                 doc_updates = await run_doc_agent(cast(WorkflowState, current_dict))
                 current_dict.update(doc_updates)
@@ -122,6 +136,7 @@ class Orchestrator:
 
             # 2. Planner Stage (if "plan" stage is in stages)
             if "plan" in stages and current_dict.get("normalized_spec"):
+                await _check_token_budget(current_dict)
                 planner_updates = await run_planner_agent(cast(WorkflowState, current_dict))
                 current_dict.update(planner_updates)
                 current_dict["progress_percent"] = 30
@@ -138,6 +153,7 @@ class Orchestrator:
 
             # 3. Code Generation Stage
             if "generate" in stages and current_dict.get("plan_approved"):
+                await _check_token_budget(current_dict)
                 from app.workflows.agents.code_agent import run_code_agent
 
                 plan = current_dict.get("execution_plan", {})
@@ -188,6 +204,7 @@ class Orchestrator:
 
             # 4. Testing Stage
             if "test" in stages and current_dict.get("generated_files"):
+                await _check_token_budget(current_dict)
                 from app.workflows.agents.test_agent import run_test_agent
 
                 test_updates = await run_test_agent(cast(WorkflowState, current_dict))
@@ -206,6 +223,7 @@ class Orchestrator:
 
             # 5. Export Stage
             if "export" in stages and current_dict.get("test_suite"):
+                await _check_token_budget(current_dict)
                 from app.workflows.agents.export_agent import ExportAgent
 
                 export_agent = ExportAgent()
