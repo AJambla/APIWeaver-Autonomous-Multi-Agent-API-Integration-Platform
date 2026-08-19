@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/Button";
 
@@ -19,22 +19,21 @@ const PROJECT_NAV = [
 
 export function AppShell({
   projectId,
-  section,
   children,
 }: {
   projectId?: string;
-  section?: string;
   children: React.ReactNode;
 }) {
   const { user, logout } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
 
   const nav = projectId
-    ? PROJECT_NAV.map((n) => ({
-        label: n.label,
-        href: `/projects/${projectId}${n.href}`,
-        active: section === n.id,
-      }))
+    ? PROJECT_NAV.map((n) => {
+        const href = `/projects/${projectId}${n.href}`;
+        const active = pathname === href || (n.id === "overview" && pathname === `/projects/${projectId}`);
+        return { label: n.label, href, active };
+      })
     : [];
 
   return (
