@@ -25,6 +25,7 @@ from app.services.github_service import (
     create_github_app_client,
     create_github_oauth_client,
 )
+from app.services.vault_service import VaultClient, create_vault_client
 
 router = APIRouter(prefix="/github", tags=["github"])
 
@@ -62,6 +63,7 @@ async def github_callback(
     state: str = Query(...),
     oauth_client: GitHubOAuthClient = Depends(create_github_oauth_client),
     app_client: GitHubAppClient = Depends(create_github_app_client),
+    vault: VaultClient = Depends(create_vault_client),
     session: AsyncSession = Depends(get_db),
 ) -> GitHubStatusResponse:
     """Handle GitHub OAuth callback."""
@@ -125,11 +127,13 @@ async def github_callback(
         )
         session.add(connection)
 
-    # Store tokens in Vault (implementation depends on vault_service)
-    # For now, we store Vault paths - actual token storage would be done here
+    # Store tokens in Vault
     vault_base = f"secret/github/connections/{connection.id}"
     connection.access_token_vault_path = f"{vault_base}/access_token"
     connection.refresh_token_vault_path = f"{vault_base}/refresh_token"
+    await vault.write_secret(connection.access_token_vault_path, {"token": access_token})
+    if token_data.get("refresh_token"):
+        await vault.write_secret(connection.refresh_token_vault_path, {"token": token_data["refresh_token"]})
 
     # Clean up OAuth state
     await session.delete(oauth_state)
