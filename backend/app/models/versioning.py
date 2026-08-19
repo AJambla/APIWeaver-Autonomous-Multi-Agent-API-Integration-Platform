@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, CreatedAtMixin, UUIDPrimaryKeyMixin
+from app.db.base import Base, CreatedAtMixin, UUIDPrimaryKeyMixin, false_
 
 
 class ArtifactVersion(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -31,3 +31,6 @@ class ArtifactVersion(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     diff_ref: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false_(), default=False
+    )

@@ -260,7 +260,28 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
         yield http_client
 
 
-# --- Data builders ------------------------------------------------------------------
+@pytest.fixture
+async def auth_headers(client: AsyncClient) -> dict[str, str]:
+    """A bearer token for a freshly registered org owner."""
+    import uuid as _uuid
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    email = f"auth-{_uuid.uuid4().hex[:10]}@example.com"
+    resp = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": email,
+            "password": TEST_PASSWORD,
+            "full_name": "Auth Headers User",
+            "organization_name": f"Auth Org {_uuid.uuid4().hex[:6]}",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    token = resp.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
 
 
 async def make_user(

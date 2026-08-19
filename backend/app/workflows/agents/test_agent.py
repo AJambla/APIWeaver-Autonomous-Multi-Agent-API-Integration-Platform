@@ -32,7 +32,7 @@ Status: {status_code}
 Response body: {response_body}
 Endpoint history: {endpoint_history}
 
-Respond with JSON: {"classification": "...", "confidence": 0.0-1.0, "reasoning": "..."}
+Respond with JSON: {{"classification": "...", "confidence": 0.0-1.0, "reasoning": "..."}}
 """
 
 TEST_FIXTURE_GENERATION_PROMPT = """Generate a test fixture for the following endpoint.
@@ -43,11 +43,11 @@ Response schemas: {response_schemas}
 Parameters: {parameters}
 
 Return a JSON object with:
-{
-  "request": { ... },  // Example request data matching the schema
+{{
+  "request": {{ ... }},  // Example request data matching the schema
   "expected_status": 200,
-  "expected_response_shape": { ... }  // Expected response structure
-}
+  "expected_response_shape": {{ ... }}  // Expected response structure
+}}
 """
 
 
@@ -260,7 +260,6 @@ async def run_test_agent(
 
     spec = state.get("normalized_spec")
     generated_files = state.get("generated_files", [])
-    execution_plan = state.get("execution_plan")
 
     if not spec:
         return {

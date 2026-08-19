@@ -6,6 +6,8 @@ Production implementation would use Docker/gVisor with network isolation.
 
 from __future__ import annotations
 
+import time
+import traceback
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -77,7 +79,6 @@ class MockSandboxClient:
         env_vars: dict[str, str] | None = None,
     ) -> SandboxResult:
         import time
-        import traceback
 
         start = time.perf_counter()
         workspace = self._workspaces.get(project_id, {})
@@ -97,9 +98,8 @@ class MockSandboxClient:
     async def _run_python_test(
         self, workspace: dict[str, str], test_code: str, start: float
     ) -> SandboxResult:
-        import sys
         import io
-        from contextlib import redirect_stdout, redirect_stderr
+        from contextlib import redirect_stderr, redirect_stdout
 
         test_globals = {"__name__": "__main__"}
 

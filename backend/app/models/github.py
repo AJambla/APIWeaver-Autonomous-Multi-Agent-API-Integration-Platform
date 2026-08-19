@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin, false_
+from app.db.base import JSONB, Base, CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -53,8 +53,8 @@ class GitHubConnection(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     github_username: Mapped[str] = mapped_column(String(255), nullable=False)
     access_token_vault_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     refresh_token_vault_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    scopes_granted: Mapped[dict[str, list[str]]] = mapped_column(
-        default=lambda: {"user": [], "app": []}, nullable=False
+    scopes_granted: Mapped[dict[str, Any]] = mapped_column(
+        JSONB(), default=lambda: {"user": [], "app": []}, nullable=False
     )
     revoked_at: Mapped[datetime.datetime | None] = mapped_column(
         TZDateTime(), nullable=True

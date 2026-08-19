@@ -3,35 +3,33 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db
-from app.rbac.enforce import require_org_permission, require_project_permission
-from app.rbac.policy import Permission, Principal
-from app.core.errors import BadRequestError, NotFoundError
-from app.models.enums import ActorType
+from app.core.errors import ConflictError, NotFoundError
 from app.models.github import GitHubConnection, GitHubOAuthState
-from app.models.user import User
-from app.rbac.enforce import require_org_permission, require_project_permission
+from app.rbac.enforce import require_org_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.github import (
     GitHubAuthUrlResponse,
-    GitHubCallbackRequest,
-    GitHubConnectionResponse,
     GitHubReposResponse,
     GitHubStatusResponse,
 )
-from app.services import audit_service
-from app.services.github_service import GitHubAppClient, GitHubOAuthClient, create_github_app_client, create_github_oauth_client
+from app.services.github_service import (
+    GitHubAppClient,
+    GitHubOAuthClient,
+    create_github_app_client,
+    create_github_oauth_client,
+)
 
 router = APIRouter(prefix="/github", tags=["github"])
 
 
-@router.get("/connect", response_model=GitHubAuthUrlResponse)
+@router.post("/connect", response_model=GitHubAuthUrlResponse)
 async def github_connect(
     request: Request,
     principal: Principal = Depends(require_org_permission(Permission.GITHUB_CONNECT)),
@@ -49,7 +47,6 @@ async def github_connect(
             state=state,
         )
         # Manually set expires_at since we're not using the default
-        from datetime import datetime, timedelta, UTC
         oauth_state.expires_at = datetime.now(UTC) + timedelta(seconds=expires_at)
         session.add(oauth_state)
         await session.commit()
@@ -65,37 +62,35 @@ async def github_callback(
     state: str = Query(...),
     oauth_client: GitHubOAuthClient = Depends(create_github_oauth_client),
     app_client: GitHubAppClient = Depends(create_github_app_client),
-    session_factory = Depends(lambda: request.app.state.db_session_factory),
+    session: AsyncSession = Depends(get_db),
 ) -> GitHubStatusResponse:
     """Handle GitHub OAuth callback."""
     # Validate state
-    async with session_factory() as session:
-        result = await session.execute(
-            select(GitHubOAuthState).where(GitHubOAuthState.state == state)
-        )
-        oauth_state = result.scalar_one_or_none()
+    result = await session.execute(
+        select(GitHubOAuthState).where(GitHubOAuthState.state == state)
+    )
+    oauth_state = result.scalar_one_or_none()
 
     if oauth_state is None:
-        raise BadRequestError("Invalid or expired OAuth state.")
+        raise ConflictError("Invalid or expired OAuth state.")
 
     if oauth_state.expires_at < datetime.now(UTC):
-        async with session_factory() as session:
-            await session.delete(oauth_state)
-            await session.commit()
-        raise BadRequestError("OAuth state has expired.")
+        await session.delete(oauth_state)
+        await session.commit()
+        raise ConflictError("OAuth state has expired.")
 
     # Exchange code for token
     try:
         token_data = await oauth_client.exchange_code(code)
     except Exception as exc:
-        raise BadRequestError(f"Failed to exchange code: {exc}") from exc
+        raise ConflictError(f"Failed to exchange code: {exc}") from exc
 
     access_token = token_data.get("access_token")
-    refresh_token = token_data.get("refresh_token")
+    _ = token_data.get("refresh_token")
     scopes = token_data.get("scope", "").split(",")
 
     if not access_token:
-        raise BadRequestError("No access token returned from GitHub.")
+        raise ConflictError("No access token returned from GitHub.")
 
     # Get user info
     user_info = await oauth_client.get_user_info(access_token)
@@ -106,48 +101,51 @@ async def github_callback(
     installations = await app_client.get_user_installations(access_token)
 
     # Store connection in database
-    async with session_factory() as session:
-        # Check for existing connection
-        result = await session.execute(
-            select(GitHubConnection).where(
-                GitHubConnection.user_id == oauth_state.user_id,
-                GitHubConnection.github_user_id == github_user_id,
-            )
+    # Check for existing connection
+    result = await session.execute(
+        select(GitHubConnection).where(
+            GitHubConnection.user_id == oauth_state.user_id,
+            GitHubConnection.github_user_id == github_user_id,
         )
-        existing = result.scalar_one_or_none()
+    )
+    existing = result.scalar_one_or_none()
 
-        if existing:
-            # Update existing connection
-            existing.github_username = github_username
-            existing.scopes_granted = {"user": scopes, "app": []}
-            existing.revoked_at = None
-            connection = existing
-        else:
-            connection = GitHubConnection(
-                user_id=oauth_state.user_id,
-                github_user_id=github_user_id,
-                github_username=github_username,
-                scopes_granted={"user": scopes, "app": []},
-            )
-            session.add(connection)
+    if existing:
+        # Update existing connection
+        existing.github_username = github_username
+        existing.scopes_granted = {"user": scopes, "app": []}
+        existing.revoked_at = None
+        connection = existing
+    else:
+        connection = GitHubConnection(
+            user_id=oauth_state.user_id,
+            github_user_id=github_user_id,
+            github_username=github_username,
+            scopes_granted={"user": scopes, "app": []},
+        )
+        session.add(connection)
 
-        # Store tokens in Vault (implementation depends on vault_service)
-        # For now, we store Vault paths - actual token storage would be done here
-        vault_base = f"secret/github/connections/{connection.id}"
-        connection.access_token_vault_path = f"{vault_base}/access_token"
-        connection.refresh_token_vault_path = f"{vault_base}/refresh_token"
+    # Store tokens in Vault (implementation depends on vault_service)
+    # For now, we store Vault paths - actual token storage would be done here
+    vault_base = f"secret/github/connections/{connection.id}"
+    connection.access_token_vault_path = f"{vault_base}/access_token"
+    connection.refresh_token_vault_path = f"{vault_base}/refresh_token"
 
-        # Clean up OAuth state
-        await session.delete(oauth_state)
+    # Clean up OAuth state
+    await session.delete(oauth_state)
 
-        await session.commit()
-        await session.refresh(connection)
+    await session.commit()
+    await session.refresh(connection)
 
     return GitHubStatusResponse(
         connected=True,
         github_username=github_username,
         installations=[
-            {"id": inst["id"], "account": inst["account"]["login"], "account_type": inst["account"]["type"]}
+            {
+                "id": inst["id"],
+                "account": inst["account"]["login"],
+                "account_type": inst["account"]["type"],
+            }
             for inst in installations
         ],
     )
@@ -197,7 +195,6 @@ async def github_disconnect(
         raise NotFoundError("No active GitHub connection found.")
 
     # Mark as revoked
-    from datetime import datetime, UTC
     connection.revoked_at = datetime.now(UTC)
 
     # Delete tokens from Vault (would use vault_client)
@@ -223,7 +220,7 @@ async def github_repos(
     connection = result.scalar_one_or_none()
 
     if connection is None:
-        raise BadRequestError("No active GitHub connection. Connect first via /github/connect")
+        raise ConflictError("No active GitHub connection. Connect first via /github/connect")
 
     # Get installations
     # Need to get user's OAuth token from Vault first

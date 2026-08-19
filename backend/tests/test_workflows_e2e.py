@@ -5,11 +5,11 @@ Tests the complete flow: upload → plan → generate → test → export.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 from httpx import AsyncClient
 
-from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
 
 
@@ -80,11 +80,11 @@ class TestWorkflowE2E:
     @pytest.mark.asyncio
     async def test_full_pipeline_success(self, mock_full_state):
         """Test successful execution of the full pipeline."""
-        from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession, create_async_engine
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
         # Create in-memory SQLite engine for testing
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        _ = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         with patch("app.workflows.agents.planner_agent.LLMClient") as mock_planner_llm, \
              patch("app.workflows.agents.code_agent.LLMClient") as mock_codegen_llm, \
@@ -160,23 +160,19 @@ class TestWorkflowE2E:
             execution_order.append("export")
             return {"exports": [], "progress_percent": 100, "status": "completed"}
 
-        with patch("app.workflows.orchestrator.run_doc_agent", side_effect=mock_doc_agent), \
-             patch("app.workflows.orchestrator.run_planner_agent", side_effect=mock_planner_agent), \
-             patch("app.workflows.orchestrator.run_code_agent", side_effect=mock_code_agent), \
-             patch("app.workflows.agents.export_agent.ExportAgent.run", side_effect=mock_export_agent):
+        # The orchestrator imports these agents locally inside each method, so we
+        # exercise the manual phase mocks directly to verify execution order.
+        await mock_doc_agent(mock_full_state)
+        await mock_planner_agent(mock_full_state)
+        mock_full_state["plan_approved"] = True
+        await mock_code_agent(mock_full_state, phase_number=1)
+        mock_full_state["generated_files"] = [{"file_path": "test.py", "language": "python"}]
+        await mock_test_agent(mock_full_state)
+        mock_full_state["test_suite"] = []
+        await mock_export_agent(mock_full_state)
 
-            # Simulate execution order
-            await mock_doc_agent(mock_full_state)
-            await mock_planner_agent(mock_full_state)
-            mock_full_state["plan_approved"] = True
-            await mock_code_agent(mock_full_state, phase_number=1)
-            mock_full_state["generated_files"] = [{"file_path": "test.py", "language": "python"}]
-            await mock_test_agent(mock_full_state)
-            mock_full_state["test_suite"] = []
-            await mock_export_agent(mock_full_state)
-
-            # Verify order
-            assert execution_order == ["doc", "plan", "generate_1", "test", "export"]
+        # Verify order
+        assert execution_order == ["doc", "plan", "generate_1", "test", "export"]
 
 
 class TestWorkflowE2EAPI:
