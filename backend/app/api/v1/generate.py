@@ -8,16 +8,17 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_principal, get_db
+from app.core.deps import get_db
 from app.core.errors import NotFoundError
 from app.models.codegen import CodeGenerationRun, GeneratedFile
+from app.models.enums import ActorType
 from app.models.project import Project
 from app.models.workflow import WorkflowRun
 from app.rbac.enforce import load_project_for_principal, require_project_permission
 from app.rbac.policy import Permission, Principal
-from app.schemas.generate import ExportRequest as GenerateRequestAlias
-from app.schemas.generate import ExportResponse as GenerateResponseAlias
 from app.schemas.generate import FileContentResponse, FileResponse
+from app.schemas.generate import GenerateRequest as GenerateRequestAlias
+from app.schemas.generate import GenerateResponse as GenerateResponseAlias
 from app.services import audit_service
 from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
@@ -119,7 +120,7 @@ async def get_file_content(
     session: AsyncSession = Depends(get_db),
 ) -> FileContentResponse:
     """Get the content of a generated file."""
-    project = await load_project_for_principal(session, principal, project_id)
+    await load_project_for_principal(session, principal, project_id)
 
     file_meta = await session.get(GeneratedFile, file_id)
     if file_meta is None:

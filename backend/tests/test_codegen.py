@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from app.workflows.agents.code_agent import run_code_agent
 from app.workflows.state import WorkflowState
@@ -61,7 +62,10 @@ class TestCodeGeneratorAgent:
     @pytest.mark.asyncio
     async def test_run_code_agent_python(self, mock_state):
         """Test code generation for Python target."""
-        with patch("app.workflows.agents.code_agent.LLMClient") as mock_llm:
+        with patch("app.workflows.agents.code_agent.LLMClient") as mock_llm, \
+             patch("app.workflows.agents.code_agent.storage_service") as mock_storage:
+            mock_storage.upload = AsyncMock()
+            mock_storage.download = AsyncMock(return_value=b"content")
             mock_client = AsyncMock()
             mock_client.generate_json.return_value = (
                 {
@@ -84,7 +88,10 @@ class TestCodeGeneratorAgent:
         """Test code generation for Node.js target."""
         mock_state["target_languages"] = ["node"]
 
-        with patch("app.workflows.agents.code_agent.LLMClient") as mock_llm:
+        with patch("app.workflows.agents.code_agent.LLMClient") as mock_llm, \
+             patch("app.workflows.agents.code_agent.storage_service") as mock_storage:
+            mock_storage.upload = AsyncMock()
+            mock_storage.download = AsyncMock(return_value=b"content")
             mock_client = AsyncMock()
             mock_client.generate_json.return_value = (
                 {

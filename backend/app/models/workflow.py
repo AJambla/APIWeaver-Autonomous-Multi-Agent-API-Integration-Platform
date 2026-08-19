@@ -39,7 +39,7 @@ from app.models.enums import WorkflowStatus, check_in
 PARTITIONED_TABLE_INFO = {"managed_by_migration": "0002_partitioned_tables"}
 
 
-class WorkflowRun(UUIDPrimaryKeyMixin, Base):
+class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     """One execution of the LangGraph state machine (Architecture.md §4)."""
 
     __tablename__ = "workflow_runs"

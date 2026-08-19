@@ -26,6 +26,7 @@ class TestRun(UUIDPrimaryKeyMixin, Base):
     workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("workflow_runs.id", ondelete="SET NULL"), nullable=True
     )
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     environment: Mapped[str] = mapped_column(String(20), nullable=False)
     started_at: Mapped[datetime.datetime | None] = mapped_column(
         TZDateTime(), nullable=True
@@ -33,6 +34,7 @@ class TestRun(UUIDPrimaryKeyMixin, Base):
     completed_at: Mapped[datetime.datetime | None] = mapped_column(
         TZDateTime(), nullable=True
     )
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB(), nullable=True)
 
     results: Mapped[list[TestResult]] = relationship(
         back_populates="test_run", cascade="all, delete-orphan"
