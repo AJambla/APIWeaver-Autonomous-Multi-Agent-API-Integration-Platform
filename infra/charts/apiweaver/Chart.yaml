@@ -1,0 +1,15 @@
+apiVersion: v2
+name: apiweaver
+description: APIWeaver Helm chart for Kubernetes deployment
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - apiweaver
+  - fastapi
+  - nextjs
+  - celery
+  - langgraph
+maintainers:
+  - name: APIWeaver Team
+    email: team@apiweaver.dev

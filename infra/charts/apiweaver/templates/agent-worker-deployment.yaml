@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "apiweaver.fullname" . }}-agent-worker
+  labels:
+    {{- include "apiweaver.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-worker
+spec:
+  replicas: {{ .Values.agentWorker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "apiweaver.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent-worker
+  template:
+    metadata:
+      labels:
+        {{- include "apiweaver.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: agent-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      nodeSelector:
+        {{- toYaml .Values.agentWorker.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.agentWorker.tolerations | nindent 8 }}
+      containers:
+        - name: agent-worker
+          image: {{ printf "%s/%s:%s" .Values.image.registry .Values.agentWorker.image.repository .Values.agentWorker.image.tag }}
+          ports:
+            - containerPort: {{ .Values.agentWorker.servicePort }}
+              protocol: TCP
+          command:
+            - celery
+            - -A
+            - agent_worker.celery_app
+            - worker
+            - --loglevel=info
+            - --concurrency=4
+          envFrom:
+            - configMapRef:
+                name: {{ include "apiweaver.fullname" . }}
+            - secretRef:
+                name: {{ include "apiweaver.fullname" . }}
+          resources:
+            {{- toYaml .Values.agentWorker.resources | nindent 12 }}

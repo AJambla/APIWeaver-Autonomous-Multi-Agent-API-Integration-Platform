@@ -1,0 +1,39 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "apiweaver.fullname" . }}-agent-worker
+  labels:
+    {{- include "apiweaver.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-worker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "apiweaver.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent-worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: apiweaver
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 5432

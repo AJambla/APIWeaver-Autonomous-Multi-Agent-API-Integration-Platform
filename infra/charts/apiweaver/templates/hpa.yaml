@@ -1,0 +1,74 @@
+{{- if .Values.api.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "apiweaver.fullname" . }}-api
+  labels:
+    {{- include "apiweaver.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "apiweaver.fullname" . }}-api
+  minReplicas: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.api.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.api.autoscaling.targetCPU }}
+{{- end }}
+
+{{- if .Values.agentWorker.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "apiweaver.fullname" . }}-agent-worker
+  labels:
+    {{- include "apiweaver.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "apiweaver.fullname" . }}-agent-worker
+  minReplicas: {{ .Values.agentWorker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.agentWorker.autoscaling.maxReplicas }}
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: redis_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "{{ .Values.agentWorker.autoscaling.queueDepthTarget }}"
+{{- end }}
+
+{{- if .Values.web.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "apiweaver.fullname" . }}-web
+  labels:
+    {{- include "apiweaver.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "apiweaver.fullname" . }}-web
+  minReplicas: {{ .Values.web.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.web.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.web.autoscaling.targetCPU }}
+{{- end }}
