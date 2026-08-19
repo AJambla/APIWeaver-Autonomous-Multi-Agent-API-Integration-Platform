@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import base64
 import time
-import uuid
 from typing import Any
 
 import httpx
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger

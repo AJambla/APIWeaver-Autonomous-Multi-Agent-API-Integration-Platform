@@ -4,18 +4,24 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_principal, get_db
+from app.core.deps import get_db
 from app.core.errors import NotFoundError
 from app.models.enums import ActorType, TestEnvironment
 from app.models.project import Project
-from app.models.testing import TestRun, TestResult
+from app.models.testing import TestResult, TestRun
 from app.rbac.enforce import load_project_for_principal, require_project_permission
 from app.rbac.policy import Permission, Principal
-from app.schemas.testing import TestRequest, TestRunResponse, TestResultResponse, RepairAttemptResponse, TestRunSummaryResponse
+from app.schemas.testing import (
+    RepairAttemptResponse,
+    TestRequest,
+    TestResultResponse,
+    TestRunResponse,
+    TestRunSummaryResponse,
+)
 from app.services import audit_service
 from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
@@ -141,7 +147,7 @@ async def list_repair_attempts(
     session: AsyncSession = Depends(get_db),
 ) -> list[RepairAttemptResponse]:
     """List repair attempts for a test run."""
-    project = await load_project_for_principal(session, principal, project_id)
+    await load_project_for_principal(session, principal, project_id)
 
     # Get test results for this run
     results = list((await session.execute(

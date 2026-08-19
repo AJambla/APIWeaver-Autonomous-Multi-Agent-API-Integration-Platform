@@ -5,20 +5,19 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.deps import get_current_principal, get_db
+from app.core.deps import get_db
 from app.core.errors import NotFoundError
 from app.models.enums import ActorType, ExportType
 from app.models.export import Export
 from app.models.project import Project
-from app.models.workflow import WorkflowRun
 from app.rbac.enforce import load_project_for_principal, require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.export import ExportRequest, ExportResponse, MCPExportResponse
 from app.services import audit_service
 from app.workflows.agents.export_agent import ExportAgent
+from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
 
 router = APIRouter(prefix="/projects", tags=["export"])
@@ -66,7 +65,7 @@ async def trigger_export(
     )
 
     # Run export in background
-    engine_session_factory = __import__("sqlalchemy.ext.asyncio", fromlist=["async_sessionmaker"]).async_sessionmaker(
+    engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
     orchestrator = Orchestrator(engine_session_factory)
@@ -82,7 +81,7 @@ async def trigger_export(
         "errors": [],
     }
 
-    background_tasks.add_task(orchestrator.run, project.id, initial_state)
+    background_tasks.add_task(orchestrator.run, uuid.UUID(initial_state["workflow_run_id"]), initial_state)
 
     return ExportResponse(export_id=uuid.uuid4(), artifacts=artifacts_meta)
 
@@ -114,11 +113,6 @@ async def export_mcp(
     mcp_artifact = next(
         (a for a in result.get("exports", []) if a.get("type") == "mcp"),
         {"tools_generated": 0, "flagged_destructive": 0, "artifacts": []},
-    )
-
-    manifest_artifact = next(
-        (a for a in mcp_artifact.get("artifacts", []) if a.get("name") == "mcp_manifest.json"),
-        {},
     )
 
     return MCPExportResponse(

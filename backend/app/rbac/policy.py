@@ -156,7 +156,7 @@ PERMISSIONS: dict[Permission, RoleRequirement] = {
     Permission.EXPORT_READ: RoleRequirement(project_role=ProjectRole.VIEWER),
 
     # GitHub integration
-    Permission.GITHUB_CONNECT: RoleRequirement(project_role=ProjectRole.MEMBER),
+    Permission.GITHUB_CONNECT: RoleRequirement(org_role=OrgRole.MEMBER),
     Permission.GITHUB_EXPORT: RoleRequirement(project_role=ProjectRole.OWNER),
 }
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from app.workflows.agents.export_agent import ExportAgent
 from app.workflows.state import WorkflowState
@@ -189,15 +190,12 @@ class TestExportAgent:
             mock_storage.download = AsyncMock(return_value=b"# test content")
             mock_storage.upload = AsyncMock()
 
-            with patch("app.workflows.agents.export_agent.vault_service") as mock_vault:
-                mock_vault.get_secret = MagicMock(return_value="fake-token")
+            agent = ExportAgent()
+            result = await agent.run(mock_state, export_types=["sdk", "client", "docker", "mcp", "docs", "cicd"])
 
-                agent = ExportAgent()
-                result = await agent.run(mock_state, export_types=["sdk", "client", "docker", "mcp", "docs", "cicd"])
-
-                assert result["status"] in ("completed", "completed_with_errors")
-                assert "exports" in result
-                assert len(result["exports"]) == 6
+            assert result["status"] in ("completed", "completed_with_errors")
+            assert "exports" in result
+            assert len(result["exports"]) == 6
 
 
 class TestExportAPI:

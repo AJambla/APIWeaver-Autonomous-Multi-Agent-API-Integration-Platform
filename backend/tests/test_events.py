@@ -28,8 +28,12 @@ class TestEventPublisher:
     async def test_publish_writes_to_run_stream(self, publisher, mock_redis):
         await publisher.publish("run-1", "proj-1", "test.event", {"key": "value"})
         assert mock_redis.xadd.called
-        call_args = mock_redis.xadd.call_args
-        assert call_args[0][0] == "workflow_events:run-1"
+        # First call writes to the run stream, with event_type as a sibling field.
+        first_call = mock_redis.xadd.call_args_list[0]
+        assert first_call[0][0] == "workflow_events:run-1"
+        message = first_call[0][1]
+        assert message["event_type"] == "test.event"
+        assert json.loads(message["payload"]) == {"key": "value"}
 
     @pytest.mark.asyncio
     async def test_publish_writes_to_project_stream(self, publisher, mock_redis):
@@ -47,38 +51,45 @@ class TestEventPublisher:
     async def test_publish_workflow_started(self, publisher, mock_redis):
         await publisher.publish_workflow_started("run-1", "proj-1", ["plan", "generate"])
         assert mock_redis.xadd.called
-        payload = json.loads(mock_redis.xadd.call_args[0][1]["payload"])
-        assert payload["event_type"] == "workflow.started"
+        message = mock_redis.xadd.call_args[0][1]
+        assert message["event_type"] == "workflow.started"
+        payload = json.loads(message["payload"])
         assert payload["progress_percent"] == 0
+        assert payload["stages"] == ["plan", "generate"]
 
     @pytest.mark.asyncio
     async def test_publish_node_completed(self, publisher, mock_redis):
         await publisher.publish_node_completed("run-1", "proj-1", "doc_agent", {"status": "ok"})
-        payload = json.loads(mock_redis.xadd.call_args[0][1]["payload"])
-        assert payload["event_type"] == "node_completed"
+        message = mock_redis.xadd.call_args[0][1]
+        assert message["event_type"] == "node_completed"
+        payload = json.loads(message["payload"])
         assert payload["node_name"] == "doc_agent"
+        assert payload["output_summary"] == {"status": "ok"}
 
     @pytest.mark.asyncio
     async def test_publish_workflow_completed(self, publisher, mock_redis):
         await publisher.publish_workflow_completed("run-1", "proj-1", "completed")
-        payload = json.loads(mock_redis.xadd.call_args[0][1]["payload"])
-        assert payload["event_type"] == "workflow.completed"
+        message = mock_redis.xadd.call_args[0][1]
+        assert message["event_type"] == "workflow.completed"
+        payload = json.loads(message["payload"])
         assert payload["status"] == "completed"
         assert payload["progress_percent"] == 100
 
     @pytest.mark.asyncio
     async def test_publish_test_result(self, publisher, mock_redis):
         await publisher.publish_test_result("run-1", "proj-1", 10, 2, 1, 500)
-        payload = json.loads(mock_redis.xadd.call_args[0][1]["payload"])
-        assert payload["event_type"] == "test.result"
+        message = mock_redis.xadd.call_args[0][1]
+        assert message["event_type"] == "test.result"
+        payload = json.loads(message["payload"])
         assert payload["passed"] == 10
         assert payload["failed"] == 2
 
     @pytest.mark.asyncio
     async def test_publish_export_progress(self, publisher, mock_redis):
         await publisher.publish_export_progress("run-1", "proj-1", "github", "completed", 3)
-        payload = json.loads(mock_redis.xadd.call_args[0][1]["payload"])
-        assert payload["event_type"] == "export.progress"
+        message = mock_redis.xadd.call_args[0][1]
+        assert message["event_type"] == "export.progress"
+        payload = json.loads(message["payload"])
         assert payload["export_type"] == "github"
         assert payload["artifact_count"] == 3
 

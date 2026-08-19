@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 
-from app.workflows.agents.test_agent import run_test_agent, MockSandboxClient, FailureClassifier, generate_test_fixtures
+import pytest
+
+from app.workflows.agents.test_agent import (
+    FailureClassifier,
+    generate_test_fixtures,
+    run_test_agent,
+)
 from app.workflows.state import WorkflowState
 
 

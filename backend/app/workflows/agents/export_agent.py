@@ -9,12 +9,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.core.config import Settings, get_settings
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.enums import ExportType
-from app.services.github_service import GitHubAppClient, create_github_app_client
+from app.services.github_service import GitHubAppClient
 from app.services.storage_service import storage_service
-from app.services.vault_service import vault_service
 from app.workflows.llm import LLMClient
 from app.workflows.state import WorkflowState
 
@@ -382,7 +381,7 @@ volumes:
             
             repo_name = github_repo_name or f"apiweaver-project-{project_id[:8]}"
             
-            user_installations = []
+            _user_installations: list[dict[str, Any]] = []
             installation_id = None
             
             if not installation_id:
@@ -395,7 +394,7 @@ volumes:
                     "type": "github",
                     "status": "skipped",
                     "error": "No GitHub App installation found. Install the app on your repository or organization.",
-                    "install_url": f"https://github.com/apps/apiweaver/installations",
+                    "install_url": "https://github.com/apps/apiweaver/installations",
                 }
             
             installation_token = await github_client.get_installation_token(installation_id)
@@ -438,7 +437,7 @@ volumes:
                 branch=github_branch,
             )
             
-            from datetime import datetime, UTC
+            from datetime import UTC, datetime
             pushed_at = datetime.now(UTC).isoformat()
             
             s3_key = f"exports/{project_id}/github/manifest.json"
