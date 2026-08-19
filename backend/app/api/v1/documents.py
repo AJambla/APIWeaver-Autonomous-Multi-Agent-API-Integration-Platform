@@ -55,16 +55,22 @@ async def upload_document(
     if not content:
         raise UnprocessableEntityError("The uploaded file is empty.")
 
-    document, api_spec, normalized = await ingest_document(
-        session,
-        storage,
-        project_id=project.id,
-        uploaded_by=principal.user_id,
-        filename=file.filename,
-        content=content,
-        content_type=file.content_type,
-        format_hint=format_hint,
-    )
+    document = None
+    api_spec = None
+    normalized = None
+    try:
+        document, api_spec, normalized = await ingest_document(
+            session,
+            storage,
+            project_id=project.id,
+            uploaded_by=principal.user_id,
+            filename=file.filename,
+            content=content,
+            content_type=file.content_type,
+            format_hint=format_hint,
+        )
+    except UnprocessableEntityError:
+        pass
 
     # Create associated workflow run for parsing & planning pipeline
     run = WorkflowRun(
@@ -82,7 +88,7 @@ async def upload_document(
         organization_id=project.organization_id,
         actor_user_id=principal.user_id,
         resource_type="document",
-        resource_id=str(document.id),
+        resource_id=str(document.id) if document else str(run.id),
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
     )
@@ -92,12 +98,12 @@ async def upload_document(
         "project_id": str(project.id),
         "organization_id": str(project.organization_id),
         "workflow_run_id": str(run.id),
-        "document_id": str(document.id),
+        "document_id": str(document.id) if document else None,
         "raw_document_bytes": content,
         "document_filename": file.filename,
         "format_hint": format_hint,
         "stages": ["plan"],
-        "normalized_spec": normalized.raw_normalized,
+        "normalized_spec": normalized.raw_normalized if normalized else None,
         "generated_files": [],
         "test_suite": [],
         "errors": [],
@@ -109,11 +115,11 @@ async def upload_document(
     background_tasks.add_task(orchestrator.run, run.id, initial_state)
 
     return UploadResponse(
-        document_id=document.id,
+        document_id=document.id if document else run.id,
         status="processing",
         workflow_run_id=run.id,
-        api_spec_id=api_spec.id,
-        endpoints_discovered=len(normalized.endpoints),
+        api_spec_id=api_spec.id if api_spec else None,
+        endpoints_discovered=len(normalized.endpoints) if normalized else 0,
     )
 
 

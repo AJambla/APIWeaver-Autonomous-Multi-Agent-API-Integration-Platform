@@ -99,15 +99,16 @@ async def test_upload_openapi_persists_normalized_spec_and_endpoints(client: Asy
     }]
 
 
-async def test_upload_rejects_unsupported_documents(client: AsyncClient) -> None:
+async def test_upload_accepts_freeform_documents(client: AsyncClient) -> None:
     project_id, headers = await _project_headers(client)
     response = await client.post(
         f"/api/v1/projects/{project_id}/upload",
         headers=headers,
         files={"file": ("notes.txt", b"not an api specification", "text/plain")},
     )
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "UNPROCESSABLE_ENTITY"
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "processing"
+    assert response.json()["workflow_run_id"] is not None
 
 
 async def test_upload_rejects_duplicate_document_content(client: AsyncClient) -> None:
