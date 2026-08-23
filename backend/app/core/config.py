@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     # --- LLM providers (conditional) ------------------------------------------
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
+    embedding_model: str = "text-embedding-3-small"
 
     # --- JWT (Security.md §4) -------------------------------------------------
     # Paths, never key material: keys are files mounted by the Vault Agent Injector
