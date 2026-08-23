@@ -16,6 +16,8 @@ from app.core.logging import get_logger
 from app.models.enums import WorkflowStatus
 from app.models.workflow import WorkflowCheckpoint, WorkflowRun
 from app.services.event_publisher import EventPublisher
+from app.services.ingestion_service import persist_normalized_spec
+from app.services.qdrant_service import QdrantClient
 from app.workflows.agents.planner_agent import run_planner_agent
 from app.workflows.state import WorkflowState
 
@@ -49,10 +51,12 @@ class Orchestrator:
         session_factory: async_sessionmaker[AsyncSession],
         event_publisher: EventPublisher | None = None,
         execution_mode: Literal["sync", "async"] = "sync",
+        qdrant_client: QdrantClient | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.event_publisher = event_publisher
         self.execution_mode = execution_mode
+        self.qdrant_client = qdrant_client
 
     async def _emit_progress(
         self,
@@ -106,9 +110,24 @@ class Orchestrator:
             # 1. Documentation Stage (always needed if normalized spec is not ready)
             if not current_dict.get("normalized_spec"):
                 from app.workflows.agents.doc_agent import run_doc_agent
-                doc_updates = await run_doc_agent(cast(WorkflowState, current_dict))
+                doc_updates = await run_doc_agent(
+                    cast(WorkflowState, current_dict),
+                    qdrant_client=self.qdrant_client,
+                )
                 current_dict.update(doc_updates)
                 current_dict["progress_percent"] = 15
+
+                # NEW: Persist LLM-extracted spec for freeform docs
+                if not current_dict.get("spec_persisted") and current_dict.get("normalized_spec"):
+                    async with self.session_factory() as session:
+                        await persist_normalized_spec(
+                            session,
+                            uuid.UUID(current_dict["project_id"]),
+                            uuid.UUID(current_dict["document_id"]),
+                            current_dict["normalized_spec"],
+                        )
+                        await session.commit()
+                    current_dict["spec_persisted"] = True
 
                 async with self.session_factory() as session:
                     await record_checkpoint(
