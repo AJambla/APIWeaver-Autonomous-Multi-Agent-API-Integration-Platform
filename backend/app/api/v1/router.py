@@ -17,6 +17,7 @@ from app.api.v1 import (
     generate,
     github,
     history,
+    logs,
     monitoring,
     projects,
     spec_patch,
@@ -48,6 +49,7 @@ api_router.include_router(events.router, dependencies=[Depends(enforce_org_rate_
 api_router.include_router(api_keys.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(dependency_graph.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(history.router, dependencies=[Depends(enforce_org_rate_limit)])
+api_router.include_router(logs.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(monitoring.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(spec_patch.router, dependencies=[Depends(enforce_org_rate_limit)])
 

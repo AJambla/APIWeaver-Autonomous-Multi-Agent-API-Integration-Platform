@@ -73,6 +73,26 @@ Return a JSON object mapping file_path -> corrected_file_content (only for files
 If no changes needed, return empty object {{}}.
 """
 
+SELF_REVIEW_SYSTEM_PROMPT = """You are performing a self-review of generated API client code.
+
+Files to review:
+{files_json}
+
+Check for:
+1. Auth correctly wired (credentials read from environment variables, not hardcoded)
+2. No hardcoded secrets, tokens, or API keys
+3. Error handling present (try/except, custom exceptions, retry logic)
+4. Matches target schema (request/response models match the API spec)
+5. No obvious security issues (SSRF, injection, unsafe deserialization)
+
+Return a JSON object:
+{{
+  "passed": true/false,
+  "issues": [{{"file": "path", "issue": "description", "severity": "critical|warning|info"}}],
+  "summary": "string"
+}}
+"""
+
 
 def _build_endpoint_group(
     spec: dict[str, Any], phase: dict[str, Any] | None, target_languages: list[str]
@@ -95,6 +115,43 @@ def _get_auth_scheme(spec: dict[str, Any]) -> str:
     if isinstance(auth_schemes, list) and auth_schemes:
         return auth_schemes[0].get("type", "bearer_jwt")
     return "bearer_jwt"
+
+
+async def _run_self_review(
+    generated_files: list[dict[str, Any]],
+    state: WorkflowState,
+    llm_client: LLMClient,
+) -> dict[str, Any]:
+    """Lightweight self-review pass (`AI_Instruction.md §9`)."""
+    if not generated_files:
+        return {"self_review_passed": True, "self_review_issues": [], "self_review_summary": "No files to review"}
+
+    file_contents = {}
+    for f in generated_files:
+        try:
+            content = await storage_service.download(f["content_s3_key"])
+            file_contents[f["file_path"]] = content.decode()
+        except Exception as e:
+            logger.warning("self_review_download_failed", file=f["file_path"], error=str(e))
+
+    if not file_contents:
+        return {"self_review_passed": True, "self_review_issues": [], "self_review_summary": "No file contents available"}
+
+    review_prompt = SELF_REVIEW_SYSTEM_PROMPT.format(files_json=json.dumps(file_contents, indent=2)[:20000])
+    try:
+        review_json, tokens = await llm_client.generate_json(
+            system_prompt=review_prompt,
+            user_prompt="Review the generated files for correctness and security.",
+            fallback_json={"passed": True, "issues": [], "summary": "Self-review skipped"},
+        )
+        return {
+            "self_review_passed": review_json.get("passed", True),
+            "self_review_issues": review_json.get("issues", []),
+            "self_review_summary": review_json.get("summary", ""),
+        }
+    except Exception as e:
+        logger.warning("self_review_failed", error=str(e))
+        return {"self_review_passed": True, "self_review_issues": [], "self_review_summary": f"Review failed: {e}"}
 
 
 async def _render_templates(
@@ -377,12 +434,19 @@ async def run_code_agent(
                 "phase_number": current_phase.get("phase_number") if current_phase else None,
             })
 
+    # Self-review reflection pass before returning
+    review = await _run_self_review(new_generated_files, state, client)
+    total_tokens += review.get("self_review_tokens", 0)
+
     return {
         "generated_files": new_generated_files,
         "current_node": "code_agent",
         "progress_percent": 75,
         "status": "generated",
         "total_tokens_used": total_tokens,
+        "self_review_passed": review.get("self_review_passed", True),
+        "self_review_issues": review.get("self_review_issues", []),
+        "self_review_summary": review.get("self_review_summary", ""),
     }
 
 

@@ -41,12 +41,13 @@ All 28+ tables from `Database.md §3` are defined as SQLAlchemy models, includin
 | `audit.py` | `audit_logs` |
 | `metrics.py` | `usage_metrics` |
 | `versioning.py` | `artifact_versions` |
-| `github_oauth.py` | `github_oauth_connections` |
+| `github.py` | `github_connections`, `github_oauth_states` |
 
-**Three Alembic migrations exist:**
+**Four Alembic migrations exist:**
 - `0001_initial_schema.py` — Full schema DDL (all non-partitioned tables)
 - `0002_partitioned_tables.py` — `agent_events` and `usage_metrics` with monthly/daily Postgres range partitioning
-- `0003_github_oauth_connections.py` — `github_oauth_connections` table for OAuth app installations
+- `0003_add_github_oauth_and_connections.py` — GitHub OAuth state and connection tables
+- `0004_artifact_version_active.py` — Adds `is_active` flag to `artifact_versions`
 
 ### 1.2 — Authentication & Security
 The auth stack is fully implemented to `Security.md` spec:
@@ -63,15 +64,14 @@ The auth stack is fully implemented to `Security.md` spec:
 **Routes:** `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`
 
 ### 1.3 — RBAC Authorization Layer
-- ✅ **Centralized policy matrix** (`rbac/policy.py`) — all 22 named permissions (`Permission` enum) with explicit `RoleRequirement`
+- ✅ **Centralized policy matrix** (`rbac/policy.py`) — all permissions with explicit `RoleRequirement`
 - ✅ **Policy validated at import time** — startup fails if any `Permission` has no entry
 - ✅ **`require_project_permission()`** and `require_org_permission()` dependency factories
 - ✅ **Cross-tenant isolation** — project access is checked against the DB resource's org, never a caller-supplied org_id
 - ✅ **API key scoping** to a single project (`restricted_to_project_id`)
 - ✅ **Org-role hierarchy** (owner → admin → member; billing is side-role)
 - ✅ **Project-role hierarchy** (owner → editor → viewer)
-- ✅ **Phase 3 permissions added**: `CODE_GENERATE`, `CODE_READ`, `TEST_RUN`, `TEST_READ`, `EXPORT_CREATE`, `EXPORT_READ`
-- ✅ **Phase 4 permissions added**: `GITHUB_EXPORT`, `WORKFLOW_APPROVE`
+- ✅ **Phase 3/4 permissions added**: `CODE_GENERATE`, `CODE_READ`, `TEST_RUN`, `TEST_READ`, `EXPORT_CREATE`, `EXPORT_READ`, `AUTH_CONFIG_READ`, `AUTH_CONFIG_WRITE`, `GITHUB_CONNECT`, `SPEC_UPDATE`, `WORKFLOW_READ`, `ORG_VIEW_BILLING`
 
 ### 1.4 — Project CRUD API
 - ✅ `POST /api/v1/projects` — create with org permission check, duplicate-name 409
@@ -99,38 +99,26 @@ The auth stack is fully implemented to `Security.md` spec:
 - ✅ `POST /api/v1/workflows/{run_id}/cancel` — idempotent cancellation
 - ✅ `GET /api/v1/workflows/{run_id}/tool-calls` — tool call trace
 
-### 1.6 — Core Infrastructure
-- ✅ **Structured JSON logging** via `structlog`
-- ✅ **Two-layer rate limiting** — per-IP (anonymous, pre-auth) + per-org tier-scaled (authenticated)
-- ✅ **Request ID middleware** — `X-Request-ID` generated (`req_` prefix) or propagated; oversized IDs replaced
-- ✅ **CORS middleware** with configurable allowed origins
-- ✅ **Unified error envelope** — `{"error": {"code", "message", "details", "request_id"}}` on every error path
-- ✅ **`/healthz`** — liveness probe (no DB/Redis dependency)
-- ✅ **`/readyz`** — readiness probe (checks Postgres + Redis, per-dependency reporting)
-- ✅ **Async SQLAlchemy engine** with proper connection pool configuration
-- ✅ **S3/MinIO storage adapter** with in-memory test substitute
-- ✅ **Audit logging service** — every significant action recorded to `audit_logs`
-- ✅ **`pydantic-settings`** config with fail-fast on missing required values
+### 1.6 — Real-Time Events (Phase 4)
+- ✅ `GET /api/v1/workflows/{run_id}/sse` — Server-Sent Events stream for workflow progress
+- ✅ `GET /ws/workflows/{run_id}` — WebSocket endpoint for real-time workflow events
+- ✅ Redis Streams pub/sub for event fan-out
 
+### 1.7 — Phase 3: Downstream Agents & APIs
 ### 1.7 — Phase 3: Downstream Agents & APIs
 
 #### 1.7.1 — Code Generator Agent
-- ✅ `backend/app/workflows/agents/code_agent.py` (15 KB) — Full agent implementation
-- ✅ `run_code_agent(state, phase_number, failure_diagnosis, target_file)` method
+- ✅ `backend/app/workflows/agents/code_agent.py` — Full agent implementation
 - ✅ Phase-by-phase generation with checkpointing
-- ✅ Cross-chunk consistency pass (dedupe imports, normalize naming, validate cross-references)
+- ✅ Cross-chunk consistency pass
 - ✅ `patch()` method for self-healing repairs
-- ✅ **Jinja2 templates** for Python and Node.js (9 templates):
-  - Python: `models.py.j2`, `client.py.j2`, `__init__.py.j2`, `pyproject.toml.j2`
-  - Node.js: `types.ts.j2`, `client.ts.j2`, `index.ts.j2`, `package.json.j2`, `tsconfig.json.j2`
+- ✅ **Jinja2 templates** for Python and Node.js (9 templates)
 
 #### 1.7.2 — Testing Agent
-- ✅ `backend/app/workflows/agents/test_agent.py` (16 KB) — Full agent implementation
+- ✅ `backend/app/workflows/agents/test_agent.py` — Full agent implementation
 - ✅ `MockSandboxClient` — in-process Python module execution via `importlib`
-- ✅ `FailureClassifier` — LLM-based classification (8 categories per `AI_Instruction.md §2.5`)
-- ✅ Test fixture generation from endpoint schemas
-- ✅ Self-healing repair loop (max 3 attempts per `AI_Instruction.md §8`)
-- ✅ Integration with Code Generator Agent for targeted repairs (`run_code_agent` with `failure_diagnosis`)
+- ✅ `FailureClassifier` — LLM-based classification (8 categories)
+- ✅ Self-healing repair loop (max 3 attempts)
 
 #### 1.7.3 — Export Agent
 - ✅ `backend/app/workflows/agents/export_agent.py` (24 KB) — Full agent implementation
@@ -148,8 +136,8 @@ The auth stack is fully implemented to `Security.md` spec:
 #### 1.7.4 — Phase 3 API Routes
 - ✅ `POST /api/v1/projects/{id}/generate` — Trigger code generation
 - ✅ `GET /api/v1/projects/{id}/files` — Lists generated files (paginated)
-- ✅ `GET /api/v1/projects/{id}/files/{file_id}/content` — Get file content from S3
-- ✅ `POST /api/v1/projects/{id}/test` — Trigger tests (sandbox/live)
+- ✅ `GET /api/v1/projects/{id}/files/{file_id}/content` — Get file content
+- ✅ `POST /api/v1/projects/{id}/test` — Trigger tests
 - ✅ `GET /api/v1/projects/{id}/test-runs/{run_id}` — Get test run with results
 - ✅ `GET /api/v1/projects/{id}/test-runs/{run_id}/repairs` — List repair attempts
 - ✅ `POST /api/v1/projects/{id}/export` — Trigger exports
