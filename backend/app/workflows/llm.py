@@ -267,6 +267,32 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             tokens = int(data.get("usage", {}).get("total_tokens", 0))
             return json.loads(content), tokens
 
+    async def generate_embedding(self, text: str) -> list[float]:
+        """Generate embedding vector for the given text.
+
+        Uses OpenAI text-embedding-3-small (1536 dimensions) matching Qdrant config.
+        Returns zero vector when no API key is configured (mock mode).
+        """
+        if not self.settings.openai_api_key:
+            logger.info("embedding_mock_invocation", reason="no_openai_api_key")
+            return [0.0] * 1536
+
+        url = "https://api.openai.com/v1/embeddings"
+        headers = {
+            "Authorization": f"Bearer {self.settings.openai_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.settings.embedding_model,
+            "input": text,
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.post(url, json=payload, headers=headers)
+            res.raise_for_status()
+            data = res.json()
+            embedding = data["data"][0]["embedding"]
+            return embedding
+
     async def _call_anthropic(self, system: str, user: str) -> tuple[dict[str, Any], int]:
         url = "https://api.anthropic.com/v1/messages"
         headers = {

@@ -18,8 +18,7 @@ from typing import Any
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.redis import RedisInstrumentation
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentation
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -59,8 +58,7 @@ def instrument_app(app: Any, engine: Any) -> None:
 
     _build_tracer_provider()
     FastAPIInstrumentor.instrument_app(app)
-    SQLAlchemyInstrumentation().instrument(engine=engine.sync_engine)
-    RedisInstrumentation().instrument()
+    SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
 
     _setup_langsmith_correlation()
 

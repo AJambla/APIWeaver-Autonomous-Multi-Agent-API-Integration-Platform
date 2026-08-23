@@ -97,7 +97,9 @@ async def upload_document(
         "document_filename": file.filename,
         "format_hint": format_hint,
         "stages": ["plan"],
-        "normalized_spec": normalized.raw_normalized,
+        "normalized_spec": normalized.raw_normalized if normalized else None,
+        "spec_persisted": api_spec is not None,
+        "endpoints_discovered": len(normalized.endpoints) if normalized else 0,
         "generated_files": [],
         "test_suite": [],
         "errors": [],
@@ -112,8 +114,8 @@ async def upload_document(
         document_id=document.id,
         status="processing",
         workflow_run_id=run.id,
-        api_spec_id=api_spec.id,
-        endpoints_discovered=len(normalized.endpoints),
+        api_spec_id=api_spec.id if api_spec else None,
+        endpoints_discovered=len(normalized.endpoints) if normalized else 0,
     )
 
 

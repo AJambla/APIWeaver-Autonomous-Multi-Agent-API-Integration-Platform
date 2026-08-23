@@ -95,8 +95,8 @@ async def test_orchestrator_agent_nodes(
         "stages": ["plan"],
     }
 
-    # Run doc agent
-    doc_out = await run_doc_agent(state)
+    # Run doc agent with qdrant_client=None for tests
+    doc_out = await run_doc_agent(state, qdrant_client=None)
     assert doc_out["status"] == "spec_ready"
     assert doc_out["normalized_spec"] is not None
     state.update(doc_out)  # type: ignore[arg-type]
