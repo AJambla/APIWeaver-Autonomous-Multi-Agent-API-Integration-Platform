@@ -110,3 +110,26 @@ resource "aws_db_instance" "main" {
     Environment = var.environment
   }
 }
+
+resource "null_resource" "audit_logs_grants" {
+  depends_on = [aws_db_instance.main]
+
+  triggers = {
+    db_endpoint    = aws_db_instance.main.endpoint
+    db_name        = var.db_name
+    master_user    = var.master_username
+    db_app_role    = var.db_app_role
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      PGPASSWORD="${var.master_password}" psql \
+        -h "${split(":", aws_db_instance.main.endpoint)[0]}" \
+        -p "${aws_db_instance.main.port}" \
+        -U "${var.master_username}" \
+        -d "${var.db_name}" \
+        -c "DO $$ BEGIN GRANT INSERT, SELECT ON audit_logs TO ${var.db_app_role}; REVOKE UPDATE, DELETE ON audit_logs FROM ${var.db_app_role}; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'audit_logs grants already applied or table does not exist'; END $$;"
+    EOT
+    interpreter = ["bash", "-c"]
+  }
+}

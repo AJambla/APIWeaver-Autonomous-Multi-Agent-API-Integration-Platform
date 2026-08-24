@@ -186,10 +186,15 @@ async def enforce_org_rate_limit(
     if principal.organization_id is None:
         return
 
-    plan_tier = await session.scalar(
-        select(Organization.plan_tier).where(Organization.id == principal.organization_id)
+    org = await session.scalar(
+        select(Organization).where(Organization.id == principal.organization_id)
     )
-    limit = TIER_REQUESTS_PER_MINUTE.get(plan_tier or "", TIER_REQUESTS_PER_MINUTE["free"])
+    if org is None:
+        limit = TIER_REQUESTS_PER_MINUTE["free"]
+    else:
+        limit = org.rate_limit_override or TIER_REQUESTS_PER_MINUTE.get(
+            org.plan_tier or "", TIER_REQUESTS_PER_MINUTE["free"]
+        )
 
     verdict = await consume(redis_client, f"org:{principal.organization_id}", limit)
 

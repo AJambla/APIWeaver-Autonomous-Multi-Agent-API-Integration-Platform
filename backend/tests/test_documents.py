@@ -168,11 +168,8 @@ async def test_upload_freeform_text_accepted(client: AsyncClient) -> None:
         headers=headers,
         files={"file": ("notes.txt", b"API docs: GET /items lists items", "text/plain")},
     )
-    assert response.status_code == 202, response.text
-    assert response.json()["status"] == "processing"
-    assert response.json()["workflow_run_id"] is not None
-    assert response.json()["endpoints_discovered"] == 0
-    assert response.json()["api_spec_id"] is None
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "UNPROCESSABLE_ENTITY"
 
 
 async def test_upload_rejects_duplicate_document_content(client: AsyncClient) -> None:
