@@ -19,7 +19,9 @@ from app.api.v1 import (
     history,
     logs,
     monitoring,
+    organizations,
     projects,
+    settings,
     spec_patch,
     testing,
     workflows,
@@ -52,4 +54,6 @@ api_router.include_router(history.router, dependencies=[Depends(enforce_org_rate
 api_router.include_router(logs.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(monitoring.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(spec_patch.router, dependencies=[Depends(enforce_org_rate_limit)])
+api_router.include_router(settings.router, dependencies=[Depends(enforce_org_rate_limit)])
+api_router.include_router(organizations.router, dependencies=[Depends(enforce_org_rate_limit)])
 

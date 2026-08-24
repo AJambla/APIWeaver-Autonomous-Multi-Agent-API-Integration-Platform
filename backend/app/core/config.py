@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     # --- Uploads (Security.md §10) --------------------------------------------
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, description="50MB default")
 
+    # --- Workflow execution (Task 7.5) ----------------------------------------
+    # Enable parallel agent execution within a workflow run. Default off for
+    # incremental rollout; turn on after smoke testing.
+    enable_parallel_agents: bool = False
+
     @field_validator("database_url")
     @classmethod
     def _require_async_driver(cls, value: str) -> str:
