@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
-import { ApiError } from "@/lib/types";
+import { ApiError, type OrgMetrics, type RetryPolicy } from "@/lib/types";
+import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/Button";
 import { Card, CardTitle } from "@/components/Card";
@@ -11,54 +12,86 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Tabs } from "@/components/Tabs";
 import { Modal } from "@/components/Modal";
 
-type Project = {
-  id: string;
-  name: string;
-  status: string;
-  organization_id: string;
-  created_at: string;
+const DEFAULT_RETRY: RetryPolicy = {
+  max_attempts: 3,
+  backoff_base_seconds: 2,
+  retryable_status_codes: [429, 500, 502, 503, 504],
 };
 
-type AuthConfig = {
-  scheme: string;
-  config_json: Record<string, any>;
-  verified: boolean;
-};
-
-type Member = {
-  user_id: string;
-  email: string;
-  full_name: string;
-  role: string;
-};
+function retryKey(projectId: string) {
+  return `apw:retry-policy:${projectId}`;
+}
 
 export default function SettingsPage() {
   const params = useParams<{ id: string }>();
   const projectId = params.id;
+  const { user } = useAuth();
   const { notify } = useToast();
+
   const [tab, setTab] = useState("general");
-  const [project, setProject] = useState<Project | null>(null);
-  const [auth, setAuth] = useState<AuthConfig | null>(null);
-  const [members, setMembers] = useState<Member[]>([]);
+  const [project, setProject] = useState<{
+    id: string;
+    name: string;
+    status: string;
+    organization_id: string;
+    created_at: string;
+  } | null>(null);
+  const [auth, setAuth] = useState<{
+    scheme: string;
+    config_json: Record<string, any>;
+    verified: boolean;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const [retry, setRetry] = useState<RetryPolicy>(DEFAULT_RETRY);
+  const [retrySavedLocal, setRetrySavedLocal] = useState(false);
+  const [orgMetrics, setOrgMetrics] = useState<OrgMetrics | null>(null);
+  const [orgFailed, setOrgFailed] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [p, a] = await Promise.all([
-        apiFetch<Project>(`/projects/${projectId}`),
-        apiFetch<AuthConfig>(`/projects/${projectId}/auth`).catch(() => null),
+        apiFetch<{ id: string; name: string; status: string; organization_id: string; created_at: string }>(
+          `/projects/${projectId}`,
+        ),
+        apiFetch<{ scheme: string; config_json: Record<string, any>; verified: boolean }>(
+          `/projects/${projectId}/auth`,
+        ).catch(() => null),
       ]);
       setProject(p);
       setAuth(a);
+
+      // Retry policy is a frontend stub (backend endpoint not implemented yet).
+      try {
+        const stored = localStorage.getItem(retryKey(projectId));
+        if (stored) {
+          setRetry(JSON.parse(stored));
+          setRetrySavedLocal(true);
+        }
+      } catch {
+        /* ignore */
+      }
+
+      if (user?.organization_id) {
+        try {
+          const om = await apiFetch<OrgMetrics>(
+            `/org/${user.organization_id}/metrics?days=30`,
+          );
+          setOrgMetrics(om);
+          setOrgFailed(false);
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 403) setOrgFailed(true);
+        }
+      }
     } catch (err) {
       notify(err instanceof ApiError ? err.message : "Failed to load settings", "error");
     } finally {
       setLoading(false);
     }
-  }, [projectId, notify]);
+  }, [projectId, user?.organization_id, notify]);
 
   useEffect(() => {
     load();
@@ -68,7 +101,7 @@ export default function SettingsPage() {
     if (!project) return;
     setSaving(true);
     try {
-      const updated = await apiFetch<Project>(`/projects/${projectId}`, {
+      const updated = await apiFetch<typeof project>(`/projects/${projectId}`, {
         method: "PATCH",
         body: { name: project.name },
       });
@@ -80,6 +113,29 @@ export default function SettingsPage() {
       setSaving(false);
     }
   }, [project, projectId, notify]);
+
+  const saveRetry = useCallback(async () => {
+    setSaving(true);
+    try {
+      await apiFetch(`/projects/${projectId}/settings/retry-policy`, {
+        method: "PUT",
+        body: retry,
+      });
+      setRetrySavedLocal(false);
+      notify("Retry policy saved", "success");
+    } catch {
+      // Backend endpoint not implemented — fall back to localStorage.
+      try {
+        localStorage.setItem(retryKey(projectId), JSON.stringify(retry));
+        setRetrySavedLocal(true);
+      } catch {
+        /* ignore */
+      }
+      notify("Retry policy saved locally (server support pending)", "info");
+    } finally {
+      setSaving(false);
+    }
+  }, [retry, projectId, notify]);
 
   const deleteProject = useCallback(async () => {
     setSaving(true);
@@ -124,6 +180,8 @@ export default function SettingsPage() {
         tabs={[
           { id: "general", label: "General" },
           { id: "auth", label: "Auth & Secrets" },
+          { id: "retry", label: "Retry Policy" },
+          { id: "billing", label: "Billing" },
           { id: "team", label: "Team" },
           { id: "danger", label: "Danger Zone" },
         ]}
@@ -170,6 +228,126 @@ export default function SettingsPage() {
             <p className="text-sm text-text-secondary">No auth configuration yet.</p>
           )}
         </Card>
+      )}
+
+      {tab === "retry" && (
+        <Card className="space-y-4">
+          <CardTitle>Retry Policy</CardTitle>
+          <p className="text-xs text-text-secondary">
+            Controls how the testing agent retries failed requests during self-healing.
+          </p>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-text-secondary">Max attempts</span>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={retry.max_attempts}
+              onChange={(e) =>
+                setRetry({ ...retry, max_attempts: Number(e.target.value) || 1 })
+              }
+              className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-text-secondary">Backoff base (seconds)</span>
+            <input
+              type="number"
+              min={0}
+              step={0.5}
+              value={retry.backoff_base_seconds}
+              onChange={(e) =>
+                setRetry({ ...retry, backoff_base_seconds: Number(e.target.value) || 0 })
+              }
+              className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-text-secondary">Retryable status codes (comma-separated)</span>
+            <input
+              value={retry.retryable_status_codes.join(", ")}
+              onChange={(e) =>
+                setRetry({
+                  ...retry,
+                  retryable_status_codes: e.target.value
+                    .split(",")
+                    .map((s) => parseInt(s.trim(), 10))
+                    .filter((n) => !isNaN(n)),
+                })
+              }
+              className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm font-mono"
+            />
+          </label>
+          {retrySavedLocal && (
+            <p className="text-xs text-warning">
+              Stored locally — server-side persistence is pending backend support.
+            </p>
+          )}
+          <div className="flex justify-end">
+            <Button onClick={saveRetry} loading={saving}>
+              Save Retry Policy
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {tab === "billing" && (
+        <div className="space-y-4">
+          {orgFailed && (
+            <Card className="text-sm text-text-secondary">
+              You don&apos;t have permission to view organization billing. Contact an admin.
+            </Card>
+          )}
+          {!orgFailed && orgMetrics && (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <Card>
+                  <CardTitle>Workflow Rate Limit</CardTitle>
+                  <p className="text-2xl font-bold text-text-primary">
+                    {orgMetrics.tier_limit_workflow_triggers_hour}/hr
+                  </p>
+                </Card>
+                <Card>
+                  <CardTitle>Token Spend (30d)</CardTitle>
+                  <p className="text-2xl font-bold text-text-primary">
+                    ${orgMetrics.monthly_token_spend_usd.toFixed(2)}
+                  </p>
+                </Card>
+                <Card>
+                  <CardTitle>Projects</CardTitle>
+                  <p className="text-2xl font-bold text-text-primary">
+                    {orgMetrics.projects_count}
+                  </p>
+                </Card>
+              </div>
+              <Card>
+                <CardTitle>Usage Limits</CardTitle>
+                <ul className="mt-2 space-y-1 text-sm text-text-secondary">
+                  <li>
+                    Workflow triggers / hour:{" "}
+                    <span className="text-text-primary">
+                      {orgMetrics.tier_limit_workflow_triggers_hour}
+                    </span>
+                  </li>
+                  <li>
+                    Total workflow runs (30d):{" "}
+                    <span className="text-text-primary">
+                      {orgMetrics.total_workflow_runs}
+                    </span>
+                  </li>
+                  <li>
+                    Avg test pass rate:{" "}
+                    <span className="text-text-primary">
+                      {orgMetrics.avg_test_pass_rate != null
+                        ? `${(orgMetrics.avg_test_pass_rate * 100).toFixed(1)}%`
+                        : "—"}
+                    </span>
+                  </li>
+                </ul>
+              </Card>
+            </>
+          )}
+        </div>
       )}
 
       {tab === "team" && (
