@@ -16,6 +16,7 @@ pip-delete-this-directory.txt
 .project
 .pydevproject
 
+*.tsbuildinfo
 # Python virtual environments
 env/
 ENV/
