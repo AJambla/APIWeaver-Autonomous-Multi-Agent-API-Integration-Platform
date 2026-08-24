@@ -69,3 +69,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "db_app_role" {
+  description = "Database application role for GRANT/REVOKE on audit_logs"
+  type        = string
+  default     = "apiweaver"
+}

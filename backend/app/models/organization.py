@@ -26,6 +26,7 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     plan_tier: Mapped[str] = mapped_column(
         String(50), nullable=False, server_default=text("'free'"), default=PlanTier.FREE
     )
+    rate_limit_override: Mapped[int | None] = mapped_column(nullable=True)
 
     members: Mapped[list[OrganizationMember]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"

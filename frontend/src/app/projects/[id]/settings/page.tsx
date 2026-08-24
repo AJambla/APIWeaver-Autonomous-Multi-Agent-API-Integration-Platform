@@ -18,10 +18,6 @@ const DEFAULT_RETRY: RetryPolicy = {
   retryable_status_codes: [429, 500, 502, 503, 504],
 };
 
-function retryKey(projectId: string) {
-  return `apw:retry-policy:${projectId}`;
-}
-
 export default function SettingsPage() {
   const params = useParams<{ id: string }>();
   const projectId = params.id;
@@ -64,15 +60,15 @@ export default function SettingsPage() {
       setProject(p);
       setAuth(a);
 
-      // Retry policy is a frontend stub (backend endpoint not implemented yet).
+      // Load retry policy from the backend (Task 7.3).
       try {
-        const stored = localStorage.getItem(retryKey(projectId));
-        if (stored) {
-          setRetry(JSON.parse(stored));
-          setRetrySavedLocal(true);
-        }
+        const rp = await apiFetch<RetryPolicy>(
+          `/projects/${projectId}/settings/retry-policy`,
+        );
+        setRetry(rp);
+        setRetrySavedLocal(false);
       } catch {
-        /* ignore */
+        /* fall back to defaults */
       }
 
       if (user?.organization_id) {
@@ -123,15 +119,8 @@ export default function SettingsPage() {
       });
       setRetrySavedLocal(false);
       notify("Retry policy saved", "success");
-    } catch {
-      // Backend endpoint not implemented — fall back to localStorage.
-      try {
-        localStorage.setItem(retryKey(projectId), JSON.stringify(retry));
-        setRetrySavedLocal(true);
-      } catch {
-        /* ignore */
-      }
-      notify("Retry policy saved locally (server support pending)", "info");
+    } catch (err) {
+      notify(err instanceof ApiError ? err.message : "Failed to save retry policy", "error");
     } finally {
       setSaving(false);
     }
