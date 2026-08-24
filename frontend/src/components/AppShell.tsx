@@ -11,6 +11,7 @@ const PROJECT_NAV = [
   { id: "plan", label: "Plan", href: "/plan" },
   { id: "build", label: "Build", href: "/build" },
   { id: "test", label: "Test", href: "/test" },
+  { id: "monitoring", label: "Monitoring", href: "/monitoring" },
   { id: "export", label: "Export", href: "/export" },
   { id: "logs", label: "Logs", href: "/logs" },
   { id: "history", label: "History", href: "/history" },
