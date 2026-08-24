@@ -22,6 +22,7 @@ httpx = "^0.28.0"
 structlog = "^24.4.0"
 python-multipart = "^0.0.17"
 boto3 = "^1.35.0"
+aiobotocore = "^2.14.0"
 pyyaml = "^6.0.2"
 celery = { extras = ["redis"], version = "^5.4.0" }
 flower = "^2.0.0"

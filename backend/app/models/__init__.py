@@ -17,6 +17,7 @@ from app.models.github import GitHubConnection, GitHubOAuthState
 from app.models.metrics import UsageMetric
 from app.models.organization import Organization, OrganizationMember
 from app.models.project import Project, ProjectMember
+from app.models.retry import RetryConfig
 from app.models.spec import APISpec, Endpoint, EndpointDependency, EndpointParameter
 from app.models.testing import RepairAttempt, TestResult, TestRun
 from app.models.user import APIKey, RefreshToken, User
@@ -64,6 +65,7 @@ __all__ = [
     "ProjectMember",
     "RefreshToken",
     "RepairAttempt",
+    "RetryConfig",
     "SDKPackage",
     "SDKVersion",
     "SecretRef",

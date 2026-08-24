@@ -122,8 +122,6 @@ async def upload_document(
         workflow_run_id=run.id,
         api_spec_id=api_spec.id if api_spec else None,
         endpoints_discovered=len(normalized.endpoints) if normalized else 0,
-        api_spec_id=api_spec.id if api_spec else None,
-        endpoints_discovered=len(normalized.endpoints) if normalized else 0,
     )
 
 
