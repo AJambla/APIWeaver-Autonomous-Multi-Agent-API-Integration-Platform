@@ -1,6 +1,6 @@
 # APIWeaver — Codebase Analysis Report
 
-> **Inspection Date:** 2026-08-21
+> **Inspection Date:** 2026-08-24
 > **Scope:** Full repository re-read — reflects post-Phase 6 implementation with corrections.
 
 ---
@@ -17,7 +17,7 @@ The repository contains a **production-quality Phases 1 → 6 foundation**. The 
 - ✅ **Qdrant embedding pipeline NOW WIRED** — `doc_agent.py` calls `upsert_chunks()` for both deterministic and freeform docs; `LLMClient.generate_embedding()` added; `document_parser.py` (PDF/HTML/Markdown) and `chunker.py` created; `orchestrator.py` passes Qdrant client; Celery task creates client.
 - ✅ **Freeform upload path FIXED** — `ingestion_service.ingest_document()` catches `UnprocessableEntityError`, stores Document only, returns `(doc, None, None)`; orchestrator runs `doc_agent`, persists LLM-extracted spec to DB. `.txt`/`.md`/`.pdf`/`.html` uploads now return 202.
 - ✅ **Test count** — 19 test modules including new `test_qdrant_embedding.py`.
-- 🟡 **Frontend missing several required pages** — Settings, Upload, Plan, Monitoring, and History pages are not implemented as dedicated routes.
+ - ✅ **Frontend fully complete (Phase 5)** — Monitoring dashboard (`/projects/[id]/monitoring`) + org-level `/monitoring` implemented; all 9 missing UI components built; 404/500/auth-denied error screens added; Plan/Test/History/Settings pages enhanced per `UIUX.md §2`. New deps: `recharts`, `@monaco-editor/react`.
 
 ---
 
@@ -104,23 +104,26 @@ The auth stack is fully implemented to `Security.md` spec:
 - ✅ `GET /ws/workflows/{run_id}` — WebSocket endpoint for real-time workflow events
 - ✅ Redis Streams pub/sub for event fan-out
 
-### 1.7 — Phase 3: Downstream Agents & APIs
-### 1.7 — Phase 3: Downstream Agents & APIs
+### 1.7 — Logs API (Phase 4)
+- ✅ `GET /api/v1/projects/{id}/logs` — paginated agent events with cursor-based pagination
+- ✅ Frontend Logs page at `/projects/[id]/logs` with filtering and auto-refresh
 
-#### 1.7.1 — Code Generator Agent
+### 1.8 — Phase 3: Downstream Agents & APIs
+
+#### 1.8.1 — Code Generator Agent
 - ✅ `backend/app/workflows/agents/code_agent.py` — Full agent implementation
 - ✅ Phase-by-phase generation with checkpointing
 - ✅ Cross-chunk consistency pass
 - ✅ `patch()` method for self-healing repairs
 - ✅ **Jinja2 templates** for Python and Node.js (9 templates)
 
-#### 1.7.2 — Testing Agent
+#### 1.8.2 — Testing Agent
 - ✅ `backend/app/workflows/agents/test_agent.py` — Full agent implementation
 - ✅ `MockSandboxClient` — in-process Python module execution via `importlib`
 - ✅ `FailureClassifier` — LLM-based classification (8 categories)
 - ✅ Self-healing repair loop (max 3 attempts)
 
-#### 1.7.3 — Export Agent
+#### 1.8.3 — Export Agent
 - ✅ `backend/app/workflows/agents/export_agent.py` (24 KB) — Full agent implementation
 - ✅ `ExportAgent` class with `run(state, export_types)` method
 - ✅ All 8 export types implemented:
@@ -133,7 +136,7 @@ The auth stack is fully implemented to `Security.md` spec:
   - **Docs**: OpenAPI 3.1 spec + Markdown reference
   - **CI/CD**: GitHub Actions workflows (lint, test, build, publish)
 
-#### 1.7.4 — Phase 3 API Routes
+#### 1.8.4 — Phase 3 API Routes
 - ✅ `POST /api/v1/projects/{id}/generate` — Trigger code generation
 - ✅ `GET /api/v1/projects/{id}/files` — Lists generated files (paginated)
 - ✅ `GET /api/v1/projects/{id}/files/{file_id}/content` — Get file content
@@ -144,41 +147,41 @@ The auth stack is fully implemented to `Security.md` spec:
 - ✅ `POST /api/v1/projects/{id}/export/mcp` — MCP-specific export
 - ✅ RBAC permissions: `CODE_GENERATE`/`CODE_READ` (Editor+), `TEST_RUN`/`TEST_READ` (Editor+), `EXPORT_CREATE`/`EXPORT_READ` (Owner+)
 
-#### 1.7.5 — Phase 3 Schemas
+#### 1.8.5 — Phase 3 Schemas
 - ✅ `backend/app/schemas/generate.py` — `GenerateRequest`, `GenerateResponse`, `FileResponse`, `FileContentResponse`
 - ✅ `backend/app/schemas/testing.py` — `TestRequest`, `TestRunResponse`, `TestResultResponse`, `RepairAttemptResponse`, `TestRunSummaryResponse`
 - ✅ `backend/app/schemas/export.py` — `ExportRequest`, `ExportResponse`, `MCPExportResponse`, `ExportArtifactResponse`
 
-#### 1.7.6 — LLM Client Extensions
+#### 1.8.6 — LLM Client Extensions
 - ✅ `LLMClient.generate_json()` — base JSON structured output (OpenAI + Anthropic + mock fallback)
 - ✅ `LLMClient.generate_code_file_map()` — structured code generation
 - ✅ `LLMClient.generate_repair()` — targeted repair with diagnosis
 - ✅ `LLMClient.classify_failure()` — failure classification
 - ✅ `LLMClient.generate_export_manifest()` — export manifest generation
 
-#### 1.7.7 — Phase 3 Tests
+#### 1.8.7 — Phase 3 Tests
 - ✅ `backend/tests/test_codegen.py` — Agent unit tests + API integration
 - ✅ `backend/tests/test_testing.py` — Mock sandbox execution, failure classification, repair loop
 - ✅ `backend/tests/test_export.py` — Each export type packaging
 - ✅ `backend/tests/test_workflows_e2e.py` — Full pipeline tests
 
-### 1.8 — GitHub Export & OAuth (Phase 4)
+### 1.9 — GitHub Export & OAuth (Phase 4)
 
-#### 1.8.1 — GitHub App Client
+#### 1.9.1 — GitHub App Client
 - ✅ `backend/app/services/github_service.py` — `GitHubAppClient` for JWT + installation token auth
 - ✅ **Git Data API** — push commits, create/update repositories, manage branches
 - ✅ **Repo creation manifest** — generates GitHub export artifacts with Vault-stored `GITHUB_TOKEN`
 
-#### 1.8.2 — GitHub OAuth Client
+#### 1.9.2 — GitHub OAuth Client
 - ✅ `GitHubOAuthClient` — OAuth code exchange with client secret fetched from Vault via `create_vault_client()`
 - ✅ **OAuth flow** — `GET /api/v1/github/oauth/authorize` and `GET /api/v1/github/oauth/callback`
 - ✅ `github_oauth_connections` DB table — stores installation state, access tokens, scopes
 
-#### 1.8.3 — GitHub Export Routes
+#### 1.9.3 — GitHub Export Routes
 - ✅ `POST /api/v1/projects/{id}/export/github` — trigger GitHub export
 - ✅ RBAC permission: `GITHUB_EXPORT` (Owner+)
 
-### 1.9 — Agent-Worker (Phase 4)
+### 1.10 — Agent-Worker (Phase 4)
 
 - ✅ `agent-worker/celery_app.py` — Celery application configured with Redis broker
 - ✅ `agent-worker/tasks/document_tasks.py` — async document processing tasks
@@ -187,29 +190,53 @@ The auth stack is fully implemented to `Security.md` spec:
 - ✅ `agent-worker/tasks/export_tasks.py` — async export tasks
 - ✅ **Note:** `agent_worker/` (underscore) exists alongside `agent-worker/` (hyphen) for Python import compatibility
 
-### 1.10 — Real-Time Event Streaming (Phase 4)
+### 1.11 — Real-Time Event Streaming (Phase 4)
 
 - ✅ `backend/app/services/event_publisher.py` — Redis Streams publisher for workflow events
 - ✅ `GET /api/v1/events/stream` — SSE endpoint for real-time progress updates
 - ✅ **Event types**: workflow status changes, agent events, tool calls, test results, export progress
 - ✅ `backend/tests/test_events.py` — Event publisher and SSE endpoint tests
 
-### 1.11 — Next.js Frontend (Phase 4 — Core Only)
+### 1.12 — Next.js Frontend (Phase 4 — Core + Feature Pages)
 
 - ✅ `frontend/` — Next.js 14 app with App Router
 - ✅ **Implemented pages:**
+  - `app/page.tsx` — Landing/redirect
   - `app/auth/login/` — Login page
   - `app/dashboard/` — Dashboard page
   - `app/projects/[id]/` — Project detail page (tabs: Overview, Spec, Workflows, Code, Tests, Exports)
+  - `app/projects/[id]/upload/` — Upload page with file selection and format detection
+  - `app/projects/[id]/plan/` — Plan page (review execution plan, approve workflow)
+  - `app/projects/[id]/settings/` — Settings page (General, Auth & Secrets, Team, Danger Zone tabs)
+  - `app/projects/[id]/history/` — History page (workflow run timeline)
+  - `app/projects/[id]/logs/` — Logs page with filtering and auto-refresh
   - `app/projects/[id]/build/` — Build page
-  - `app/projects/[id]/logs/` — Logs page
-- ✅ **Root page** (`app/page.tsx`) — Landing/redirect
-- ✅ **Component library** (8 components): `AppShell`, `Button`, `Card`, `Modal`, `StatusBadge`, `Table`, `Tabs`, `Toast`
-- ✅ **Lib utilities**: `api.ts`, `auth-context.tsx`, `auth.ts`, `cn.ts`, `types.ts`
-- ✅ **Libraries**: React 18, Tailwind CSS, Axios, React Query
-- ✅ **Build artifacts** — `.next/` directory present (production build output)
+  - `app/projects/[id]/test/` — Test page
+  - `app/projects/[id]/export/` — Export page
+  - ✅ **Base component library**: `AppShell`, `Button`, `Card`, `Modal`, `StatusBadge`, `Table`, `Tabs`, `Toast`
+  - ✅ **New UI components (Phase 5, per `UIUX.md §1.5`)**: `CodeBlock` (Monaco read-only + diff via `@monaco-editor/react`, lazy-loaded with `ssr:false`), `Timeline` (vertical/horizontal), `ProgressStepper` (Plan→Generate→Test→Export), `ToolCallLogViewer` (expandable JSON tree), `DependencyGraphView` (interactive SVG: pan/zoom, click-to-highlight, method colors, destructive flag), `SelfHealingTimeline` (expandable repair attempts), `TestCoverageChart` (recharts donut), `MetricsDashboard` (KPI cards + spend bar chart), `HistoryTimeline`, plus `AgentHealthPanel` (derived from real workflow runs), `RunComparisonView` (Monaco diff), and `charts.tsx` line/area/bar/donut wrappers (theme-aware via CSS variables)
+  - ✅ **Implemented pages (full set)**:
+    - `app/page.tsx` — Landing/redirect
+    - `app/auth/login/` — Login page
+    - `app/dashboard/` — Dashboard page
+    - `app/monitoring/` — Org-level monitoring dashboard (`/org/{org_id}/metrics`)
+    - `app/projects/[id]/` — Project detail page
+    - `app/projects/[id]/upload/` — Upload page
+    - `app/projects/[id]/plan/` — Plan page (`ProgressStepper`, `DependencyGraphView`, `PlanApprovalModal`)
+    - `app/projects/[id]/settings/` — Settings (General, Auth & Secrets, **Retry Policy**, **Billing/Usage**, Team, Danger Zone)
+    - `app/projects/[id]/history/` — History (`HistoryTimeline`, `RunComparisonView`, rollback dialog)
+    - `app/projects/[id]/logs/` — Logs page
+    - `app/projects/[id]/build/` — Build page
+    - `app/projects/[id]/test/` — Test page (`TestRunPanel`, `SelfHealingTimeline`, `TestCoverageChart`, SSE live results)
+    - `app/projects/[id]/export/` — Export page
+    - `app/projects/[id]/monitoring/` — Monitoring dashboard (`/projects/{id}/metrics`)
+    - `app/projects/[id]/auth-denied/` — Permission-denied screen
+    - `app/not-found.tsx`, `app/error.tsx`, `app/global-error.tsx` — Error boundaries (404 / 500 platform-vs-target-API / global)
+  - ✅ **Lib utilities**: `api.ts`, `auth-context.tsx`, `auth.ts`, `cn.ts`, `types.ts` (extended with monitoring/dependency-graph/test/workflow/version/retry types), `use-workflow-events.ts` (SSE)
+  - ✅ **Libraries**: React 18, Tailwind CSS, `recharts` (charts), `@monaco-editor/react` (code/diff editor)
+  - ✅ **Build artifacts** — `.next/` directory present (production build output; `npm run typecheck`, `npm run lint`, `npm run build` all pass)
 
-### 1.12 — Additional API Routes (Phase 4)
+### 1.13 — Additional API Routes (Phase 4)
 
 - ✅ `backend/app/api/v1/history.py` — version history, rollback endpoints
 - ✅ `backend/app/api/v1/monitoring.py` — metrics per project and per org
@@ -220,14 +247,14 @@ The auth stack is fully implemented to `Security.md` spec:
 - ✅ `backend/app/api/v1/github.py` — GitHub OAuth authorize/callback routes
 - ✅ All 18 route modules wired in `router.py` with rate limiting
 
-### 1.13 — Auth Config / Vault Integration (Phase 4)
+### 1.14 — Auth Config / Vault Integration (Phase 4)
 
 - ✅ `backend/app/api/v1/auth_config.py` — `GET/PUT /projects/{id}/auth` with Vault write
 - ✅ `backend/app/services/vault_service.py` — `HttpVaultClient` (KV v2), `FakeVaultClient`, `create_vault_client()` dependency
 - ✅ **Secrets management** — auth configs stored in Vault with `secrets_refs` tracking in DB
 - ✅ `backend/tests/test_auth_config.py` — Auth config and Vault client tests
 
-### 1.14 — Qdrant Vector Store Client + Embedding Pipeline (Phase 2 — Complete)
+### 1.15 — Qdrant Vector Store Client + Embedding Pipeline (Phase 2 — Complete)
 - ✅ `backend/app/services/qdrant_service.py` — **Fully implemented** (not a skeleton)
   - `HttpQdrantClient` — async HTTP REST client with `ensure_collection`, `upsert_chunks`, `search`, `delete_by_document`
   - `FakeQdrantClient` — in-memory substitute with cosine similarity scoring for tests
@@ -237,7 +264,7 @@ The auth stack is fully implemented to `Security.md` spec:
 - ✅ **Embedding Pipeline** — `LLMClient.generate_embedding()` (OpenAI `text-embedding-3-small`, 1536 dims), `chunker.py` for text chunking, `document_parser.py` for PDF/HTML/Markdown extraction
 - ✅ **Wired into ingestion** — `doc_agent.py` calls `qdrant_client.upsert_chunks()` for both deterministic and freeform documents; `orchestrator.py` passes Qdrant client; Celery task creates client in async mode
 
-### 1.15 — Infrastructure & Observability (Phase 6)
+### 1.16 — Infrastructure & Observability (Phase 6)
 
 #### 1.15.1 — Helm Chart (Kubernetes / EKS)
 - ✅ `infra/charts/apiweaver/Chart.yaml` — chart metadata, apiweaver/1.0.0
@@ -292,29 +319,26 @@ The auth stack is fully implemented to `Security.md` spec:
 `ratelimit.py` sets `"enterprise": 600` (same as Pro). Enterprise org SLAs per `API.md §3` cannot be honored until per-org override support is implemented.
 
 ### 2.2 — Frontend Feature Gaps
-The Next.js frontend has core pages but is missing several spec-required screens (`UIUX.md §2`):
+The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are implemented and linked in the `AppShell` `PROJECT_NAV`, and the 9 missing UI components are built and reusable. Remaining gaps are backend-side (see §2.3).
 
 | Screen | UIUX.md Ref | Status |
 |---|---|---|
-| Landing Page | §2.1 | ❌ Not implemented |
-| Upload Screen | §2.4 | ❌ Not implemented (no `/upload` route or `UploadDropzone`) |
-| Integration Builder / Plan | §2.5 | 🟡 Partial — project detail tab exists but no `DependencyGraphView`, `PlanApprovalModal`, or `ProgressStepper` |
-| Testing Screen | §2.6 | 🟡 Partial — tab on project detail only; no `TestRunPanel`, `SelfHealingTimeline`, or `TestCoverageChart` |
-| Settings | §2.8 | ❌ Not implemented |
-| Monitoring Dashboard | §2.9 | ❌ Not implemented |
-| History Screen | §2.10 | ❌ Not implemented |
-| Error Screens (404, 500) | §2.11 | ❌ Not implemented |
+| Landing Page | §2.1 | ✅ Implemented (`app/page.tsx`) |
+| Upload Screen | §2.4 | ✅ Implemented (`app/projects/[id]/upload/page.tsx`) — file selection, format detection, progress |
+| Integration Builder / Plan | §2.5 | ✅ Complete — `DependencyGraphView` (interactive SVG), `PlanApprovalModal` (Monaco plan + approve), `ProgressStepper` synced to workflow status |
+| Testing Screen | §2.6 | ✅ Complete — `TestRunPanel` (env/endpoint selectors), `SelfHealingTimeline`, `TestCoverageChart`, SSE live results via `useWorkflowEvents` |
+| Settings | §2.8 | ✅ Complete — General, Auth & Secrets, **Retry Policy** (localStorage stub), **Billing/Usage** (org metrics), Team, Danger Zone tabs |
+| Monitoring Dashboard | §2.9 | ✅ Complete — `MetricsDashboard` + `AgentHealthPanel` at `/projects/[id]/monitoring` and org-level `/monitoring` |
+| History Screen | §2.10 | ✅ Complete — `HistoryTimeline`, `RunComparisonView` (Monaco diff), rollback dialog |
+| Error Screens (404, 500, auth-denied) | §2.11 | ✅ Complete — `not-found.tsx`, `error.tsx` (platform vs target-API), `global-error.tsx`, `auth-denied` page |
 
-**Missing UI components** (per `UIUX.md §1.5`):
-- `CodeBlock` (Monaco-based), `Timeline`, `ProgressStepper`, `ToolCallLogViewer`, `DependencyGraphView`, `SelfHealingTimeline`, `TestCoverageChart`, `MetricsDashboard`, `HistoryTimeline`
+**Missing UI components** (per `UIUX.md §1.5`) — ✅ **All 9 built**:
+- `CodeBlock` (Monaco read-only + diff), `Timeline`, `ProgressStepper`, `ToolCallLogViewer`, `DependencyGraphView`, `SelfHealingTimeline`, `TestCoverageChart`, `MetricsDashboard`, `HistoryTimeline` (plus `AgentHealthPanel`, `RunComparisonView`, and chart wrappers).
 
-### 2.3 — Retry Policy Config API Missing
-`Feature.md §15` specifies `PUT /api/v1/projects/{id}/settings/retry-policy` and a `retry_configs` DB table. Neither exists.
+### 2.3 — Retry Policy Config API Missing (Backend)
+`Feature.md §15` specifies `PUT /api/v1/projects/{id}/settings/retry-policy` and a `retry_configs` DB table. Neither exists. The Settings page now ships a functional **frontend stub**: the Retry Policy form attempts the `PUT` and gracefully falls back to `localStorage` (keyed per project) with a visible "pending backend support" notice. Server persistence can be re-enabled once the backend endpoint lands.
 
-### 2.4 — Logs API Missing
-`Feature.md §16` specifies `GET /api/v1/projects/{id}/logs`. No dedicated log retrieval endpoint exists (only SSE streaming via `/events/stream`).
-
-### 2.5 — DB Permission Enforcement for `audit_logs`
+### 2.4 — DB Permission Enforcement for `audit_logs`
 `ADDENDUM-Phase1.md §A.3` documents that `GRANT INSERT/SELECT` (but not `UPDATE/DELETE`) on `audit_logs` is required at the infrastructure level. Currently enforced only at the application layer. Terraform/RDS provisioning does not include this GRANT.
 
 ---
@@ -338,18 +362,15 @@ The Next.js frontend has core pages but is missing several spec-required screens
 | 2.1 | **Qdrant embedding pipeline** — add `create_embedding()` (OpenAI `text-embedding-3-small`), chunking step, wire `upsert_chunks()` in `ingestion_service` or `document_tasks.py` | Architecture.md §2, Database.md §8 | Medium | ✅ **DONE** |
 | 2.2 | **Freeform document pre-processing** — add PDF→text (pypdf) and HTML→text (BeautifulSoup) preprocessing before `normalize()` or LLM extraction; fix the sync-before-async path | Feature.md §2, AI_Instruction.md §2.1 | Medium | ✅ **DONE** |
 
-### Phase 5 — Frontend Feature Completion (High Priority)
+### Phase 5 — Frontend Feature Completion (High Priority) — ✅ COMPLETE
 
-| # | Task | UIUX.md Ref | Effort |
-|---|---|---|---|
-| 5.1 | **Landing page** — hero, feature grid, how-it-works, pricing teaser | §2.1 | Small |
-| 5.2 | **Upload screen** — `UploadDropzone`, format badge, progress | §2.4 | Medium |
-| 5.3 | **Integration Builder** — `ProgressStepper`, `DependencyGraphView`, `PlanApprovalModal`, `CodePreviewEditor` (Monaco) | §2.5 | Large |
-| 5.4 | **Testing screen** — `TestRunPanel`, `SelfHealingTimeline`, `TestCoverageChart` | §2.6 | Medium |
-| 5.5 | **Settings page** — General, Auth & Secrets, Team & Permissions, Danger Zone tabs | §2.8 | Medium |
-| 5.6 | **Monitoring dashboard** — `MetricsDashboard`, `CostUsageChart`, `AgentHealthPanel` | §2.9 | Medium |
-| 5.7 | **History screen** — `HistoryTimeline`, `RunComparisonView`, rollback dialog | §2.10 | Medium |
-| 5.8 | **Error screens** — 404, 500/Agent Failure, Auth/Permission Denied | §2.11 | Small |
+| # | Task | UIUX.md Ref | Effort | Status |
+|---|---|---|---|---|
+| 5.1 | **Integration Builder** — `ProgressStepper`, `DependencyGraphView`, `PlanApprovalModal` (Monaco plan via `CodeBlock`), live workflow progress | §2.5 | Large | ✅ **DONE** |
+| 5.2 | **Testing screen** — `TestRunPanel` (env + endpoint targeting), `SelfHealingTimeline`, `TestCoverageChart`, SSE live results | §2.6 | Medium | ✅ **DONE** |
+| 5.3 | **Monitoring dashboard** — `MetricsDashboard`, `CostUsageChart`/`AgentHealthPanel` (project + org `/monitoring`) | §2.9 | Medium | ✅ **DONE** |
+| 5.4 | **History screen** — `HistoryTimeline`, `RunComparisonView` (Monaco diff), rollback dialog | §2.10 | Medium | ✅ **DONE** |
+| 5.5 | **Error screens** — 404, 500/Agent Failure, Auth/Permission Denied | §2.11 | Small | ✅ **DONE** |
 
 ### Phase 7 — Future / Nice-to-Have
 
@@ -358,9 +379,8 @@ The Next.js frontend has core pages but is missing several spec-required screens
 | 7.1 | **DB permission enforcement** — GRANT INSERT/SELECT only on `audit_logs` at Terraform/RDS level | ADDENDUM §A.3 |
 | 7.2 | **Enterprise rate limit overrides** — per-org configurable ceiling instead of Pro hardcode | API.md §3 |
 | 7.3 | **Retry Policy API** — `PUT /api/v1/projects/{id}/settings/retry-policy` + `retry_configs` table | Feature.md §15 |
-| 7.4 | **Logs API** — `GET /api/v1/projects/{id}/logs` endpoint for queryable structured log retrieval | Feature.md §16 |
-| 7.5 | **Async S3 client** — Replace `boto3` + `asyncio.to_thread()` with `aiobotocore` | Performance |
-| 7.6 | **Parallel agent execution** — LangGraph parallelism for independent endpoint groups | Feature.md §6 |
+| 7.4 | **Async S3 client** — Replace `boto3` + `asyncio.to_thread()` with `aiobotocore` | Performance |
+| 7.5 | **Parallel agent execution** — LangGraph parallelism for independent endpoint groups | Feature.md §6 |
 
 ---
 
@@ -392,10 +412,10 @@ The Next.js frontend has core pages but is missing several spec-required screens
 | FR-10: Export (SDK/Docker/GitHub/MCP) | P0 | ✅ Complete (Export Agent with 8 types) |
 | FR-11: Execution history + versioning | P1 | ✅ Complete (history routes, rollback, versioning API) |
 | FR-12: REST API complete | P0 | ✅ Complete — 18 route modules for Phases 1–6 |
-| FR-13: Web dashboard | P0 | 🟡 Partial — core pages (login, dashboard, project detail, build, logs); 8 screens missing |
+| FR-13: Web dashboard | P0 | ✅ Complete — all screens incl. Monitoring (`/projects/[id]/monitoring` + org `/monitoring`), error screens, and enhanced Plan/Test/History/Settings per `UIUX.md §2` |
 | FR-14: Vector search / RAG | P1 | ✅ **Complete** — Client + embedding pipeline wired; chunking, PDF/HTML extraction, upsert on every upload |
-| FR-15: Retry policy config | P1 | ❌ Not implemented |
-| FR-16: Logs retrieval API | P0 | 🟡 SSE streaming only; no queryable log endpoint |
+| FR-15: Retry policy config | P1 | 🟡 Frontend stub only (localStorage fallback in Settings); backend `PUT /settings/retry-policy` + `retry_configs` table not implemented |
+| FR-16: Logs retrieval API | P0 | ✅ Complete — `GET /api/v1/projects/{id}/logs` with cursor-based pagination wired in `logs.py` |
 
 ---
 
@@ -420,6 +440,6 @@ The Next.js frontend has core pages but is missing several spec-required screens
 | Phase 1 | DB schema, Auth, RBAC, Project CRUD, Upload, Spec Ingestion, Core Infra | ✅ Complete |
 | Phase 2 | Workflow Orchestration, Doc/Planner Agents, Qdrant client + embedding pipeline | ✅ **Complete** |
 | Phase 3 | Code Gen, Testing, Export agents + APIs | ✅ Complete |
-| Phase 4 | GitHub OAuth, Agent-Worker, Real-time SSE, Frontend core, Additional routes | 🟡 Frontend partially complete (8 screens missing) |
-| Phase 5 | Frontend feature completion | 🔴 Not started |
+| Phase 4 | GitHub OAuth, Agent-Worker, Real-time SSE, Frontend core, Additional routes | ✅ Complete |
+| Phase 5 | Frontend feature completion (Monitoring, Plan/Test/History/Settings enhancements, 9 UI components, error screens) | ✅ Complete |
 | Phase 6 | Helm, Terraform, Monitoring, OTel, CI/CD, Self-hosted Compose | ✅ Complete |
