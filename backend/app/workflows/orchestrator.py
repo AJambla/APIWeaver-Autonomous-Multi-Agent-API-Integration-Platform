@@ -6,12 +6,14 @@ Supports both synchronous and asynchronous (Celery-backed) execution modes.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import uuid
 from typing import Any, Literal, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.enums import WorkflowStatus
 from app.models.workflow import WorkflowCheckpoint, WorkflowRun
@@ -178,29 +180,86 @@ class Orchestrator:
                 plan = current_dict.get("execution_plan", {})
                 phases = plan.get("phases", [])
 
-                for phase in phases:
+                parallel = get_settings().enable_parallel_agents and len(phases) > 1
+
+                async def _run_phase(phase: dict[str, Any]) -> dict[str, Any]:
                     phase_number = phase.get("phase_number")
                     logger.info("code_generation_phase", phase=phase_number)
-                    code_updates = await run_code_agent(
+                    return await run_code_agent(
                         cast(WorkflowState, current_dict),
                         phase_number=phase_number,
                     )
-                    current_dict.update(code_updates)
-                    current_dict["progress_percent"] = (
-                        30 + (15 * (phase_number or 1) // max(len(phases), 1))
+
+                if parallel:
+                    logger.info(
+                        "code_generation_parallel",
+                        run_id=str(workflow_run_id),
+                        phase_count=len(phases),
                     )
+                    results = await asyncio.gather(
+                        *[_run_phase(phase) for phase in phases],
+                        return_exceptions=True,
+                    )
+                    merged: dict[str, Any] = {}
+                    for phase, result in zip(phases, results):
+                        phase_number = phase.get("phase_number")
+                        if isinstance(result, BaseException):
+                            raise result
+                        merged["generated_files"] = (
+                            merged.get("generated_files", []) + result.get("generated_files", [])
+                        )
+                        current_dict["total_tokens_used"] = current_dict.get(
+                            "total_tokens_used", 0
+                        ) + result.get("total_tokens_used", 0)
+                        async with self.session_factory() as session:
+                            await record_checkpoint(
+                                session,
+                                workflow_run_id=workflow_run_id,
+                                node_name=f"code_agent_phase_{phase_number}",
+                                state=result,
+                            )
+                            await session.commit()
+                        await self._emit_progress(
+                            workflow_run_id, current_dict, f"code_agent_phase_{phase_number}"
+                        )
+                    current_dict.update(merged)
+                    current_dict["progress_percent"] = 60
 
                     async with self.session_factory() as session:
                         await record_checkpoint(
                             session,
                             workflow_run_id=workflow_run_id,
-                            node_name=f"code_agent_phase_{phase_number}",
+                            node_name="code_agent_parallel_group",
                             state=current_dict,
                         )
                         await session.commit()
                     await self._emit_progress(
-                        workflow_run_id, current_dict, f"code_agent_phase_{phase_number}"
+                        workflow_run_id, current_dict, "code_agent_parallel_group"
                     )
+                else:
+                    for phase in phases:
+                        phase_number = phase.get("phase_number")
+                        logger.info("code_generation_phase", phase=phase_number)
+                        code_updates = await run_code_agent(
+                            cast(WorkflowState, current_dict),
+                            phase_number=phase_number,
+                        )
+                        current_dict.update(code_updates)
+                        current_dict["progress_percent"] = (
+                            30 + (15 * (phase_number or 1) // max(len(phases), 1))
+                        )
+
+                        async with self.session_factory() as session:
+                            await record_checkpoint(
+                                session,
+                                workflow_run_id=workflow_run_id,
+                                node_name=f"code_agent_phase_{phase_number}",
+                                state=current_dict,
+                            )
+                            await session.commit()
+                        await self._emit_progress(
+                            workflow_run_id, current_dict, f"code_agent_phase_{phase_number}"
+                        )
 
                 # Cross-chunk consistency pass
                 logger.info("code_generation_consistency")

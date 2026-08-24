@@ -67,12 +67,15 @@ class Permission(StrEnum):
     ORG_MANAGE_MEMBERS = "org:manage_members"
     ORG_MANAGE_API_KEYS = "org:manage_api_keys"
     ORG_VIEW_BILLING = "org:view_billing"
+    ORG_EDIT_BILLING = "org:edit_billing"
     ORG_VIEW_AUDIT_LOG = "org:view_audit_log"
 
     # Project scope
     PROJECT_CREATE = "project:create"
     PROJECT_READ = "project:read"
     PROJECT_UPDATE = "project:update"
+    PROJECT_SETTINGS_READ = "project:settings:read"
+    PROJECT_SETTINGS_WRITE = "project:settings:write"
     PROJECT_ARCHIVE = "project:archive"
     PROJECT_MANAGE_MEMBERS = "project:manage_members"
 
@@ -122,11 +125,14 @@ PERMISSIONS: dict[Permission, RoleRequirement] = {
     # API keys are org-wide credentials (Security.md §5) — admin and above only.
     Permission.ORG_MANAGE_API_KEYS: RoleRequirement(org_role=OrgRole.ADMIN),
     Permission.ORG_VIEW_BILLING: RoleRequirement(org_role=OrgRole.BILLING),
+    Permission.ORG_EDIT_BILLING: RoleRequirement(org_role=OrgRole.OWNER),
     Permission.ORG_VIEW_AUDIT_LOG: RoleRequirement(org_role=OrgRole.ADMIN),
     # --- Project --------------------------------------------------------------------
     Permission.PROJECT_CREATE: RoleRequirement(org_role=OrgRole.MEMBER),
     Permission.PROJECT_READ: RoleRequirement(project_role=ProjectRole.VIEWER),
     Permission.PROJECT_UPDATE: RoleRequirement(project_role=ProjectRole.EDITOR),
+    Permission.PROJECT_SETTINGS_READ: RoleRequirement(project_role=ProjectRole.VIEWER),
+    Permission.PROJECT_SETTINGS_WRITE: RoleRequirement(project_role=ProjectRole.EDITOR),
     # API.md §6.1 — DELETE (archive) requires org owner or admin.
     Permission.PROJECT_ARCHIVE: RoleRequirement(org_role=OrgRole.ADMIN),
     Permission.PROJECT_MANAGE_MEMBERS: RoleRequirement(project_role=ProjectRole.OWNER),
