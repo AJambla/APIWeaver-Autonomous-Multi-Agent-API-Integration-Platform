@@ -9,22 +9,22 @@
 
 The repository contains a **production-quality Phases 1 → 6 foundation**. The auth system, RBAC, database schema, spec ingestion, workflow orchestration, code generation, testing, export pipeline, agent-worker, frontend build, real-time events, additional API routes, and **Infrastructure & Observability (Helm, Terraform, Monitoring, OpenTelemetry, CI/CD, Self-hosted Compose)** are all complete and hardened.
 
-**Key milestone reached:** Phase 6 — Infrastructure & Observability — is fully implemented.
+**Key milestone reached:** Phase 6 — Infrastructure & Observability — is fully implemented. Phase 7 (final remaining items) is **also now complete**.
 
-### Corrections & New Findings (Aug 24 re-inspection — post-Phase 2 completion):
+### Key Highlights:
 - ✅ **Freeform LLM extraction IS implemented** — `doc_agent.py` lines 113–161 perform LLM-based freeform document extraction with fallback.
 - ✅ **Qdrant service IS fully implemented** — `qdrant_service.py` has a complete `HttpQdrantClient` + `FakeQdrantClient` with cosine similarity.
 - ✅ **Qdrant embedding pipeline NOW WIRED** — `doc_agent.py` calls `upsert_chunks()` for both deterministic and freeform docs; `LLMClient.generate_embedding()` added; `document_parser.py` (PDF/HTML/Markdown) and `chunker.py` created; `orchestrator.py` passes Qdrant client; Celery task creates client.
 - ✅ **Freeform upload path FIXED** — `ingestion_service.ingest_document()` catches `UnprocessableEntityError`, stores Document only, returns `(doc, None, None)`; orchestrator runs `doc_agent`, persists LLM-extracted spec to DB. `.txt`/`.md`/`.pdf`/`.html` uploads now return 202.
-- ✅ **Test count** — 19 test modules including new `test_qdrant_embedding.py`.
- - ✅ **Frontend fully complete (Phase 5)** — Monitoring dashboard (`/projects/[id]/monitoring`) + org-level `/monitoring` implemented; all 9 missing UI components built; 404/500/auth-denied error screens added; Plan/Test/History/Settings pages enhanced per `UIUX.md §2`. New deps: `recharts`, `@monaco-editor/react`.
+- ✅ **Test count** — 20 test modules (plus `conftest.py`) covering all endpoints, agent logic, Celery tasks, and pipelines.
+- ✅ **Frontend fully complete (Phase 5)** — Monitoring dashboard (`/projects/[id]/monitoring`) + org-level `/monitoring` implemented; all 9 missing UI components built; 404/500/auth-denied error screens added; Plan/Test/History/Settings pages enhanced per `UIUX.md §2`. New deps: `recharts`, `@monaco-editor/react`.
 
 ---
 
 ## 1. What Is Complete ✅
 
 ### 1.1 — Database Layer (Full Schema)
-All 28+ tables from `Database.md §3` are defined as SQLAlchemy models, including all three addendum tables:
+All 28+ tables from `Database.md §3` are defined as SQLAlchemy models, including all addendum tables:
 
 | Model File | Tables Covered |
 |---|---|
@@ -42,12 +42,15 @@ All 28+ tables from `Database.md §3` are defined as SQLAlchemy models, includin
 | `metrics.py` | `usage_metrics` |
 | `versioning.py` | `artifact_versions` |
 | `github.py` | `github_connections`, `github_oauth_states` |
+| `retry.py` | `retry_configs` |
 
-**Four Alembic migrations exist:**
+**Six Alembic migrations exist:**
 - `0001_initial_schema.py` — Full schema DDL (all non-partitioned tables)
 - `0002_partitioned_tables.py` — `agent_events` and `usage_metrics` with monthly/daily Postgres range partitioning
 - `0003_add_github_oauth_and_connections.py` — GitHub OAuth state and connection tables
 - `0004_artifact_version_active.py` — Adds `is_active` flag to `artifact_versions`
+- `0005_rate_limit_override.py` — Adds `rate_limit_override` column to `organizations`
+- `0006_retry_configs.py` — Creates `retry_configs` table for per-project retry policy configuration
 
 ### 1.2 — Authentication & Security
 The auth stack is fully implemented to `Security.md` spec:
@@ -245,7 +248,9 @@ The auth stack is fully implemented to `Security.md` spec:
 - ✅ `backend/app/api/v1/api_keys.py` — org API-key management (create, list, revoke)
 - ✅ `backend/app/api/v1/events.py` — SSE stream for real-time events
 - ✅ `backend/app/api/v1/github.py` — GitHub OAuth authorize/callback routes
-- ✅ All 18 route modules wired in `router.py` with rate limiting
+- ✅ `backend/app/api/v1/settings.py` — project retry policy settings endpoints
+- ✅ `backend/app/api/v1/organizations.py` — organization rate-limit override endpoints
+- ✅ All 17 route modules wired in `router.py` (plus health route in `main.py`) with rate limiting
 
 ### 1.14 — Auth Config / Vault Integration (Phase 4)
 
@@ -315,11 +320,11 @@ The auth stack is fully implemented to `Security.md` spec:
 
 ## 2. What Is Incomplete / Partially Implemented 🟡
 
-### 2.1 — Enterprise Rate Limit Hardcoded to Pro Ceiling
-`ratelimit.py` sets `"enterprise": 600` (same as Pro). Enterprise org SLAs per `API.md §3` cannot be honored until per-org override support is implemented.
+### 2.1 — Enterprise Rate Limit Overrides
+✅ **Implemented** — `organizations.rate_limit_override` column added (migration `0005`), `enforce_org_rate_limit` in `ratelimit.py:178` uses per-org override when set, new `PUT/DELETE /api/v1/organizations/{org_id}/rate-limit` endpoint (owner-only via `ORG_EDIT_BILLING`) with `RateLimitUpdate`/`RateLimitResponse` schemas. Enterprise orgs can now be given a custom ceiling.
 
 ### 2.2 — Frontend Feature Gaps
-The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are implemented and linked in the `AppShell` `PROJECT_NAV`, and the 9 missing UI components are built and reusable. Remaining gaps are backend-side (see §2.3).
+The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are implemented and linked in the `AppShell` `PROJECT_NAV`, and the 9 missing UI components are built and reusable. All originally-planned backend gaps are now implemented (Phase 7 complete).
 
 | Screen | UIUX.md Ref | Status |
 |---|---|---|
@@ -327,7 +332,7 @@ The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are 
 | Upload Screen | §2.4 | ✅ Implemented (`app/projects/[id]/upload/page.tsx`) — file selection, format detection, progress |
 | Integration Builder / Plan | §2.5 | ✅ Complete — `DependencyGraphView` (interactive SVG), `PlanApprovalModal` (Monaco plan + approve), `ProgressStepper` synced to workflow status |
 | Testing Screen | §2.6 | ✅ Complete — `TestRunPanel` (env/endpoint selectors), `SelfHealingTimeline`, `TestCoverageChart`, SSE live results via `useWorkflowEvents` |
-| Settings | §2.8 | ✅ Complete — General, Auth & Secrets, **Retry Policy** (localStorage stub), **Billing/Usage** (org metrics), Team, Danger Zone tabs |
+| Settings | §2.8 | ✅ Complete — General, Auth & Secrets, **Retry Policy** (backend API live, was localStorage stub), **Billing/Usage** (org metrics), Team, Danger Zone tabs |
 | Monitoring Dashboard | §2.9 | ✅ Complete — `MetricsDashboard` + `AgentHealthPanel` at `/projects/[id]/monitoring` and org-level `/monitoring` |
 | History Screen | §2.10 | ✅ Complete — `HistoryTimeline`, `RunComparisonView` (Monaco diff), rollback dialog |
 | Error Screens (404, 500, auth-denied) | §2.11 | ✅ Complete — `not-found.tsx`, `error.tsx` (platform vs target-API), `global-error.tsx`, `auth-denied` page |
@@ -335,11 +340,11 @@ The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are 
 **Missing UI components** (per `UIUX.md §1.5`) — ✅ **All 9 built**:
 - `CodeBlock` (Monaco read-only + diff), `Timeline`, `ProgressStepper`, `ToolCallLogViewer`, `DependencyGraphView`, `SelfHealingTimeline`, `TestCoverageChart`, `MetricsDashboard`, `HistoryTimeline` (plus `AgentHealthPanel`, `RunComparisonView`, and chart wrappers).
 
-### 2.3 — Retry Policy Config API Missing (Backend)
-`Feature.md §15` specifies `PUT /api/v1/projects/{id}/settings/retry-policy` and a `retry_configs` DB table. Neither exists. The Settings page now ships a functional **frontend stub**: the Retry Policy form attempts the `PUT` and gracefully falls back to `localStorage` (keyed per project) with a visible "pending backend support" notice. Server persistence can be re-enabled once the backend endpoint lands.
+### 2.3 — Retry Policy Config API (Backend)
+✅ **Implemented** — `retry_configs` table (migration `0006`) with `max_attempts`, `backoff_base_seconds`, `retryable_status_codes`; `RetryConfig` model, `RetryPolicyRequest`/`RetryPolicyResponse` schemas, `GET/PUT /api/v1/projects/{id}/settings/retry-policy` routes (gated by `PROJECT_SETTINGS_WRITE`), wired in `router.py`. Frontend localStorage fallback removed (`settings/page.tsx`).
 
 ### 2.4 — DB Permission Enforcement for `audit_logs`
-`ADDENDUM-Phase1.md §A.3` documents that `GRANT INSERT/SELECT` (but not `UPDATE/DELETE`) on `audit_logs` is required at the infrastructure level. Currently enforced only at the application layer. Terraform/RDS provisioning does not include this GRANT.
+✅ **Implemented** — `infra/terraform/modules/rds/variables.tf` adds `db_app_role` (default `"apiweaver"`); `infra/terraform/modules/rds/main.tf` includes an idempotent `null_resource` (with `DO $$ ... EXCEPTION ... END $$` block) that GRANTs `INSERT, SELECT` on `audit_logs` and REVOKEs `UPDATE, DELETE` from the app role after RDS creation.
 
 ---
 
@@ -347,7 +352,7 @@ The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are 
 
 | # | Bug | Description | Impact |
 |---|---|---|---|
-| Bug 1 | Sync S3 in async context | `boto3` calls wrapped in `asyncio.to_thread()` | Performance bottleneck at scale; consider `aiobotocore` |
+| Bug 1 | ~~Sync S3 in async context~~ | **FIXED** — `storage_service.py` now uses `aiobotocore` (`AsyncS3ObjectStorage`) instead of `boto3` + `asyncio.to_thread()` | No more thread pool exhaustion under concurrency |
 | Bug 2 | ~~Freeform upload path broken~~ | **FIXED** — `ingestion_service.py` now catches `UnprocessableEntityError` and returns Document only; orchestrator runs doc_agent for freeform docs | Freeform doc uploads now work (202) |
 | Bug 3 | ~~`ingestion_service` does not populate Qdrant~~ | **FIXED** — `doc_agent.py` calls `qdrant_client.upsert_chunks()` for both deterministic and freeform paths | RAG now functional; vector store populated on every upload |
 
@@ -372,15 +377,15 @@ The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are 
 | 5.4 | **History screen** — `HistoryTimeline`, `RunComparisonView` (Monaco diff), rollback dialog | §2.10 | Medium | ✅ **DONE** |
 | 5.5 | **Error screens** — 404, 500/Agent Failure, Auth/Permission Denied | §2.11 | Small | ✅ **DONE** |
 
-### Phase 7 — Future / Nice-to-Have
+### Phase 7 — Remaining Items (Nice-to-Have) — ✅ COMPLETED
 
-| # | Task | Spec Refs |
-|---|---|---|
-| 7.1 | **DB permission enforcement** — GRANT INSERT/SELECT only on `audit_logs` at Terraform/RDS level | ADDENDUM §A.3 |
-| 7.2 | **Enterprise rate limit overrides** — per-org configurable ceiling instead of Pro hardcode | API.md §3 |
-| 7.3 | **Retry Policy API** — `PUT /api/v1/projects/{id}/settings/retry-policy` + `retry_configs` table | Feature.md §15 |
-| 7.4 | **Async S3 client** — Replace `boto3` + `asyncio.to_thread()` with `aiobotocore` | Performance |
-| 7.5 | **Parallel agent execution** — LangGraph parallelism for independent endpoint groups | Feature.md §6 |
+| # | Task | Spec Refs | Effort | Status |
+|---|---|---|---|---|
+| 7.1 | **DB permission enforcement** — GRANT INSERT/SELECT only on `audit_logs` at Terraform/RDS level (idempotent `null_resource`) | ADDENDUM §A.3 | Small | ✅ **DONE** |
+| 7.2 | **Enterprise rate limit overrides** — per-org `rate_limit_override` column instead of Pro hardcode | API.md §3 | Medium | ✅ **DONE** |
+| 7.3 | **Retry Policy API** — `GET/PUT /api/v1/projects/{id}/settings/retry-policy` + `retry_configs` table | Feature.md §15 | Medium | ✅ **DONE** |
+| 7.4 | **Async S3 client** — Replace `boto3` + `asyncio.to_thread()` with `aiobotocore` | Performance | Medium | ✅ **DONE** |
+| 7.5 | **Parallel agent execution** — `asyncio.gather` for independent endpoint groups in code generation (feature-flagged) | Feature.md §6 | Medium | ✅ **DONE** |
 
 ---
 
@@ -390,7 +395,7 @@ The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are 
 |---|---|---|---|
 | Bug 1 | Upload Response: 201 vs 202, wrong body shape | ✅ **FIXED** | Endpoint returns `HTTP_202_ACCEPTED` with `workflow_run_id` and `status="processing"` |
 | Bug 2 | `audit_service.record()` kwarg naming | ℹ️ **NOT A BUG** | Intentionally accepts `metadata` kwarg and maps it to `event_metadata` column |
-| Bug 3 | Sync S3 in async context | ⚠️ **Mitigated** | `asyncio.to_thread()` used (works but blocks threads) |
+| Bug 3 | Sync S3 in async context | ✅ **Fixed** — replaced `boto3` + `asyncio.to_thread()` with `aiobotocore` in `storage_service.py` (Task 7.4) |
 | Bug 4 | Freeform upload path broken | ✅ **FIXED** | `ingestion_service.py` catches `UnprocessableEntityError`, returns Document only; orchestrator runs doc_agent; LLM extraction works for PDF/HTML/Markdown/Text |
 | Bug 5 | Qdrant never populated | ✅ **FIXED** | `doc_agent.py` calls `upsert_chunks()` for both structured and freeform docs; chunking + embedding pipeline complete |
 
@@ -414,7 +419,7 @@ The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are 
 | FR-12: REST API complete | P0 | ✅ Complete — 18 route modules for Phases 1–6 |
 | FR-13: Web dashboard | P0 | ✅ Complete — all screens incl. Monitoring (`/projects/[id]/monitoring` + org `/monitoring`), error screens, and enhanced Plan/Test/History/Settings per `UIUX.md §2` |
 | FR-14: Vector search / RAG | P1 | ✅ **Complete** — Client + embedding pipeline wired; chunking, PDF/HTML extraction, upsert on every upload |
-| FR-15: Retry policy config | P1 | 🟡 Frontend stub only (localStorage fallback in Settings); backend `PUT /settings/retry-policy` + `retry_configs` table not implemented |
+| FR-15: Retry policy config | P1 | ✅ **Complete** — `retry_configs` table, `GET/PUT /api/v1/projects/{id}/settings/retry-policy` routes, `RetryPolicyRequest/Response` schemas (frontend localStorage fallback removed)
 | FR-16: Logs retrieval API | P0 | ✅ Complete — `GET /api/v1/projects/{id}/logs` with cursor-based pagination wired in `logs.py` |
 
 ---
@@ -425,10 +430,10 @@ The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are 
 |---|---|
 | Architecture | **Excellent** — clean layering (routes → services → models → db), deny-by-default RBAC, no leaking abstractions, phased pipeline design |
 | Security | **Excellent** — Argon2id, RS256, refresh token rotation with replay detection, JTI denylist, timing-safe auth |
-| Test coverage | **Good** — 19 test modules (conftest + 18 test files), full isolation per test; Qdrant tested via `FakeQdrantClient` |
+| Test coverage | **Good** — 20 test modules (plus `conftest.py`), full isolation per test; Qdrant tested via `FakeQdrantClient` |
 | Documentation | **Excellent** — every source file references the exact spec section it implements |
 | Type safety | **Strict** — `mypy strict` mode with Pydantic v2 models throughout |
-| Async consistency | **Good** — async/await throughout; S3 uses `asyncio.to_thread()` (minor concern) |
+| Async consistency | **Excellent** — async/await throughout; S3 client fully async via `aiobotocore` |
 | Confirmed open bugs | **0 confirmed** — Bug 4 (freeform upload path) and Bug 5 (Qdrant not wired) **both fixed** |
 
 ---
@@ -443,3 +448,4 @@ The Next.js frontend is now feature-complete per `UIUX.md §2`. All screens are 
 | Phase 4 | GitHub OAuth, Agent-Worker, Real-time SSE, Frontend core, Additional routes | ✅ Complete |
 | Phase 5 | Frontend feature completion (Monitoring, Plan/Test/History/Settings enhancements, 9 UI components, error screens) | ✅ Complete |
 | Phase 6 | Helm, Terraform, Monitoring, OTel, CI/CD, Self-hosted Compose | ✅ Complete |
+| Phase 7 | DB audit_logs permission enforcement, Enterprise rate limit overrides, Retry Policy API, Async S3 client, Parallel agent execution | ✅ **Complete** |
