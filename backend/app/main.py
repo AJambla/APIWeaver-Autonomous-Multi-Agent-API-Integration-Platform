@@ -14,7 +14,6 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import health
@@ -188,7 +187,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     register_exception_handlers(app)
 
-    Instrumentator(registry=metrics_registry).instrument(app).expose(app, include_in_schema=False)
+    try:
+        from prometheus_fastapi_instrumentator import Instrumentator
+        Instrumentator(registry=metrics_registry).instrument(app).expose(app, include_in_schema=False)
+    except (ImportError, ModuleNotFoundError):
+        pass
 
     # Probes sit outside /api/v1: they are infrastructure contracts, not part of the
     # versioned product API, and must not move when v2 ships (`Architecture.md §11`).

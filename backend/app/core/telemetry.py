@@ -15,18 +15,11 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
 from app.core.config import get_settings
 
 
-def _build_resource() -> Resource:
+def _build_resource() -> Any:
+    from opentelemetry.sdk.resources import Resource
     settings = get_settings()
     return Resource.create(
         {
@@ -38,7 +31,12 @@ def _build_resource() -> Resource:
     )
 
 
-def _build_tracer_provider() -> TracerProvider:
+def _build_tracer_provider() -> Any:
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     resource = _build_resource()
     provider = TracerProvider(resource=resource)
@@ -56,11 +54,17 @@ def instrument_app(app: Any, engine: Any) -> None:
     if not settings.otel_exporter_otlp_endpoint:
         return
 
-    _build_tracer_provider()
-    FastAPIInstrumentor.instrument_app(app)
-    SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
-    _setup_langsmith_correlation()
+        _build_tracer_provider()
+        FastAPIInstrumentor.instrument_app(app)
+        SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
+        _setup_langsmith_correlation()
+    except (ImportError, ModuleNotFoundError):
+        pass
+
 
 
 def _setup_langsmith_correlation() -> None:

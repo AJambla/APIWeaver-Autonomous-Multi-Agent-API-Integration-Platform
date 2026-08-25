@@ -77,8 +77,37 @@ class AsyncS3ObjectStorage:
         return result
 
 
+class InMemoryObjectStorage:
+    """In-memory object storage fallback when external S3/aiobotocore is unavailable."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, bytes] = {}
+
+    async def get(self, *, key: str) -> bytes | None:
+        return self._store.get(key)
+
+    async def put(self, *, key: str, content: bytes, content_type: str | None = None) -> None:
+        self._store[key] = content
+
+    async def delete(self, *, key: str) -> None:
+        self._store.pop(key, None)
+
+    async def upload(self, key: str, content: bytes) -> None:
+        await self.put(key=key, content=content, content_type="text/plain")
+
+    async def download(self, key: str) -> bytes:
+        result = await self.get(key=key)
+        if result is None:
+            raise FileNotFoundError(f"Object not found: {key}")
+        return result
+
+
 def create_object_storage(settings: Settings) -> ObjectStorage:
-    return AsyncS3ObjectStorage(settings)
+    try:
+        import aiobotocore  # noqa: F401
+        return AsyncS3ObjectStorage(settings)
+    except (ImportError, ModuleNotFoundError):
+        return InMemoryObjectStorage()
 
 
 # Global instance for agents to use
@@ -94,5 +123,10 @@ def get_storage() -> ObjectStorage:
     return _storage_instance
 
 
-# Backwards compatible alias
-storage_service = get_storage()
+# Lazy proxy/getter for module-level usage
+class _StorageServiceProxy:
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_storage(), name)
+
+
+storage_service = _StorageServiceProxy()
