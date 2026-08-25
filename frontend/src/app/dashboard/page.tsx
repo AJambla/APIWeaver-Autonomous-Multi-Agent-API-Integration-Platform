@@ -99,17 +99,25 @@ function CreateProjectModal({
   onClose: () => void;
   onCreated: (id: string) => void;
 }) {
+  const { user } = useAuth();
   const { notify } = useToast();
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!user?.organization_id) {
+      notify("No organization selected or user session missing", "error");
+      return;
+    }
     setBusy(true);
     try {
       const project = await apiFetch<Project>("/projects", {
         method: "POST",
-        body: { name },
+        body: {
+          name,
+          organization_id: user.organization_id,
+        },
       });
       notify("Project created", "success");
       onCreated(project.id);
