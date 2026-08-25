@@ -32,8 +32,30 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+interface BackendMeResponse {
+  user: {
+    id: string;
+    email: string;
+    full_name: string;
+    mfa_enabled: boolean;
+  };
+  organizations: Array<{
+    organization_id: string;
+    organization_name: string;
+    role: string;
+  }>;
+}
+
 async function fetchMe(): Promise<User> {
-  return apiFetch<User>("/auth/me");
+  const data = await apiFetch<BackendMeResponse>("/auth/me");
+  const firstOrg = data.organizations[0];
+  return {
+    id: data.user.id,
+    email: data.user.email,
+    full_name: data.user.full_name,
+    organization_id: firstOrg?.organization_id ?? "",
+    organization_name: firstOrg?.organization_name,
+  };
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
