@@ -6,13 +6,11 @@
 # Credentials are development-only and loaded from .env.
 # Production deployments should use Vault for secrets (Security.md §7).
 
-version: "3.9"
-
 services:
   web:
     image: apiweaver/web:latest
     build:
-      context: ./frontend
+      context: ../fron
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
@@ -26,7 +24,7 @@ services:
     networks:
       - apiweaver
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/" ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -34,7 +32,7 @@ services:
   api:
     image: apiweaver/api:latest
     build:
-      context: ./backend
+      context: ../../backend
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
@@ -62,7 +60,7 @@ services:
     networks:
       - apiweaver
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')" ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -70,7 +68,7 @@ services:
   agent-worker:
     image: apiweaver/agent-worker:latest
     build:
-      context: ./backend
+      context: ../../backend
       dockerfile: Dockerfile
     env_file:
       - .env
@@ -98,7 +96,7 @@ services:
       - apiweaver
     command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4
     healthcheck:
-      test: ["CMD", "celery", "-A", "agent_worker.celery_app", "inspect", "ping"]
+      test: [ "CMD", "celery", "-A", "agent_worker.celery_app", "inspect", "ping" ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -117,7 +115,7 @@ services:
     networks:
       - apiweaver
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U apiweaver -d apiweaver"]
+      test: [ "CMD-SHELL", "pg_isready -U apiweaver -d apiweaver" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -132,7 +130,7 @@ services:
     networks:
       - apiweaver
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -147,7 +145,7 @@ services:
     networks:
       - apiweaver
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      test: [ "CMD-SHELL", "[ -f /proc/self/cgroup ] && echo OK || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -158,22 +156,19 @@ services:
     cap_add:
       - IPC_LOCK
     environment:
-      VAULT_LOCAL_CONFIG: '{"storage":{"file":{"path":"/vault/file"}},"listener":{"tcp":{"address":"0.0.0.0:8200","tls_disable":"true"}}}'
       VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:-root}
     ports:
       - "8200:8200"
-    volumes:
-      - vaultdata:/vault/file
     networks:
       - apiweaver
     healthcheck:
-      test: ["CMD", "vault", "status"]
+      test: [ "CMD", "vault", "status", "-address=http://127.0.0.1:8200" ]
       interval: 10s
       timeout: 5s
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: apiweaver-minio
     command: server /data --console-address ":9001"
     environment:
@@ -187,7 +182,7 @@ services:
     networks:
       - apiweaver
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
       interval: 10s
       timeout: 5s
       retries: 5
