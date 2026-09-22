@@ -159,6 +159,13 @@ celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4
 
 #### Step 3: First-Time User Flow
 
+#### 🎯 Demo Login
+- **Email:** demo@example.com
+- **Password:** DemoPass123!
+- Use these credentials to explore the UI without registering a new account.
+- The demo user is automatically created on first login if it does not exist.
+
+
 1. Open [http://localhost:3000](http://localhost:3000) in your web browser.
 2. Navigate to `/auth/login` and click **Register** to create your organization and admin user.
 3. Click **New Project** on the dashboard.
