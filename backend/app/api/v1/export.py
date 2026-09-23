@@ -15,6 +15,7 @@ from app.models.project import Project
 from app.rbac.enforce import load_project_for_principal, require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.export import ExportRequest, ExportResponse, MCPExportResponse
+from sqlalchemy import select
 from app.services import audit_service
 from app.workflows.agents.export_agent import ExportAgent
 from app.workflows.orchestrator import Orchestrator
@@ -120,3 +121,30 @@ async def export_mcp(
         tools_generated=mcp_artifact.get("tools_generated", 0),
         flagged_destructive=mcp_artifact.get("flagged_destructive", 0),
     )
+
+
+@router.get("/{id}/exports", response_model=list[dict])
+async def list_exports(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(require_project_permission(Permission.EXPORT_READ)),
+    session: AsyncSession = Depends(get_db),
+    limit: int = 20,
+) -> list[dict]:
+    """List export records for a project."""
+    project = await load_project_for_principal(session, principal, project_id)
+    stmt = (
+        select(Export)
+        .where(Export.project_id == project.id)
+        .order_by(Export.id.desc())
+        .limit(limit)
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    return [
+        {
+            "id": str(r.id),
+            "export_type": r.export_type,
+            "status": r.status,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
