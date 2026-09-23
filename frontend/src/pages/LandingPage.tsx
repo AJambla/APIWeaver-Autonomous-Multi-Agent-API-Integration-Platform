@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Shield, Cpu, Zap, ArrowRight, CheckCircle2, ChevronRight, Play, Activity } from 'lucide-react';
+import { Shield, Cpu, Zap, ArrowRight, CheckCircle2 } from 'lucide-react';
 
 export const LandingPage: React.FC = () => {
   return (
@@ -23,7 +23,6 @@ export const LandingPage: React.FC = () => {
               <a href="#benefits" className="hover:text-white transition-colors">Benefits</a>
               <a href="#how-it-works" className="hover:text-white transition-colors">How it works</a>
               <a href="#faqs" className="hover:text-white transition-colors">FAQs</a>
-              <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
             </div>
           </nav>
 
@@ -56,12 +55,6 @@ export const LandingPage: React.FC = () => {
         </div>
 
         <div className="relative z-10 max-w-4xl mx-auto flex flex-col items-center appear">
-          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-white/20 bg-white/5 backdrop-blur-md text-xs font-medium text-neutral-200 mb-8 shadow-inner">
-            <Activity className="w-3.5 h-3.5 text-white animate-pulse" />
-            <span>Vesper.ai Operational AI Infrastructure</span>
-            <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />
-          </div>
-
           <h1 className="text-5xl md:text-7xl lg:text-8xl font-normal tracking-tight leading-[1.05] mb-8">
             Train AI agents on your workflows in <span className="font-serif-italic font-light text-neutral-300">minutes</span>
           </h1>
@@ -77,13 +70,6 @@ export const LandingPage: React.FC = () => {
             >
               <span>Deploy Infrastructure</span>
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </Link>
-            <Link
-              to="/login"
-              className="w-full sm:w-auto px-8 py-4 rounded-full glass-pill text-white font-medium text-base hover:bg-white/10 transition-all flex items-center justify-center gap-3"
-            >
-              <Play className="w-4 h-4 fill-white" />
-              <span>Watch Architecture Demo</span>
             </Link>
           </div>
         </div>
@@ -162,6 +148,93 @@ export const LandingPage: React.FC = () => {
         </div>
       </section>
 
+      {/* How it works Section */}
+      <section id="how-it-works" className="py-28 px-6 border-t border-white/10 bg-neutral-950/40">
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center max-w-3xl mx-auto mb-20">
+            <h2 className="text-3xl md:text-5xl font-normal tracking-tight mb-6">
+              From spec to <span className="font-serif-italic text-neutral-300">self-healing</span> pipeline
+            </h2>
+            <p className="text-neutral-400 font-light text-base md:text-lg">
+              Four stages, fully automated. You stay in control at every checkpoint.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+            {[
+              {
+                step: '01',
+                title: 'Upload your spec',
+                text: 'Drop in an OpenAPI document, database schema, or raw documentation. API Weaver parses and normalizes it into a canonical model.',
+              },
+              {
+                step: '02',
+                title: 'Review the plan',
+                text: 'A topological DAG of every operation is generated with dependency ordering, cycle detection, and rollback points made explicit.',
+              },
+              {
+                step: '03',
+                title: 'Build & test',
+                text: 'Agents generate and execute the workflow, run the test suite, and self-heal failures through bounded repair loops.',
+              },
+              {
+                step: '04',
+                title: 'Export anywhere',
+                text: 'Ship the result as a FastAPI SDK, Docker compose services, a GitHub repository, or an MCP server in one click.',
+              },
+            ].map(item => (
+              <div key={item.step} className="glass-card p-8 rounded-2xl border border-white/10 flex flex-col gap-4">
+                <span className="text-xs font-medium text-neutral-500 tracking-widest">{item.step}</span>
+                <h3 className="text-xl font-medium">{item.title}</h3>
+                <p className="text-neutral-400 text-sm leading-relaxed">{item.text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* FAQs Section */}
+      <section id="faqs" className="py-28 px-6 max-w-4xl mx-auto">
+        <div className="text-center mb-16">
+          <h2 className="text-3xl md:text-5xl font-normal tracking-tight mb-6">
+            Frequently asked <span className="font-serif-italic text-neutral-300">questions</span>
+          </h2>
+        </div>
+
+        <div className="space-y-4">
+          {[
+            {
+              q: 'What inputs can API Weaver consume?',
+              a: 'OpenAPI 3.x specifications, database schemas, and free-form technical documentation. The parser normalizes them into a single canonical operation model before planning.',
+            },
+            {
+              q: 'What does "self-healing" actually mean?',
+              a: 'When a generated step fails, agents inspect the error and telemetry, apply a bounded repair (syntax patch, retry policy, dependency reorder), and re-run the test suite. Repair loops are capped so pipelines fail fast instead of looping forever.',
+            },
+            {
+              q: 'Where can I export my workflows?',
+              a: 'FastAPI SDKs, Docker compose microservices, GitHub repositories, and Model Context Protocol (MCP) servers — all generated from the same validated plan.',
+            },
+            {
+              q: 'How is my data protected?',
+              a: 'Every request is authenticated with short-lived RS256 JWTs, secrets live in Vault, and workspaces are organization-scoped so no data crosses tenant boundaries.',
+            },
+            {
+              q: 'Do I need to trust the agent blindly?',
+              a: 'No. The topological plan is surfaced for review before any build runs, and every agent action is visible in the live event log.',
+            },
+          ].map(faq => (
+            <details key={faq.q} className="glass-card rounded-2xl border border-white/10 group">
+              <summary className="cursor-pointer list-none px-8 py-6 text-base font-medium flex items-center justify-between gap-4">
+                <span>{faq.q}</span>
+                <span className="text-neutral-500 group-open:rotate-45 transition-transform text-xl leading-none shrink-0">+</span>
+              </summary>
+              <p className="px-8 pb-6 text-sm text-neutral-400 leading-relaxed">{faq.a}</p>
+            </details>
+          ))}
+        </div>
+      </section>
+
       {/* Footer */}
       <footer className="border-t border-white/10 py-12 px-6 text-center text-sm text-neutral-500">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
@@ -169,13 +242,12 @@ export const LandingPage: React.FC = () => {
             <div className="w-7 h-7 rounded-lg bg-white text-black flex items-center justify-center font-bold text-sm">
               AW
             </div>
-            <span className="text-neutral-400">© 2026 API Weaver. Vesper.ai Aesthetic Infrastructure.</span>
+            <span className="text-neutral-400">© 2026 API Weaver. </span>
           </div>
           <div className="flex items-center gap-6 text-neutral-400">
-            <a href="#" className="hover:text-white transition-colors">Documentation</a>
-            <a href="#" className="hover:text-white transition-colors">API Reference</a>
-            <a href="#" className="hover:text-white transition-colors">Security</a>
-            <a href="#" className="hover:text-white transition-colors">Terms</a>
+            <a href="https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/tree/main/Project-docs" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">Documentation</a>
+            <a href="https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/blob/main/Project-docs/API.md" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">API Reference</a>
+            <a href="https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/blob/main/Project-docs/Security.md" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">Security</a>
           </div>
         </div>
       </footer>
