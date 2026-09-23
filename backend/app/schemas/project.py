@@ -16,6 +16,10 @@ class CreateProjectRequest(StrictModel):
     organization_id: uuid.UUID
 
 
+class UpdateProjectRequest(StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
 class ProjectResponse(ResponseModel):
     id: uuid.UUID
     name: str

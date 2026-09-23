@@ -11,6 +11,7 @@ import {
   clearStoredTokens,
   clearStoredUser,
   getStoredUser,
+  getRefreshToken,
   setStoredTokens,
   setStoredUser,
 } from "@/lib/auth";
@@ -123,7 +124,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await apiFetch("/auth/logout", { method: "POST" });
+      const refreshToken = getRefreshToken();
+      await apiFetch("/auth/logout", {
+        method: "POST",
+        body: { refresh_token: refreshToken },
+      });
     } catch {
       // ignore — clear local state regardless
     }
