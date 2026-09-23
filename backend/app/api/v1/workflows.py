@@ -111,6 +111,45 @@ async def trigger_workflow(
     return TriggerWorkflowResponse(workflow_run_id=run.id, status=WorkflowStatus.QUEUED)
 
 
+@router.get("/workflows", response_model=list[WorkflowRunResponse])
+async def list_workflows(
+    project_id: uuid.UUID = Query(...),
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_db),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[WorkflowRunResponse]:
+    """List workflow runs for a project."""
+    await load_project_for_principal(session, principal, project_id)
+    stmt = (
+        select(WorkflowRun)
+        .where(WorkflowRun.project_id == project_id)
+        .order_by(WorkflowRun.id.desc())
+        .limit(limit)
+    )
+    runs = list((await session.execute(stmt)).scalars().all())
+    return [await _run_to_response(run, session) for run in runs]
+
+
+async def _run_to_response(run: WorkflowRun, session: AsyncSession) -> WorkflowRunResponse:
+    latest_checkpoint = await session.scalar(
+        select(WorkflowCheckpoint)
+        .where(WorkflowCheckpoint.workflow_run_id == run.id)
+        .order_by(WorkflowCheckpoint.created_at.desc())
+        .limit(1)
+    )
+    current_node = latest_checkpoint.node_name if latest_checkpoint else None
+    progress = 100 if run.status == WorkflowStatus.COMPLETED else (50 if current_node else 0)
+    return WorkflowRunResponse(
+        id=run.id,
+        status=run.status,
+        current_node=current_node,
+        progress_percent=progress,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        total_tokens_used=run.total_tokens_used,
+    )
+
+
 @router.get("/workflows/{run_id}", response_model=WorkflowRunResponse)
 async def get_workflow_run(
     run_id: uuid.UUID,
@@ -125,26 +164,7 @@ async def get_workflow_run(
     # Multi-tenant check
     await load_project_for_principal(session, principal, run.project_id)
 
-    # Get latest checkpoint for current node
-    latest_checkpoint = await session.scalar(
-        select(WorkflowCheckpoint)
-        .where(WorkflowCheckpoint.workflow_run_id == run.id)
-        .order_by(WorkflowCheckpoint.created_at.desc())
-        .limit(1)
-    )
-
-    current_node = latest_checkpoint.node_name if latest_checkpoint else None
-    progress = 100 if run.status == WorkflowStatus.COMPLETED else (50 if current_node else 0)
-
-    return WorkflowRunResponse(
-        id=run.id,
-        status=run.status,
-        current_node=current_node,
-        progress_percent=progress,
-        started_at=run.started_at,
-        completed_at=run.completed_at,
-        total_tokens_used=run.total_tokens_used,
-    )
+    return await _run_to_response(run, session)
 
 
 @router.post("/workflows/{run_id}/approve", response_model=ApproveWorkflowResponse)

@@ -25,6 +25,7 @@ from app.schemas.project import (
     CreateProjectRequest,
     ProjectResponse,
     ProjectSummaryResponse,
+    UpdateProjectRequest,
 )
 from app.services import audit_service
 
@@ -86,6 +87,21 @@ async def create_project(
         ip_address=client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
+    return ProjectResponse.model_validate(project)
+
+
+@router.patch(
+    "/{id}",
+    response_model=ProjectResponse,
+    summary="Update project name",
+)
+async def update_project(
+    payload: UpdateProjectRequest,
+    project: Project = Depends(require_project_permission(Permission.PROJECT_UPDATE)),
+    session: AsyncSession = Depends(get_db),
+) -> ProjectResponse:
+    project.name = payload.name
+    await session.flush()
     return ProjectResponse.model_validate(project)
 
 
