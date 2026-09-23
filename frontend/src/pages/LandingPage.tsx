@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Shield, Cpu, Zap, ArrowRight, CheckCircle2, Play } from 'lucide-react';
+import { Shield, Cpu, Zap, ArrowRight, CheckCircle2 } from 'lucide-react';
 
 export const LandingPage: React.FC = () => {
   return (
@@ -70,13 +70,6 @@ export const LandingPage: React.FC = () => {
             >
               <span>Deploy Infrastructure</span>
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </Link>
-            <Link
-              to="/login"
-              className="w-full sm:w-auto px-8 py-4 rounded-full glass-pill text-white font-medium text-base hover:bg-white/10 transition-all flex items-center justify-center gap-3"
-            >
-              <Play className="w-4 h-4 fill-white" />
-              <span>Watch Architecture Demo</span>
             </Link>
           </div>
         </div>
@@ -249,7 +242,7 @@ export const LandingPage: React.FC = () => {
             <div className="w-7 h-7 rounded-lg bg-white text-black flex items-center justify-center font-bold text-sm">
               AW
             </div>
-            <span className="text-neutral-400">© 2026 API Weaver. Vesper.ai Aesthetic Infrastructure.</span>
+            <span className="text-neutral-400">© 2026 API Weaver. </span>
           </div>
           <div className="flex items-center gap-6 text-neutral-400">
             <a href="https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/tree/main/Project-docs" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">Documentation</a>
