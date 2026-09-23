@@ -92,9 +92,15 @@ export async function apiFetch<T = unknown>(
       const parsed = JSON.parse(errorBody) as {
         detail?: string;
         message?: string;
-        error?: { message?: string };
+        error?: { message?: string; details?: Array<{ field?: string; issue?: string }> };
       };
       message = parsed.error?.message || parsed.detail || parsed.message || message;
+      const details = (parsed.error?.details ?? [])
+        .map(d => [d.field, d.issue].filter(Boolean).join(': '))
+        .filter(s => s.length > 0);
+      if (details.length > 0) {
+        message = `${message} ${details.join(' | ')}`;
+      }
     } catch {
       message = errorBody || message;
     }

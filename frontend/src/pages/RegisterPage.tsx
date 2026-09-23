@@ -3,6 +3,15 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth-context';
 import { ArrowLeft, Lock, Mail, User, AlertCircle } from 'lucide-react';
 
+// Mirrors backend RegisterRequest rules (backend/app/schemas/auth.py).
+function validatePassword(password: string): string | null {
+  if (password.length < 12) return 'Password must be at least 12 characters.';
+  if (password.length > 256) return 'Password must be at most 256 characters.';
+  if (password !== password.trim()) return 'Password must not begin or end with whitespace.';
+  if (new Set(password).size < 5) return 'Password uses too few distinct characters.';
+  return null;
+}
+
 export const RegisterPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -15,9 +24,14 @@ export const RegisterPage: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    const passwordIssue = validatePassword(password);
+    if (passwordIssue) {
+      setError(passwordIssue);
+      return;
+    }
     setLoading(true);
     try {
-      await register(email, password, fullName);
+      await register(email, password, fullName.trim());
       navigate('/dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
@@ -88,12 +102,16 @@ export const RegisterPage: React.FC = () => {
               <input
                 type="password"
                 required
+                maxLength={256}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 placeholder="••••••••••••"
                 className="w-full bg-neutral-900 border border-white/15 rounded-xl px-4 py-3 pl-11 text-sm text-white placeholder-neutral-600 focus:outline-none focus:border-white transition-colors"
               />
             </div>
+            <p className="mt-2 text-[11px] text-neutral-500">
+              At least 12 characters, no leading/trailing spaces, 5+ distinct characters.
+            </p>
           </div>
 
           <button
