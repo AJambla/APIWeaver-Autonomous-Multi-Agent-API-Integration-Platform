@@ -4,40 +4,69 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  ArrowDown,
+  Boxes,
   Check,
   CheckCircle2,
   Clipboard,
+  Clock,
   Copy,
-  Download,
   FileCode2,
   FileJson,
   FileText,
   FileType,
+  FlaskConical,
+  GitBranch,
   History,
   Link2,
   Loader2,
   Maximize2,
-  PlayCircle,
+  Network,
+  Play,
+  RefreshCw,
   RotateCcw,
   Settings as SettingsIcon,
+  ShieldAlert,
   Terminal as TerminalIcon,
   Upload,
-  GitBranch,
-  Cpu,
+  XCircle,
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import { apiFetch } from '../lib/api';
-import { ApiSpec, HistoryItem, Page, ProjectSummary, SpecEndpoint, UploadResponse, WorkflowEvent } from '../lib/types';
-import { NormalizedSpec, relativeTime, shortId, specFormat, validationState } from '../lib/format';
+import {
+  AgentEventLog,
+  ApiSpec,
+  DependencyGraph,
+  DependencyNode,
+  ExportRecord,
+  HistoryItem,
+  MCPExportResponse,
+  Page,
+  ProjectSummary,
+  SpecEndpoint,
+  TestRunSummary,
+  TestRunTriggerResponse,
+  TriggerWorkflowResponse,
+  UploadResponse,
+  WorkflowRunInfo,
+} from '../lib/types';
+import { NormalizedSpec, relativeTime, shortId, specFormat, specVersion, validationState } from '../lib/format';
 import {
   btnGhost,
   btnPrimary,
   cardCls,
+  EmptyState,
   ErrorBanner,
+  FilterSelect,
   inputCls,
   Modal,
   OptionsMenu,
+  SearchInput,
+  StatCard,
   StatusBadge,
+  tableCls,
+  Td,
+  Th,
 } from '../components/ui';
 
 type TabId = 'upload' | 'plan' | 'build' | 'test' | 'export' | 'logs' | 'settings';
@@ -45,6 +74,8 @@ type UploadMode = 'file' | 'paste' | 'url';
 type UploadPhase = 'idle' | 'working' | 'success' | 'error';
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : 'Something went wrong.');
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 const CORE_STEPS: Array<{ id: TabId; n: number; label: string; desc: string }> = [
   { id: 'upload', n: 1, label: 'Upload Spec', desc: 'Import API documentation' },
@@ -75,6 +106,24 @@ const NEXT_STAGES = [
 ];
 
 const DEFAULT_SPEC = 'openapi: 3.0.0\ninfo:\n  title: Sample API\n  version: 1.0.0\npaths: {}';
+
+const METHOD_STYLES: Record<string, string> = {
+  GET: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+  POST: 'bg-sky-500/10 text-sky-400 border-sky-500/30',
+  PUT: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+  PATCH: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+  DELETE: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
+};
+
+const MethodChip: React.FC<{ method: string }> = ({ method }) => (
+  <span
+    className={`inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[10px] font-bold ${
+      METHOD_STYLES[method.toUpperCase()] || 'bg-white/5 text-neutral-400 border-white/15'
+    }`}
+  >
+    {method.toUpperCase()}
+  </span>
+);
 
 /* Stepper ------------------------------------------------------------------- */
 
@@ -263,18 +312,41 @@ const AnalysisPanel: React.FC<{ spec: ApiSpec; endpoints: SpecEndpoint[] }> = ({
   );
 };
 
+/* Event log helpers ----------------------------------------------------------- */
+
+const eventMessage = (payload: Record<string, unknown> | null): string => {
+  if (!payload) return '';
+  for (const key of ['message', 'detail', 'summary', 'description', 'error', 'reason']) {
+    const v = payload[key];
+    if (typeof v === 'string' && v) return v;
+  }
+  const s = JSON.stringify(payload);
+  return s.length > 180 ? `${s.slice(0, 177)}…` : s;
+};
+
+const formatEventTime = (iso: string | null): string => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('en-US', { hour12: false });
+};
+
 /* Main page ------------------------------------------------------------------- */
 
 export const ProjectWorkspace: React.FC = () => {
   const { id } = useParams<{ id: string }>();
 
+  /* --- shared data --- */
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [spec, setSpec] = useState<ApiSpec | null>(null);
   const [endpoints, setEndpoints] = useState<SpecEndpoint[]>([]);
   const [latestRun, setLatestRun] = useState<HistoryItem | null>(null);
+  const [graph, setGraph] = useState<DependencyGraph | null>(null);
+  const [logs, setLogs] = useState<AgentEventLog[]>([]);
+  const [exports, setExports] = useState<ExportRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  /* --- upload tab --- */
   const [activeTab, setActiveTab] = useState<TabId>('upload');
   const [mode, setMode] = useState<UploadMode>('file');
   const [file, setFile] = useState<File | null>(null);
@@ -287,16 +359,33 @@ export const ProjectWorkspace: React.FC = () => {
   const [previewExpanded, setPreviewExpanded] = useState(false);
   const [menuCopied, setMenuCopied] = useState(false);
 
+  /* --- plan tab --- */
   const [dagPlan, setDagPlan] = useState('1. Parse OpenAPI schema & extract models\n2. Generate FastAPI routers & Pydantic validation\n3. Initialize Celery background tasks & storage service\n4. Execute self-healing test suite');
+  const [planDocOpen, setPlanDocOpen] = useState(false);
   const [planApproved, setPlanApproved] = useState(false);
-  const [events, setEvents] = useState<WorkflowEvent[]>([
-    { id: '1', timestamp: new Date().toLocaleTimeString(), level: 'info', message: 'Initialized agent execution environment.', agent: 'System' },
-  ]);
-  const [building, setBuilding] = useState(false);
-  const testResults = [
-    { endpoint: '/api/v1/health', method: 'GET', status: 200, latency: '12ms', passed: true },
-    { endpoint: '/api/v1/projects', method: 'POST', status: 201, latency: '45ms', passed: true },
-  ];
+  const [planBusy, setPlanBusy] = useState(false);
+  const [planError, setPlanError] = useState('');
+
+  /* --- build tab --- */
+  const [activeRun, setActiveRun] = useState<WorkflowRunInfo | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [buildError, setBuildError] = useState('');
+
+  /* --- test tab --- */
+  const [testEnv, setTestEnv] = useState('sandbox');
+  const [testBusy, setTestBusy] = useState(false);
+  const [testSummary, setTestSummary] = useState<TestRunSummary | null>(null);
+  const [testError, setTestError] = useState('');
+
+  /* --- export tab --- */
+  const [exportBusy, setExportBusy] = useState<string | null>(null);
+  const [exportNote, setExportNote] = useState('');
+  const [exportError, setExportError] = useState('');
+
+  /* --- logs tab --- */
+  const [logQuery, setLogQuery] = useState('');
+  const [logAgent, setLogAgent] = useState('all');
+  const [logType, setLogType] = useState('all');
 
   const loadProjectData = useCallback(async () => {
     if (!id) return;
@@ -309,12 +398,18 @@ export const ProjectWorkspace: React.FC = () => {
       setProject(summary);
       if (history?.data?.length) setLatestRun(history.data[0]);
 
-      const [specRes, endpointsRes] = await Promise.all([
+      const [specRes, endpointsRes, graphRes, logsRes, exportsRes] = await Promise.all([
         apiFetch<ApiSpec>(`/projects/${id}/spec`).catch(() => null),
         apiFetch<SpecEndpoint[]>(`/projects/${id}/endpoints`).catch(() => [] as SpecEndpoint[]),
+        apiFetch<DependencyGraph>(`/projects/${id}/dependency-graph`).catch(() => null),
+        apiFetch<Page<AgentEventLog>>(`/projects/${id}/logs?limit=100`).catch(() => null),
+        apiFetch<ExportRecord[]>(`/projects/${id}/exports`).catch(() => [] as ExportRecord[]),
       ]);
       setSpec(specRes);
       setEndpoints(Array.isArray(endpointsRes) ? endpointsRes : []);
+      if (graphRes) setGraph(graphRes);
+      setLogs(logsRes?.data ?? []);
+      setExports(Array.isArray(exportsRes) ? exportsRes : []);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -330,6 +425,43 @@ export const ProjectWorkspace: React.FC = () => {
     }
     loadProjectData();
   }, [id, loadProjectData]);
+
+  /* Follow an in-flight workflow run: poll status + refresh logs while running. */
+  useEffect(() => {
+    if (!activeRunId || !id) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const [info, logsRes] = await Promise.all([
+          apiFetch<WorkflowRunInfo>(`/workflows/${activeRunId}`),
+          apiFetch<Page<AgentEventLog>>(`/projects/${id}/logs?limit=100`).catch(() => null),
+        ]);
+        if (cancelled) return;
+        setActiveRun(info);
+        if (logsRes) setLogs(logsRes.data ?? []);
+        if (['completed', 'failed', 'cancelled'].includes(info.status)) {
+          setActiveRunId(null);
+          loadProjectData();
+        }
+      } catch {
+        /* transient poll failure — retry on next tick */
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeRunId, id, loadProjectData]);
+
+  /* Resume watching a run that is still in flight when the build tab opens. */
+  useEffect(() => {
+    if (activeTab !== 'build' || activeRunId || !latestRun) return;
+    if (['queued', 'running', 'paused_for_approval'].includes(latestRun.status)) {
+      setActiveRunId(latestRun.workflow_run_id);
+    }
+  }, [activeTab, activeRunId, latestRun]);
 
   const stepCompleted = useMemo<Record<TabId, boolean>>(() => {
     const uploadDone = spec !== null;
@@ -365,16 +497,7 @@ export const ProjectWorkspace: React.FC = () => {
       });
       setUploadResult(result);
       setPhase('success');
-      setEvents(prev => [
-        {
-          id: String(Date.now()),
-          timestamp: new Date().toLocaleTimeString(),
-          level: 'success',
-          message: `Specification ingested (${result.endpoints_discovered ?? 0} endpoints discovered).`,
-          agent: 'IngestionAgent',
-        },
-        ...prev,
-      ]);
+      if (result.workflow_run_id) setActiveRunId(result.workflow_run_id);
       await loadProjectData();
     } catch (err) {
       setPhase('error');
@@ -411,6 +534,101 @@ export const ProjectWorkspace: React.FC = () => {
     setSpecContent(DEFAULT_SPEC);
   };
 
+  /* --- plan actions --- */
+
+  const approvePlan = async () => {
+    setPlanBusy(true);
+    setPlanError('');
+    try {
+      if (latestRun) {
+        await apiFetch(`/workflows/${latestRun.workflow_run_id}/approve`, {
+          method: 'POST',
+          body: JSON.stringify({ approved: true }),
+        });
+      }
+      setPlanApproved(true);
+    } catch (err) {
+      setPlanError(errorMessage(err));
+    } finally {
+      setPlanBusy(false);
+    }
+  };
+
+  /* --- build actions --- */
+
+  const runBuild = async () => {
+    if (!id) return;
+    setBuildError('');
+    try {
+      const res = await apiFetch<TriggerWorkflowResponse>(`/projects/${id}/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({
+          stages: ['plan', 'generate', 'test', 'export'],
+          target_languages: ['python', 'node'],
+          execution_mode: 'sync',
+        }),
+      });
+      setActiveRunId(res.workflow_run_id);
+    } catch (err) {
+      setBuildError(errorMessage(err));
+    }
+  };
+
+  /* --- test actions --- */
+
+  const runTests = async () => {
+    if (!id) return;
+    setTestBusy(true);
+    setTestError('');
+    setTestSummary(null);
+    try {
+      const trigger = await apiFetch<TestRunTriggerResponse>(`/projects/${id}/test`, {
+        method: 'POST',
+        body: JSON.stringify({ environment: testEnv }),
+      });
+      let summary: TestRunSummary | null = null;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await sleep(attempt === 0 ? 1500 : 3000);
+        summary = await apiFetch<TestRunSummary>(`/projects/${id}/test-runs/${trigger.test_run_id}`).catch(() => summary);
+        if (summary && summary.results.length > 0) break;
+      }
+      setTestSummary(summary);
+    } catch (err) {
+      setTestError(errorMessage(err));
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
+  /* --- export actions --- */
+
+  const triggerExport = async (exportType: string) => {
+    if (!id) return;
+    setExportBusy(exportType);
+    setExportError('');
+    setExportNote('');
+    try {
+      if (exportType === 'mcp') {
+        const res = await apiFetch<MCPExportResponse>(`/projects/${id}/export/mcp`, { method: 'POST' });
+        setExportNote(`MCP export complete — ${res.tools_generated} tool${res.tools_generated === 1 ? '' : 's'} generated, ${res.flagged_destructive} flagged destructive.`);
+      } else {
+        await apiFetch(`/projects/${id}/export`, {
+          method: 'POST',
+          body: JSON.stringify({ export_types: [exportType] }),
+        });
+        setExportNote(`${exportType} export queued.`);
+      }
+      const rows = await apiFetch<ExportRecord[]>(`/projects/${id}/exports`).catch(() => [] as ExportRecord[]);
+      setExports(Array.isArray(rows) ? rows : []);
+    } catch (err) {
+      setExportError(errorMessage(err));
+    } finally {
+      setExportBusy(null);
+    }
+  };
+
+  /* --- derived view data --- */
+
   const [filePreview, setFilePreview] = useState('');
   useEffect(() => {
     if (mode === 'file' && file && !file.name.toLowerCase().endsWith('.pdf')) {
@@ -436,6 +654,88 @@ export const ProjectWorkspace: React.FC = () => {
     name.toLowerCase().endsWith('.json') ? 'json' : name.toLowerCase().endsWith('.md') ? 'markdown' : 'yaml';
   const language = phase === 'success' && spec ? 'json' : editorLanguage(file?.name ?? 'spec.yaml');
 
+  const rawSpec = useMemo(() => (spec?.raw_normalized ?? {}) as NormalizedSpec, [spec]);
+  const projectDescription = useMemo(() => {
+    const info = rawSpec.info?.description?.trim();
+    if (info) return info.length > 160 ? `${info.slice(0, 157)}…` : info;
+    if (spec) {
+      const parts = [specFormat(rawSpec), specVersion(rawSpec) !== '—' ? `v${specVersion(rawSpec)}` : null, spec.base_url];
+      return parts.filter(Boolean).join(' · ');
+    }
+    return 'No specification uploaded yet.';
+  }, [spec, rawSpec]);
+
+  /* Topology: group graph nodes by resource (first meaningful path segment). */
+  const resourceGroups = useMemo(() => {
+    if (!graph || graph.nodes.length === 0) return [];
+    const skip = new Set(['api', 'v1', 'v2', 'v3']);
+    const nodeById = new Map(graph.nodes.map(n => [n.id, n]));
+    const groups = new Map<string, DependencyNode[]>();
+    for (const node of graph.nodes) {
+      const segs = node.path.split('/').filter(s => s && !s.startsWith('{'));
+      const key = segs.find(s => !skip.has(s.toLowerCase())) || 'general';
+      const list = groups.get(key) || [];
+      list.push(node);
+      groups.set(key, list);
+    }
+    const edgeCounts = new Map<string, { out: number; targets: string[] }>();
+    for (const edge of graph.edges) {
+      const from = nodeById.get(edge.from_id);
+      const to = nodeById.get(edge.to_id);
+      if (!from) continue;
+      const entry = edgeCounts.get(from.id) || { out: 0, targets: [] };
+      entry.out += 1;
+      if (to && entry.targets.length < 2) entry.targets.push(to.label || `${to.method} ${to.path}`);
+      edgeCounts.set(from.id, entry);
+    }
+    return Array.from(groups.entries())
+      .sort((a, b) => b[1].length - a[1].length)
+      .map(([resource, nodes]) => ({ resource, nodes, edgeCounts }));
+  }, [graph]);
+
+  /* Agent execution streams: group logs by agent name. */
+  const agentStreams = useMemo(() => {
+    const byAgent = new Map<string, AgentEventLog[]>();
+    for (const log of logs) {
+      const name = log.agent_name || 'System';
+      const list = byAgent.get(name) || [];
+      list.push(log);
+      byAgent.set(name, list);
+    }
+    return Array.from(byAgent.entries()).map(([agent, events]) => ({
+      agent,
+      events: events.length,
+      latest: events[0], // logs arrive newest-first
+    }));
+  }, [logs]);
+
+  const agentNames = useMemo(
+    () => Array.from(new Set(logs.map(l => l.agent_name || 'System'))).sort(),
+    [logs],
+  );
+  const eventTypes = useMemo(
+    () => Array.from(new Set(logs.map(l => l.event_type))).sort(),
+    [logs],
+  );
+  const visibleLogs = useMemo(
+    () =>
+      logs.filter(l => {
+        if (logAgent !== 'all' && (l.agent_name || 'System') !== logAgent) return false;
+        if (logType !== 'all' && l.event_type !== logType) return false;
+        if (logQuery) {
+          const q = logQuery.toLowerCase();
+          const hay = `${l.event_type} ${l.agent_name ?? ''} ${eventMessage(l.payload)}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      }),
+    [logs, logAgent, logType, logQuery],
+  );
+
+  const endpointById = useMemo(() => new Map(endpoints.map(e => [e.id, e])), [endpoints]);
+
+  const runIsLive = activeRun !== null && ['queued', 'running', 'paused_for_approval'].includes(activeRun.status);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center">
@@ -459,6 +759,10 @@ export const ProjectWorkspace: React.FC = () => {
   const uploadedMeta = uploadResult
     ? { name: file?.name ?? 'pasted-spec.yaml', format: spec ? specFormat((spec.raw_normalized ?? {}) as NormalizedSpec) : '—' }
     : null;
+
+  const testTotal = testSummary?.summary.total ?? 0;
+  const testPassed = testSummary?.summary.passed ?? 0;
+  const successRate = testTotal > 0 ? `${((testPassed / testTotal) * 100).toFixed(1)}%` : '—';
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col selection:bg-white selection:text-black">
@@ -496,8 +800,9 @@ export const ProjectWorkspace: React.FC = () => {
             />
           </div>
           <div className="mt-2 flex flex-wrap items-end justify-between gap-x-6 gap-y-1 pb-4">
-            <div className="min-w-0">
+            <div className="min-w-0 max-w-3xl">
               <h1 className="truncate text-xl font-semibold tracking-tight">{project.name}</h1>
+              <p className="truncate text-sm text-neutral-400" title={projectDescription}>{projectDescription}</p>
               <p className="text-xs text-neutral-500">
                 {project.endpoint_count} endpoint{project.endpoint_count === 1 ? '' : 's'} · created {relativeTime(project.created_at)} · updated {relativeTime(project.updated_at)}
               </p>
@@ -522,9 +827,9 @@ export const ProjectWorkspace: React.FC = () => {
       )}
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6">
+        {/* ============================== UPLOAD ============================== */}
         {activeTab === 'upload' && (
           <div className="space-y-6">
-            {/* Mode selector */}
             <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-white/[0.02] p-1">
               {([
                 { id: 'file', label: 'Upload File', icon: Upload },
@@ -546,9 +851,7 @@ export const ProjectWorkspace: React.FC = () => {
               })}
             </div>
 
-            {/* Two-column workspace */}
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
-              {/* Left: input */}
               <div className="space-y-4 lg:col-span-3">
                 {mode === 'file' && <UploadDropzone file={file} onFile={f => { setFile(f); setPhase('idle'); }} disabled={phase === 'working'} />}
 
@@ -600,7 +903,6 @@ export const ProjectWorkspace: React.FC = () => {
                   </div>
                 )}
 
-                {/* Upload states */}
                 {phase === 'working' && (
                   <div className={`${cardCls} flex items-center gap-3 p-4 text-sm text-neutral-300`}>
                     <Loader2 className="h-4 w-4 animate-spin text-white" />
@@ -623,7 +925,6 @@ export const ProjectWorkspace: React.FC = () => {
                 )}
               </div>
 
-              {/* Right: preview */}
               <div className={`${cardCls} flex min-w-0 flex-col lg:col-span-2`}>
                 <div className="flex items-center justify-between border-b border-white/5 px-4 py-2.5">
                   <span className="text-sm font-medium">Specification Preview</span>
@@ -664,10 +965,8 @@ export const ProjectWorkspace: React.FC = () => {
               </div>
             </div>
 
-            {/* Analysis */}
             {showAnalysis && <AnalysisPanel spec={spec} endpoints={endpoints} />}
 
-            {/* What happens next */}
             <div>
               <h3 className="mb-3 text-sm font-medium uppercase tracking-wider text-neutral-400">What happens next?</h3>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -688,7 +987,6 @@ export const ProjectWorkspace: React.FC = () => {
               </div>
             </div>
 
-            {/* Bottom actions */}
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/5 pt-5">
               <button onClick={resetUpload} className={btnGhost} disabled={phase === 'working'}>
                 <RotateCcw className="h-4 w-4" /> Reset
@@ -714,130 +1012,448 @@ export const ProjectWorkspace: React.FC = () => {
           </div>
         )}
 
+        {/* =============================== PLAN =============================== */}
         {activeTab === 'plan' && (
-          <div className={`${cardCls} p-6`}>
-            <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h2 className="text-lg font-medium tracking-tight">Topological DAG Execution Plan</h2>
-                <p className="text-xs text-neutral-500">Review generated dependency graph and approve execution schedule.</p>
+                <h2 className="text-lg font-medium tracking-tight">API Topology & Integration Plan</h2>
+                <p className="text-xs text-neutral-500">
+                  {graph && graph.nodes.length > 0
+                    ? `${graph.nodes.length} endpoint${graph.nodes.length === 1 ? '' : 's'} · ${graph.edges.length} dependency${graph.edges.length === 1 ? '' : 'ies'} extracted from the specification`
+                    : 'Generated from the uploaded specification'}
+                </p>
               </div>
-              <button
-                onClick={() => setPlanApproved(true)}
-                className={`flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium transition-colors ${
-                  planApproved ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' : btnPrimary
-                }`}
-              >
-                {planApproved ? <><Check className="h-4 w-4" /> Plan Approved</> : 'Approve Execution Plan'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setPlanDocOpen(true)} className={btnGhost}>
+                  <FileText className="h-4 w-4" /> View Full Document
+                </button>
+                <button
+                  onClick={approvePlan}
+                  disabled={planBusy || planApproved}
+                  className={`flex items-center gap-2 rounded-full px-5 h-10 text-sm font-medium transition-colors ${
+                    planApproved
+                      ? 'border border-emerald-500/30 bg-emerald-500/15 text-emerald-300'
+                      : btnPrimary
+                  }`}
+                >
+                  {planBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : planApproved ? (
+                    <Check className="h-4 w-4" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4" />
+                  )}
+                  {planApproved ? 'Plan Approved' : 'Approve Plan'}
+                </button>
+              </div>
             </div>
-            <div className="h-[350px] overflow-hidden rounded-xl border border-white/15">
-              <Editor
-                height="100%"
-                defaultLanguage="markdown"
-                theme="vs-dark"
-                value={dagPlan}
-                onChange={val => setDagPlan(val || '')}
-                options={{ minimap: { enabled: false }, fontSize: 13 }}
+
+            {planError && <ErrorBanner message={planError} onDismiss={() => setPlanError('')} />}
+            {planApproved && !latestRun && (
+              <p className="text-xs text-neutral-500">
+                Approval recorded locally — no workflow run exists yet, so it will apply when a build is triggered.
+              </p>
+            )}
+
+            {resourceGroups.length === 0 ? (
+              <EmptyState
+                icon={<Network className="h-6 w-6" />}
+                title="No topology available yet"
+                description={spec
+                  ? 'This specification did not yield any endpoints, so there is nothing to plan. Upload a richer specification to build the graph.'
+                  : 'Upload an API specification to generate the endpoint topology and integration plan.'}
+                action={
+                  <button onClick={() => setActiveTab('upload')} className={btnPrimary}>
+                    Go to Upload <ArrowRight className="h-4 w-4" />
+                  </button>
+                }
               />
+            ) : (
+              <div className="flex items-stretch gap-3 overflow-x-auto pb-2">
+                {resourceGroups.map(group => (
+                  <div key={group.resource} className={`${cardCls} w-64 shrink-0 p-4 hover:bg-white/[0.04]`}>
+                    <div className="mb-3 flex items-center justify-between">
+                      <span className="truncate text-sm font-medium capitalize">{group.resource}</span>
+                      <span className="ml-2 shrink-0 rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-neutral-400">
+                        {group.nodes.length}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {group.nodes.map(node => {
+                        const deps = group.edgeCounts.get(node.id);
+                        return (
+                          <div key={node.id} className="rounded-xl border border-white/10 bg-white/[0.02] p-2.5">
+                            <div className="flex items-center gap-2">
+                              <MethodChip method={node.method} />
+                              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-300" title={node.path}>
+                                {node.path}
+                              </span>
+                              {node.is_destructive && (
+                                <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-rose-400" aria-label="Destructive operation" />
+                              )}
+                            </div>
+                            {node.label && node.label !== `${node.method} ${node.path}` && (
+                              <div className="mt-1 truncate text-[11px] text-neutral-500" title={node.label}>{node.label}</div>
+                            )}
+                            {deps && deps.out > 0 && (
+                              <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-neutral-500">
+                                <ArrowDown className="mt-0.5 h-3 w-3 shrink-0" />
+                                <span className="min-w-0">
+                                  depends on {deps.out} endpoint{deps.out === 1 ? '' : 's'}
+                                  {deps.targets.length > 0 && ` (${deps.targets.join(', ')}${deps.out > deps.targets.length ? ', …' : ''})`}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className={`${cardCls} p-5`}>
+              <h3 className="mb-2 text-sm font-medium">Execution schedule</h3>
+              <p className="mb-3 text-xs text-neutral-500">
+                Review or edit the generated plan document before approving. Agents execute it in the Build step.
+              </p>
+              <button onClick={() => setPlanDocOpen(true)} className={btnGhost}>
+                <FileCode2 className="h-4 w-4" /> Open plan document
+              </button>
             </div>
           </div>
         )}
 
+        {/* =============================== BUILD ============================== */}
         {activeTab === 'build' && (
-          <div className={`${cardCls} p-6`}>
-            <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <h2 className="text-lg font-medium tracking-tight">Agent Build & Execution</h2>
-                <p className="text-xs text-neutral-500">Monitor autonomous code generation and model compilation.</p>
+                <p className="text-xs text-neutral-500">Trigger the multi-agent pipeline and monitor each agent's event stream.</p>
               </div>
-              <button onClick={() => setBuilding(true)} disabled={building} className={btnPrimary}>
-                <PlayCircle className="h-4 w-4" />
-                {building ? 'Executing Agents…' : 'Run Build Pipeline'}
+              <button onClick={runBuild} disabled={runIsLive || !project} className={btnPrimary}>
+                {runIsLive ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                {runIsLive ? 'Pipeline Running…' : 'Run Build Pipeline'}
               </button>
             </div>
-            <div className="space-y-3">
-              {[
-                { icon: Cpu, title: 'FastAPI Pydantic Generator Agent', desc: 'Generates type-safe routers, models, and validation schemas.', badge: 'Completed', badgeStatus: 'completed' },
-                { icon: TerminalIcon, title: 'Celery Worker & Storage Service Agent', desc: 'Configures asynchronous task queues and SQLite/PostgreSQL storage.', badge: 'Ready', badgeStatus: 'queued' },
-              ].map(agent => {
-                const Icon = agent.icon;
-                return (
-                  <div key={agent.title} className={`${cardCls} flex items-center justify-between gap-4 p-4`}>
-                    <div className="flex min-w-0 items-center gap-4">
-                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/5">
-                        <Icon className="h-4 w-4" />
-                      </span>
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{agent.title}</div>
-                        <div className="truncate text-xs text-neutral-500">{agent.desc}</div>
-                      </div>
-                    </div>
-                    <StatusBadge status={agent.badgeStatus} label={agent.badge} />
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
 
-        {activeTab === 'test' && (
-          <div className={`${cardCls} p-6`}>
-            <h2 className="text-lg font-medium tracking-tight">Test Suite & Self-Healing Telemetry</h2>
-            <p className="mb-5 text-xs text-neutral-500">Verify endpoint responses, status codes, and latency metrics.</p>
-            <div className="space-y-3">
-              {testResults.map(test => (
-                <div key={`${test.method}${test.endpoint}`} className={`${cardCls} flex flex-wrap items-center justify-between gap-4 p-4`}>
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="rounded-lg bg-white/10 px-2 py-1 font-mono text-[11px] font-bold">{test.method}</span>
-                    <span className="truncate font-mono text-sm text-neutral-200">{test.endpoint}</span>
+            {buildError && <ErrorBanner message={buildError} onDismiss={() => setBuildError('')} />}
+
+            {activeRun && (
+              <div className={`${cardCls} p-5`}>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <StatusBadge status={activeRun.status} />
+                    {activeRun.current_node && (
+                      <span className="font-mono text-xs text-neutral-400">node: {activeRun.current_node}</span>
+                    )}
                   </div>
-                  <div className="flex items-center gap-4">
-                    <span className="font-mono text-xs text-neutral-500">{test.latency}</span>
-                    <StatusBadge status="completed" label={`${test.status} OK`} />
+                  <div className="flex items-center gap-4 text-xs text-neutral-500">
+                    <span className="flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" /> started {relativeTime(activeRun.started_at)}</span>
+                    <span>{activeRun.total_tokens_used.toLocaleString()} tokens</span>
                   </div>
                 </div>
-              ))}
-            </div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className={`h-full rounded-full transition-all duration-700 ${
+                      activeRun.status === 'failed' ? 'bg-red-500/60' : activeRun.status === 'completed' ? 'bg-emerald-500' : 'bg-blue-500'
+                    }`}
+                    style={{ width: `${Math.max(4, activeRun.progress_percent)}%` }}
+                  />
+                </div>
+                <div className="mt-1.5 text-right text-[11px] text-neutral-500">{activeRun.progress_percent}%</div>
+              </div>
+            )}
+
+            {agentStreams.length === 0 ? (
+              <EmptyState
+                icon={<Boxes className="h-6 w-6" />}
+                title="No agent activity yet"
+                description="Run the build pipeline to see per-agent execution streams here. Each agent's events will appear as they are emitted."
+              />
+            ) : (
+              <div className={`${cardCls} overflow-hidden`}>
+                <div className="border-b border-white/5 px-5 py-3">
+                  <h3 className="text-sm font-medium">Agent Execution Streams</h3>
+                </div>
+                <table className={tableCls}>
+                  <thead>
+                    <tr className="border-b border-white/10 text-left">
+                      <Th>Agent</Th>
+                      <Th>Latest event</Th>
+                      <Th>Status</Th>
+                      <Th>Activity</Th>
+                      <Th>Updated</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {agentStreams.map(stream => (
+                      <tr key={stream.agent} className="border-b border-white/5 hover:bg-white/[0.02]">
+                        <Td>
+                          <span className="flex items-center gap-2.5">
+                            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/5">
+                              <Boxes className="h-3.5 w-3.5 text-neutral-400" />
+                            </span>
+                            <span className="text-sm font-medium">{stream.agent}</span>
+                          </span>
+                        </Td>
+                        <Td>
+                          <span className="block max-w-[320px] truncate font-mono text-xs text-neutral-400" title={eventMessage(stream.latest?.payload ?? null)}>
+                            {stream.latest?.event_type?.replace(/_/g, ' ') || '—'}
+                            {eventMessage(stream.latest?.payload ?? null) ? ` — ${eventMessage(stream.latest?.payload ?? null)}` : ''}
+                          </span>
+                        </Td>
+                        <Td><StatusBadge status={stream.latest?.event_type} /></Td>
+                        <Td>
+                          <span className="rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-neutral-400">
+                            {stream.events} event{stream.events === 1 ? '' : 's'}
+                          </span>
+                        </Td>
+                        <Td>
+                          <span className="text-xs text-neutral-500">{relativeTime(stream.latest?.created_at)}</span>
+                        </Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
+        {/* =============================== TEST =============================== */}
+        {activeTab === 'test' && (
+          <div className="space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-medium tracking-tight">Test Suite & Self-Healing Telemetry</h2>
+                <p className="text-xs text-neutral-500">Execute generated tests against {testEnv === 'live' ? 'the live API' : 'a sandbox'} and inspect per-endpoint results.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <FilterSelect
+                  value={testEnv}
+                  onChange={setTestEnv}
+                  options={[
+                    { value: 'sandbox', label: 'Sandbox' },
+                    { value: 'live', label: 'Live' },
+                  ]}
+                />
+                <button onClick={runTests} disabled={testBusy || endpoints.length === 0} className={btnPrimary}>
+                  {testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FlaskConical className="h-4 w-4" />}
+                  {testBusy ? 'Running…' : 'Run Test Suite'}
+                </button>
+              </div>
+            </div>
+
+            {testError && <ErrorBanner message={testError} onDismiss={() => setTestError('')} />}
+
+            {endpoints.length === 0 && (
+              <p className="text-xs text-amber-300">
+                No endpoints discovered for this project — upload a specification with paths before running tests.
+              </p>
+            )}
+
+            {testSummary && testSummary.results.length > 0 ? (
+              <>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+                  <StatCard icon={<FlaskConical className="h-4 w-4" />} label="Total tests" value={String(testTotal)} />
+                  <StatCard icon={<CheckCircle2 className="h-4 w-4 text-emerald-400" />} label="Passed" value={String(testSummary.summary.passed ?? 0)} />
+                  <StatCard icon={<XCircle className="h-4 w-4 text-red-400" />} label="Failed" value={String(testSummary.summary.failed ?? 0)} />
+                  <StatCard icon={<Clock className="h-4 w-4" />} label="Skipped" value={String(testSummary.summary.skipped ?? 0)} />
+                  <StatCard icon={<CheckCircle2 className="h-4 w-4" />} label="Success rate" value={successRate} />
+                </div>
+
+                <div className={`${cardCls} overflow-hidden`}>
+                  <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+                    <h3 className="text-sm font-medium">Test results</h3>
+                    <span className="font-mono text-[11px] text-neutral-500">run {shortId(testSummary.test_run_id)}</span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className={tableCls}>
+                      <thead>
+                        <tr className="border-b border-white/10 text-left">
+                          <Th>Endpoint</Th>
+                          <Th>Status</Th>
+                          <Th>HTTP code</Th>
+                          <Th>Latency</Th>
+                          <Th>Notes</Th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {testSummary.results.map(result => {
+                          const ep = result.endpoint_id ? endpointById.get(result.endpoint_id) : undefined;
+                          return (
+                            <tr key={result.id} className="border-b border-white/5 hover:bg-white/[0.02]">
+                              <Td>
+                                <span className="flex items-center gap-2.5">
+                                  {ep ? <MethodChip method={ep.method} /> : null}
+                                  <span className="max-w-[320px] truncate font-mono text-xs text-neutral-200">
+                                    {ep ? ep.path : result.endpoint_id ? shortId(result.endpoint_id) : '—'}
+                                  </span>
+                                </span>
+                              </Td>
+                              <Td><StatusBadge status={result.status === 'passed' ? 'completed' : result.status === 'failed' ? 'failed' : result.status} label={result.status} /></Td>
+                              <Td><span className="font-mono text-xs text-neutral-400">{result.status_code ?? '—'}</span></Td>
+                              <Td><span className="font-mono text-xs text-neutral-400">{result.latency_ms !== null ? `${result.latency_ms} ms` : '—'}</span></Td>
+                              <Td>
+                                <span className="block max-w-[280px] truncate text-xs text-neutral-500" title={result.error || undefined}>
+                                  {result.error || ''}
+                                </span>
+                              </Td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            ) : testBusy ? (
+              <div className={`${cardCls} flex items-center gap-3 p-5 text-sm text-neutral-300`}>
+                <Loader2 className="h-4 w-4 animate-spin" /> Executing tests… results appear as each endpoint completes.
+              </div>
+            ) : (
+              <EmptyState
+                icon={<FlaskConical className="h-6 w-6" />}
+                title="No test run yet"
+                description="Run the test suite to validate generated integration code. Pass/fail counts, status codes and latency will appear here."
+              />
+            )}
+          </div>
+        )}
+
+        {/* ============================== EXPORT ============================== */}
         {activeTab === 'export' && (
-          <div className={`${cardCls} p-6`}>
-            <h2 className="text-lg font-medium tracking-tight">Infrastructure Export Wizard</h2>
-            <p className="mb-5 text-xs text-neutral-500">Export your generated workflows to production-ready targets.</p>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-lg font-medium tracking-tight">Export Integration</h2>
+              <p className="text-xs text-neutral-500">Generate artifacts from the built integration. Export status is tracked below.</p>
+            </div>
+
+            {exportError && <ErrorBanner message={exportError} onDismiss={() => setExportError('')} />}
+            {exportNote && (
+              <div className={`${cardCls} flex items-center gap-3 p-4 text-sm text-emerald-300`}>
+                <CheckCircle2 className="h-4 w-4 shrink-0" /> {exportNote}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
               {[
-                { title: 'Docker Compose Bundle', desc: 'Complete containerized deployment with FastAPI, Celery worker, Redis, and frontend Nginx.', cta: 'Download ZIP' },
-                { title: 'FastAPI Python SDK', desc: 'Standalone Python client package with full Pydantic type hints and async support.', cta: 'Download SDK' },
+                { type: 'sdk', title: 'Python SDK', desc: 'Generated client package with typed models and async support.' },
+                { type: 'client', title: 'TypeScript Client', desc: 'Typed client library generated from the normalized specification.' },
+                { type: 'docker', title: 'Dockerfile & Compose', desc: 'Containerized deployment bundle for the generated service.' },
+                { type: 'mcp', title: 'MCP Tools', desc: 'Export the integration as Model Context Protocol tools.' },
+                { type: 'docs', title: 'API Documentation', desc: 'Rendered documentation for the integrated API.' },
+                { type: 'cicd', title: 'CI/CD Pipelines', desc: 'Pipeline definitions for building and testing the integration.' },
               ].map(target => (
-                <div key={target.title} className={`${cardCls} p-5 transition-colors hover:border-white/25`}>
+                <div key={target.type} className={`${cardCls} flex flex-col p-5 transition-colors hover:border-white/25`}>
                   <h3 className="mb-1 text-sm font-medium">{target.title}</h3>
-                  <p className="mb-4 text-xs leading-relaxed text-neutral-500">{target.desc}</p>
-                  <button className={btnGhost}>
-                    <Download className="h-3.5 w-3.5" /> {target.cta}
+                  <p className="mb-4 flex-1 text-xs leading-relaxed text-neutral-500">{target.desc}</p>
+                  <button
+                    onClick={() => triggerExport(target.type)}
+                    disabled={exportBusy !== null}
+                    className={`${btnGhost} h-9 px-4 text-xs`}
+                  >
+                    {exportBusy === target.type ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Boxes className="h-3.5 w-3.5" />}
+                    Generate
                   </button>
                 </div>
               ))}
             </div>
-          </div>
-        )}
 
-        {activeTab === 'logs' && (
-          <div className={`${cardCls} p-6`}>
-            <h2 className="text-lg font-medium tracking-tight">Real-Time Event Stream</h2>
-            <p className="mb-5 text-xs text-neutral-500">Structured audit logs and agent telemetry events.</p>
-            <div className="h-[400px] overflow-y-auto rounded-xl border border-white/15 bg-neutral-950 p-4 font-mono text-xs">
-              {events.map(ev => (
-                <div key={ev.id} className="flex items-start gap-4 border-b border-white/5 pb-3">
-                  <span className="shrink-0 text-neutral-500">[{ev.timestamp}]</span>
-                  <span className="shrink-0 rounded bg-white/10 px-2 py-0.5 text-[10px] uppercase text-neutral-300">{ev.agent || 'Agent'}</span>
-                  <span className="text-neutral-200">{ev.message}</span>
-                </div>
-              ))}
+            <div className={`${cardCls} overflow-hidden`}>
+              <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+                <h3 className="text-sm font-medium">Recent exports</h3>
+                <button
+                  onClick={async () => {
+                    if (!id) return;
+                    const rows = await apiFetch<ExportRecord[]>(`/projects/${id}/exports`).catch(() => [] as ExportRecord[]);
+                    setExports(Array.isArray(rows) ? rows : []);
+                  }}
+                  className="rounded-lg p-1.5 text-neutral-400 hover:bg-white/5 hover:text-white"
+                  title="Refresh"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {exports.length === 0 ? (
+                <p className="px-5 py-8 text-center text-sm text-neutral-500">No exports generated yet.</p>
+              ) : (
+                <table className={tableCls}>
+                  <thead>
+                    <tr className="border-b border-white/10 text-left">
+                      <Th>Type</Th>
+                      <Th>Status</Th>
+                      <Th>Created</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {exports.map(row => (
+                      <tr key={row.id} className="border-b border-white/5 hover:bg-white/[0.02]">
+                        <Td><span className="font-mono text-xs capitalize">{row.export_type}</span></Td>
+                        <Td><StatusBadge status={row.status} /></Td>
+                        <Td><span className="text-xs text-neutral-500">{relativeTime(row.created_at)}</span></Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           </div>
         )}
 
+        {/* =============================== LOGS =============================== */}
+        {activeTab === 'logs' && (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-medium tracking-tight">Real-Time Event Stream</h2>
+                <p className="text-xs text-neutral-500">{logs.length} agent event{logs.length === 1 ? '' : 's'} recorded for this project.</p>
+              </div>
+              <button onClick={loadProjectData} className={btnGhost}>
+                <RefreshCw className="h-4 w-4" /> Refresh
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <SearchInput value={logQuery} onChange={setLogQuery} placeholder="Search events…" className="min-w-[220px] flex-1" />
+              <FilterSelect
+                value={logAgent}
+                onChange={setLogAgent}
+                options={[{ value: 'all', label: 'All agents' }, ...agentNames.map(n => ({ value: n, label: n }))]}
+              />
+              <FilterSelect
+                value={logType}
+                onChange={setLogType}
+                options={[{ value: 'all', label: 'All events' }, ...eventTypes.map(t => ({ value: t, label: t.replace(/_/g, ' ') }))]}
+              />
+            </div>
+
+            <div className="max-h-[520px] overflow-y-auto rounded-2xl border border-white/15 bg-neutral-950 p-4 font-mono text-xs">
+              {visibleLogs.length === 0 ? (
+                <p className="py-10 text-center text-neutral-500">
+                  {logs.length === 0
+                    ? 'No events recorded yet. Upload a specification or run the build pipeline to generate agent events.'
+                    : 'No events match the current filters.'}
+                </p>
+              ) : (
+                visibleLogs.map(ev => (
+                  <div key={ev.id} className="flex items-start gap-3 border-b border-white/5 py-2 last:border-0">
+                    <span className="shrink-0 text-neutral-500">[{formatEventTime(ev.created_at)}]</span>
+                    <span className="shrink-0 rounded bg-white/10 px-2 py-0.5 text-[10px] text-neutral-300">{ev.agent_name || 'System'}</span>
+                    <span className="shrink-0 rounded bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wider text-neutral-400">{ev.event_type}</span>
+                    <span className="min-w-0 flex-1 break-words text-neutral-200">{eventMessage(ev.payload) || '—'}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ============================= SETTINGS ============================= */}
         {activeTab === 'settings' && (
           <div className={`${cardCls} p-6`}>
             <h2 className="text-lg font-medium tracking-tight">Project Settings & Details</h2>
@@ -845,6 +1461,7 @@ export const ProjectWorkspace: React.FC = () => {
             <div className="divide-y divide-white/5">
               {[
                 { label: 'Project name', value: project.name },
+                { label: 'Specification', value: spec ? spec.title || specFormat(rawSpec) : 'None uploaded' },
                 { label: 'Status', value: project.status },
                 { label: 'Project ID', value: project.id, mono: true },
                 { label: 'Organization ID', value: project.organization_id, mono: true },
@@ -890,6 +1507,22 @@ export const ProjectWorkspace: React.FC = () => {
               theme="vs-dark"
               value={editorValue || '# Nothing to preview yet'}
               options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false }}
+            />
+          </div>
+        </Modal>
+      )}
+
+      {/* Plan document modal */}
+      {planDocOpen && (
+        <Modal onClose={() => setPlanDocOpen(false)} title="Topological Plan Document">
+          <div className="h-[60vh] overflow-hidden rounded-xl border border-white/15">
+            <Editor
+              height="100%"
+              defaultLanguage="markdown"
+              theme="vs-dark"
+              value={dagPlan}
+              onChange={val => setDagPlan(val || '')}
+              options={{ minimap: { enabled: false }, fontSize: 13, scrollBeyondLastLine: false }}
             />
           </div>
         </Modal>
