@@ -17,7 +17,7 @@ export const DashboardPage: React.FC = () => {
 
   useEffect(() => {
     apiFetch<Project[]>('/projects')
-      .then(data => setProjects(data))
+      .then(data => setProjects(Array.isArray(data) ? data : []))
       .catch(() => {
         setProjects([
           {
