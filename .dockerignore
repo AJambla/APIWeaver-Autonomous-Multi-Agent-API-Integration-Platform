@@ -59,3 +59,21 @@ infra/terraform/
 **/README.md
 **/README.txt
 **/*.md
+
+# Frontend (not needed for backend/agent-worker builds)
+frontend/
+frontend-*/
+
+# Scripts and CI/CD
+scripts/
+.github/
+
+# Kilo config
+.kilo/
+
+# Database migrations (alembic) - not needed for agent-worker
+backend/alembic/
+
+# Local development
+*.local
+*.dev

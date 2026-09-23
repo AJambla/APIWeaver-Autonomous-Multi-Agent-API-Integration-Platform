@@ -13,6 +13,7 @@ class TestCeleryTasks:
         try:
             from agent_worker.celery_app import app
             assert "agent_worker.tasks.run_document_agent" in app.tasks
+            assert "agent_worker.tasks.run_planner_agent" in app.tasks
             assert "agent_worker.tasks.run_code_agent" in app.tasks
             assert "agent_worker.tasks.run_testing_agent" in app.tasks
             assert "agent_worker.tasks.run_export_agent" in app.tasks
@@ -35,6 +36,16 @@ class TestCeleryTasks:
         try:
             from agent_worker.tasks.codegen_tasks import run_code_agent_task
             assert run_code_agent_task is not None
+        except ImportError:
+            pytest.skip("agent_worker package not available in test environment")
+
+    @pytest.mark.asyncio
+    async def test_planner_task_registered(self):
+        """Planner agent task is registered."""
+        try:
+            from agent_worker.tasks.planner_tasks import run_planner_agent_task
+
+            assert run_planner_agent_task is not None
         except ImportError:
             pytest.skip("agent_worker package not available in test environment")
 
