@@ -1,10 +1,12 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { AuthTokens, MeResponse, User } from './types';
+import { AuthTokens, MeResponse, OrganizationMembership, User } from './types';
 import { apiFetch } from './api';
 
 interface AuthContextType {
   user: User | null;
   organizationId: string | null;
+  organizations: OrganizationMembership[];
+  selectOrganization: (orgId: string) => void;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, fullName?: string) => Promise<void>;
@@ -15,11 +17,13 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [organizations, setOrganizations] = useState<OrganizationMembership[]>([]);
   const [organizationId, setOrganizationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const setCurrentUser = (data: MeResponse) => {
     setUser(data.user);
+    setOrganizations(data.organizations);
     setOrganizationId(data.organizations[0]?.organization_id ?? null);
   };
 
@@ -80,7 +84,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, organizationId, loading, login, register, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        organizationId,
+        organizations,
+        selectOrganization: setOrganizationId,
+        loading,
+        login,
+        register,
+        logout,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
