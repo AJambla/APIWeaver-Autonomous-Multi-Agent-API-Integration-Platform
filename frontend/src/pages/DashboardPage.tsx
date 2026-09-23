@@ -1,32 +1,72 @@
-import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../lib/auth-context';
 import { apiFetch } from '../lib/api';
-import { Project } from '../lib/types';
-import { Plus, FolderKanban, LogOut, ArrowUpRight, Clock, X } from 'lucide-react';
+import { PROJECT_STATUSES, Page, Project, ProjectSummary } from '../lib/types';
+import { relativeTime } from '../lib/format';
+import {
+  btnGhost,
+  btnPrimary,
+  cardCls,
+  EmptyState,
+  ErrorBanner,
+  FilterSelect,
+  inputCls,
+  Modal,
+  OptionsMenu,
+  PageHeader,
+  SearchInput,
+  Skeleton,
+  StatusBadge,
+} from '../components/ui';
+import { Plus, FolderKanban, ArrowUpRight, Archive, Clock, FileCode2, MoreHorizontal } from 'lucide-react';
 
-interface Page<T> {
-  data: T[];
-}
-
-const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Unable to complete the request.';
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : 'Unable to complete the request.');
 
 export const DashboardPage: React.FC = () => {
-  const { user, organizationId, logout } = useAuth();
+  const { organizationId } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [summaries, setSummaries] = useState<Record<string, ProjectSummary>>({});
   const [loading, setLoading] = useState(true);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [newProjectName, setNewProjectName] = useState('');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [sortBy, setSortBy] = useState<'updated' | 'name'>('updated');
+  const [archivingId, setArchivingId] = useState<string | null>(null);
+  const [pendingArchive, setPendingArchive] = useState<Project | null>(null);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    apiFetch<Page<Project>>('/projects')
-      .then(({ data }) => setProjects(data))
-      .catch(error => setError(errorMessage(error)))
+  const isModalOpen = searchParams.get('new') === '1';
+  const openModal = () => setSearchParams({ new: '1' });
+  const closeModal = () => setSearchParams({});
+
+  const loadProjects = useCallback(() => {
+    if (!organizationId) return;
+    setLoading(true);
+    apiFetch<Page<Project>>(`/projects?limit=100&organization_id=${organizationId}`)
+      .then(({ data }) => {
+        setProjects(data);
+        // Enrich cards with real per-project summary counts.
+        Promise.allSettled(data.slice(0, 30).map(p => apiFetch<ProjectSummary>(`/projects/${p.id}`))).then(results => {
+          setSummaries(
+            Object.fromEntries(
+              results
+                .filter((r): r is PromiseFulfilledResult<ProjectSummary> => r.status === 'fulfilled')
+                .map(r => [r.value.id, r.value]),
+            ),
+          );
+        });
+      })
+      .catch(err => setError(errorMessage(err)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [organizationId]);
+
+  useEffect(() => {
+    loadProjects();
+  }, [loadProjects]);
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,7 +74,6 @@ export const DashboardPage: React.FC = () => {
       setError('An organization is required to create a project.');
       return;
     }
-
     setCreating(true);
     setError('');
     try {
@@ -42,179 +81,224 @@ export const DashboardPage: React.FC = () => {
         method: 'POST',
         body: JSON.stringify({ name: newProjectName.trim(), organization_id: organizationId }),
       });
-      setProjects(currentProjects => [created, ...currentProjects]);
-      setIsModalOpen(false);
+      setProjects(current => [created, ...current]);
+      closeModal();
       setNewProjectName('');
       navigate(`/projects/${created.id}`);
-    } catch (error) {
-      setError(errorMessage(error));
+    } catch (err) {
+      setError(errorMessage(err));
     } finally {
       setCreating(false);
     }
   };
 
+  const handleArchive = async (project: Project) => {
+    setArchivingId(project.id);
+    setError('');
+    try {
+      const archived = await apiFetch<Project>(`/projects/${project.id}`, { method: 'DELETE' });
+      setProjects(current => current.map(p => (p.id === archived.id ? archived : p)));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setArchivingId(null);
+    }
+  };
+
+  const visibleProjects = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    let list = projects;
+    if (term) list = list.filter(p => p.name.toLowerCase().includes(term));
+    if (statusFilter !== 'all') list = list.filter(p => p.status === statusFilter);
+    return [...list].sort((a, b) =>
+      sortBy === 'name'
+        ? a.name.localeCompare(b.name)
+        : new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+    );
+  }, [projects, search, statusFilter, sortBy]);
+
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col selection:bg-white selection:text-black">
-      {/* Header */}
-      <header className="border-b border-white/10 bg-black/60 backdrop-blur-xl sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-white text-black flex items-center justify-center font-bold tracking-tighter text-lg">
-              AW
-            </div>
-            <span className="font-semibold tracking-tight text-lg">API Weaver Workspace</span>
-          </div>
-
-          <div className="flex items-center gap-6">
-            <div className="text-right hidden sm:block">
-              <div className="text-sm font-medium">{user?.full_name || user?.email || 'Operator'}</div>
-              <div className="text-xs text-neutral-400">SOC2 Verified Tier</div>
-            </div>
-            <button
-              onClick={logout}
-              className="p-2.5 rounded-xl glass-pill hover:bg-white/10 text-neutral-300 hover:text-white transition-colors"
-              title="Sign out"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-6 py-12 flex-1 w-full">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
-          <div>
-            <h1 className="text-3xl md:text-4xl font-normal tracking-tight mb-2">Projects & Workspaces</h1>
-            <p className="text-neutral-400 text-sm">Manage your autonomous AI agent pipelines and specification specs.</p>
-          </div>
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="px-6 py-3 rounded-full bg-white text-black text-sm font-medium hover:bg-neutral-200 transition-all flex items-center gap-2 shadow-[0_0_25px_rgba(255,255,255,0.2)] self-start md:self-auto"
-          >
-            <Plus className="w-4 h-4" />
-            <span>New Project</span>
+    <div className="px-6 py-10 lg:px-10">
+      <PageHeader
+        title="Projects & Workspaces"
+        subtitle="Manage your autonomous AI agent pipelines and API specification projects."
+        actions={
+          <button onClick={openModal} className={btnPrimary}>
+            <Plus className="h-4 w-4" /> New Project
           </button>
+        }
+      />
+
+      <div className="mb-8 flex flex-col gap-3 sm:flex-row">
+        <SearchInput value={search} onChange={setSearch} placeholder="Search projects..." className="flex-1 sm:max-w-sm" />
+        <FilterSelect
+          value={statusFilter}
+          onChange={setStatusFilter}
+          options={[
+            { value: 'all', label: 'All statuses' },
+            ...PROJECT_STATUSES.map(s => ({ value: s, label: s })),
+          ]}
+        />
+        <FilterSelect
+          value={sortBy}
+          onChange={v => setSortBy(v as 'updated' | 'name')}
+          options={[
+            { value: 'updated', label: 'Recently updated' },
+            { value: 'name', label: 'Name (A-Z)' },
+          ]}
+        />
+      </div>
+
+      {error && <ErrorBanner message={error} onDismiss={() => setError('')} />}
+
+      {loading ? (
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+          {[1, 2, 3, 4, 5, 6].map(i => (
+            <Skeleton key={i} className="h-44" />
+          ))}
         </div>
-
-        {error && (
-          <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/40 p-4 text-xs text-red-300">
-            {error}
-          </div>
-        )}
-
-        {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {[1, 2, 3].map(i => (
-              <div key={i} className="glass-card p-6 rounded-2xl h-48 animate-pulse bg-white/5" />
-            ))}
-          </div>
-        ) : projects.length === 0 ? (
-          <div className="glass-card p-16 rounded-3xl text-center flex flex-col items-center justify-center border border-white/10">
-            <FolderKanban className="w-12 h-12 text-neutral-500 mb-4" />
-            <h3 className="text-lg font-medium mb-2">No projects found</h3>
-            <p className="text-neutral-400 text-sm max-w-sm mb-6">Get started by creating your first autonomous API pipeline project.</p>
-            <button
-              onClick={() => setIsModalOpen(true)}
-              className="px-6 py-3 rounded-full bg-white text-black text-sm font-medium hover:bg-neutral-200 transition-all flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Create Project</span>
+      ) : projects.length === 0 ? (
+        <EmptyState
+          icon={<FolderKanban className="h-6 w-6" />}
+          title="No projects found"
+          description="Create your first autonomous API pipeline project to get started."
+          action={
+            <button onClick={openModal} className={btnPrimary}>
+              <Plus className="h-4 w-4" /> Create Project
             </button>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {projects.map(proj => (
-              <Link
-                key={proj.id}
-                to={`/projects/${proj.id}`}
-                className="glass-card p-6 rounded-2xl border border-white/10 hover:border-white/30 transition-all flex flex-col justify-between group relative overflow-hidden"
+          }
+        />
+      ) : visibleProjects.length === 0 ? (
+        <EmptyState
+          icon={<MoreHorizontal className="h-6 w-6" />}
+          title="No matching projects"
+          description="Try a different search term or clear the filters."
+          action={
+            <button
+              onClick={() => {
+                setSearch('');
+                setStatusFilter('all');
+              }}
+              className={btnGhost}
+            >
+              Clear filters
+            </button>
+          }
+        />
+      ) : (
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+          {visibleProjects.map(project => {
+            const summary = summaries[project.id];
+            return (
+              <div
+                key={project.id}
+                className={`${cardCls} group flex flex-col p-5 hover:bg-white/[0.05] ${project.status === 'archived' ? 'opacity-60' : ''}`}
               >
-                <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-2xl group-hover:bg-white/10 transition-colors pointer-events-none" />
+                <div className="mb-3 flex items-start justify-between gap-2">
+                  <StatusBadge status={project.status} />
+                  <OptionsMenu
+                    items={[
+                      { label: 'Open Workspace', onSelect: () => navigate(`/projects/${project.id}`) },
+                      {
+                        label: project.status === 'archived' ? 'Archived' : 'Archive Project',
+                        onSelect: () => project.status !== 'archived' && setPendingArchive(project),
+                        danger: true,
+                      },
+                    ]}
+                  />
+                </div>
 
-                <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="px-3 py-1 rounded-full bg-white/10 text-xs font-medium text-neutral-200 capitalize">
-                      {proj.status || 'Active'}
+                <Link to={`/projects/${project.id}`} className="min-w-0 flex-1">
+                  <h3 className="mb-3 truncate text-base font-medium tracking-tight group-hover:text-white">
+                    {project.name}
+                  </h3>
+                  <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-neutral-500">
+                    <span className="inline-flex items-center gap-1.5">
+                      <FileCode2 className="h-3.5 w-3.5" />
+                      {summary ? `${summary.endpoint_count} endpoints` : '— endpoints'}
                     </span>
-                    <ArrowUpRight className="w-4 h-4 text-neutral-500 group-hover:text-white group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all" />
+                    {summary?.last_run_status && <StatusBadge status={summary.last_run_status} label={`last run: ${summary.last_run_status}`} />}
                   </div>
+                </Link>
 
-                  <h3 className="text-xl font-medium mb-2 tracking-tight">{proj.name}</h3>
-                  <p className="text-neutral-400 text-xs line-clamp-2 leading-relaxed mb-6">
-                    {proj.description || 'No description provided.'}
-                  </p>
+                <div className="flex items-center justify-between border-t border-white/5 pt-3">
+                  <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500">
+                    <Clock className="h-3.5 w-3.5" />
+                    {relativeTime(project.updated_at)}
+                  </span>
+                  <Link
+                    to={`/projects/${project.id}`}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-neutral-300 hover:text-white transition-colors"
+                  >
+                    Open Workspace <ArrowUpRight className="h-3.5 w-3.5" />
+                  </Link>
                 </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
-                <div>
-                  {proj.progress !== undefined && (
-                    <div className="mb-4">
-                      <div className="flex justify-between text-xs text-neutral-400 mb-1.5">
-                        <span>Workflow Progress</span>
-                        <span>{proj.progress}%</span>
-                      </div>
-                      <div className="w-full bg-neutral-900 h-1.5 rounded-full overflow-hidden">
-                        <div className="bg-white h-full rounded-full transition-all duration-500" style={{ width: `${proj.progress}%` }} />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-2 text-xs text-neutral-500 pt-4 border-t border-white/10">
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>Updated {new Date(proj.created_at).toLocaleDateString()}</span>
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
-      </main>
-
-      {/* New Project Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-6">
-          <div className="max-w-md w-full glass-card p-8 rounded-3xl border border-white/20 appear-scale relative">
-            <button
-              onClick={() => setIsModalOpen(false)}
-              className="absolute top-6 right-6 p-2 rounded-xl text-neutral-400 hover:text-white transition-colors"
-            >
-              <X className="w-4 h-4" />
+        <Modal
+          title="Create New Project"
+          description="Initialize a new agent pipeline workspace. You can upload an OpenAPI spec in the next step."
+          onClose={closeModal}
+        >
+          <form onSubmit={handleCreateProject} className="space-y-4">
+            <div>
+              <label className="mb-2 block text-xs font-medium text-neutral-300">Project Name</label>
+              <input
+                type="text"
+                required
+                autoFocus
+                value={newProjectName}
+                onChange={e => setNewProjectName(e.target.value)}
+                placeholder="e.g. Acme Billing Engine"
+                className={inputCls}
+              />
+            </div>
+            <div className="flex items-center gap-3 pt-2">
+              <button type="button" onClick={closeModal} className={`${btnGhost} flex-1`}>
+                Cancel
+              </button>
+              <button type="submit" disabled={creating} className={`${btnPrimary} flex-1`}>
+                {creating ? 'Creating...' : 'Create Project'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {pendingArchive && (
+        <Modal
+          title="Archive project"
+          description={`"${pendingArchive.name}" will be archived. Its specs and run history are preserved.`}
+          onClose={() => setPendingArchive(null)}
+        >
+          <div className="flex items-center gap-3 pt-2">
+            <button type="button" onClick={() => setPendingArchive(null)} className={`${btnGhost} flex-1`}>
+              Cancel
             </button>
-
-            <h2 className="text-2xl font-normal tracking-tight mb-2">Create New Project</h2>
-            <p className="text-neutral-400 text-xs mb-6">Initialize a new agent pipeline workspace from specs or scratch.</p>
-
-            <form onSubmit={handleCreateProject} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-neutral-300 mb-2">Project Name</label>
-                <input
-                  type="text"
-                  required
-                  value={newProjectName}
-                  onChange={e => setNewProjectName(e.target.value)}
-                  placeholder="e.g. Acme Billing Engine"
-                  className="w-full bg-neutral-900 border border-white/15 rounded-xl px-4 py-3 text-sm text-white placeholder-neutral-600 focus:outline-none focus:border-white transition-colors"
-                />
-              </div>
-
-              <div className="flex items-center gap-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="flex-1 py-3 rounded-xl glass-pill text-sm font-medium hover:bg-white/10 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={creating}
-                  className="flex-1 py-3 rounded-xl bg-white text-black text-sm font-medium hover:bg-neutral-200 transition-all shadow-[0_0_20px_rgba(255,255,255,0.2)] disabled:opacity-50"
-                >
-                  {creating ? 'Creating...' : 'Initialize'}
-                </button>
-              </div>
-            </form>
+            <button
+              type="button"
+              onClick={() => {
+                handleArchive(pendingArchive);
+                setPendingArchive(null);
+              }}
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-red-500/90 text-white text-sm font-medium px-5 h-10 hover:bg-red-500 transition-colors"
+            >
+              Archive
+            </button>
           </div>
+        </Modal>
+      )}
+
+      {archivingId && (
+        <div className="pointer-events-none fixed bottom-6 right-6 rounded-xl border border-white/10 bg-neutral-900 px-4 py-2.5 text-xs text-neutral-300 shadow-xl">
+          <span className="inline-flex items-center gap-2">
+            <Archive className="h-3.5 w-3.5" /> Archiving project...
+          </span>
         </div>
       )}
     </div>

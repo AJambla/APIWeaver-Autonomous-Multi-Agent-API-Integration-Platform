@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "lint": "eslint src/main.tsx src/App.tsx src/lib src/pages --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "eslint src/main.tsx src/App.tsx src/lib src/pages src/components/DashboardLayout.tsx src/components/ui.tsx --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
