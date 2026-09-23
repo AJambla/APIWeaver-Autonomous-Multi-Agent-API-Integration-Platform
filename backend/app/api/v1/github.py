@@ -181,7 +181,7 @@ async def github_status(
     )
 
 
-@router.delete("/disconnect", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/disconnect", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def github_disconnect(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
