@@ -1,5 +1,5 @@
-# Dockerfile for agent-worker service
-# Uses project root as build context to access both backend and agent_worker packages
+# Dockerfile for the agent-worker service.
+# The repository root remains the build context so this image can copy backend and agent_worker.
 
 FROM python:3.12-slim AS builder
 
