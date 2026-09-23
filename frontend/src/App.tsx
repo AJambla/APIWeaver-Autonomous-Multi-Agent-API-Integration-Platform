@@ -6,6 +6,8 @@ import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProjectWorkspace } from './pages/ProjectWorkspace';
+import { DashboardLayout } from './components/DashboardLayout';
+import { PlaceholderPage } from './pages/PlaceholderPage';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, loading } = useAuth();
@@ -31,10 +33,57 @@ export const App: React.FC = () => {
             path="/dashboard"
             element={
               <ProtectedRoute>
-                <DashboardPage />
+                <DashboardLayout />
               </ProtectedRoute>
             }
-          />
+          >
+            <Route index element={<DashboardPage />} />
+            <Route
+              path="overview"
+              element={
+                <PlaceholderPage
+                  title="Overview"
+                  description="A cross-project summary of runs, agent activity, and export health is being built."
+                />
+              }
+            />
+            <Route
+              path="specs"
+              element={
+                <PlaceholderPage
+                  title="API Specs"
+                  description="Browse and manage every uploaded OpenAPI spec and schema across your projects."
+                />
+              }
+            />
+            <Route
+              path="agents"
+              element={
+                <PlaceholderPage
+                  title="Agents"
+                  description="Monitor the autonomous agents that build, test, and repair your workflows."
+                />
+              }
+            />
+            <Route
+              path="runs"
+              element={
+                <PlaceholderPage
+                  title="Runs"
+                  description="Track every workflow execution, its live event stream, and its outcome."
+                />
+              }
+            />
+            <Route
+              path="settings"
+              element={
+                <PlaceholderPage
+                  title="Settings"
+                  description="Organization, member, and integration settings will live here."
+                />
+              }
+            />
+          </Route>
           <Route
             path="/projects/:id"
             element={
