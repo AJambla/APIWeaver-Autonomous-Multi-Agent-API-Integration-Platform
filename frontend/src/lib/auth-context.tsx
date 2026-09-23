@@ -32,7 +32,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (email: string, password: string) => {
     const data = await apiFetch<{ access_token: string; user?: User }>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ username: email, password }),
+      body: JSON.stringify({ email, password }),
     });
     sessionStorage.setItem('access_token', data.access_token);
     if (data.user) {
@@ -44,9 +44,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const register = async (email: string, password: string, fullName?: string) => {
+    const orgName = email.split('@')[1]?.split('.')[0] || 'organization';
     await apiFetch('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ email, password, full_name: fullName }),
+      body: JSON.stringify({ email, password, full_name: fullName || email.split('@')[0], organization_name: orgName }),
     });
     await login(email, password);
   };
