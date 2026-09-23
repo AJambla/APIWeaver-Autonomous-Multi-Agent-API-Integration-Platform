@@ -1,97 +1,102 @@
-import { ApiError, type ApiErrorBody, type Page, type Project } from "./types";
-import { getAccessToken, refreshTokens } from "./auth";
+const API_PREFIX = '/api/v1';
 
-/**
- * Typed fetch wrapper for the APIWeaver v1 API.
- *
- * - Prefixes absolute paths with the API base (`/api/v1` in the browser, the
- *   configured URL on the server).
- * - Attaches the bearer token and decodes the standard error envelope into `ApiError`.
- * - On a 401 with a refresh token, performs a single silent refresh and retries.
- */
+let isRefreshing = false;
+let failedQueue: Array<{
+  resolve: (token: string) => void;
+  reject: (error: any) => void;
+}> = [];
 
-const API_BASE = "/api/v1";
-
-export interface RequestOptions extends Omit<RequestInit, "body"> {
-  body?: unknown;
-  /** Override the API base (used in server components). */
-  baseUrl?: string;
-}
-
-function buildUrl(path: string, baseUrl?: string): string {
-  const base = baseUrl ?? API_BASE;
-  if (path.startsWith("http")) return path;
-  const clean = path.startsWith("/") ? path : `/${path}`;
-  return `${base}${clean}`;
-}
-
-async function parseError(res: Response): Promise<ApiError> {
-  let body: ApiErrorBody | null = null;
-  try {
-    body = (await res.json()) as ApiErrorBody;
-  } catch {
-    body = null;
-  }
-  if (body && body.error) {
-    return new ApiError(res.status, body);
-  }
-  return new ApiError(res.status, {
-    error: {
-      code: "UNKNOWN",
-      message: `Request failed with status ${res.status}`,
-      request_id: res.headers.get("X-Request-ID") ?? undefined,
-    },
+const processQueue = (error: any, token: string | null = null) => {
+  failedQueue.forEach(prom => {
+    if (error) {
+      prom.reject(error);
+    } else {
+      prom.resolve(token!);
+    }
   });
-}
+  failedQueue = [];
+};
 
-async function request<T>(path: string, options: RequestOptions): Promise<T> {
-  const { body, baseUrl, headers, ...rest } = options;
-  const token = getAccessToken();
-
-  const init: RequestInit = {
-    ...rest,
-    headers: {
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(headers as Record<string, string> | undefined),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+export async function apiFetch<T = any>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const token = sessionStorage.getItem('access_token');
+  
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
   };
 
-  const res = await fetch(buildUrl(path, baseUrl), init);
-
-  if (!res.ok) {
-    throw await parseError(res);
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
   }
-  if (res.status === 204) {
-    return undefined as T;
-  }
-  return (await res.json()) as T;
-}
 
-export async function apiFetch<T>(
-  path: string,
-  options: RequestOptions = {},
-): Promise<T> {
-  try {
-    return await request<T>(path, options);
-  } catch (err) {
-    if (
-      err instanceof ApiError &&
-      err.status === 401 &&
-      !(options as RequestOptions & { __retried?: boolean }).__retried
-    ) {
-      const refreshed = await refreshTokens(options.baseUrl);
-      if (refreshed) {
-        return request<T>(path, {
-          ...options,
-          ...({ __retried: true } as object),
-        });
-      }
+  const url = endpoint.startsWith('http') ? endpoint : `${API_PREFIX}${endpoint}`;
+
+  let response = await fetch(url, {
+    ...options,
+    headers,
+  });
+
+  if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
+    if (isRefreshing) {
+      return new Promise((resolve, reject) => {
+        failedQueue.push({ resolve, reject });
+      }).then(newToken => {
+        headers['Authorization'] = `Bearer ${newToken}`;
+        return fetch(url, { ...options, headers }).then(res => res.json());
+      });
     }
-    throw err;
-  }
-}
 
-// Convenience re-exports.
-export type { Page, Project };
+    isRefreshing = true;
+
+    try {
+      const refreshRes = await fetch(`${API_PREFIX}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      if (!refreshRes.ok) {
+        throw new Error('Refresh token expired');
+      }
+
+      const data = await refreshRes.json();
+      const newToken = data.access_token;
+      sessionStorage.setItem('access_token', newToken);
+      isRefreshing = false;
+      processQueue(null, newToken);
+
+      headers['Authorization'] = `Bearer ${newToken}`;
+      const retryRes = await fetch(url, { ...options, headers });
+      if (!retryRes.ok) {
+        throw new Error(await retryRes.text());
+      }
+      return retryRes.json();
+    } catch (err) {
+      isRefreshing = false;
+      processQueue(err, null);
+      sessionStorage.removeItem('access_token');
+      window.location.href = '/login';
+      throw err;
+    }
+  }
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    let message = response.statusText;
+    try {
+      const parsed = JSON.parse(errorBody);
+      message = parsed.detail || parsed.message || message;
+    } catch {
+      message = errorBody || message;
+    }
+    throw new Error(message);
+  }
+
+  if (response.status === 204) {
+    return {} as T;
+  }
+
+  return response.json();
+}
