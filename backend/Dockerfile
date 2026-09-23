@@ -2,11 +2,12 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
-COPY pyproject.toml poetry.lock* ./
+COPY pyproject.toml poetry.lock ./
 
 RUN pip install --no-cache-dir poetry poetry-plugin-export && \
     poetry export -f requirements.txt \
     --output requirements.txt \
+    --only main \
     --without-hashes
 
 

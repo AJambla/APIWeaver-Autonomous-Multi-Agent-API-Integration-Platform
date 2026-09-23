@@ -102,22 +102,16 @@ mkdir -p secrets
 # openssl genrsa -out secrets/jwt_private.pem 2048
 # openssl rsa -in secrets/jwt_private.pem -pubout -out secrets/jwt_public.pem
 
-# 4. Backend Python Virtual Environment Setup & Dependency Installation
+# 4. Backend dependency installation (Poetry uses backend/poetry.lock)
 cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# Upgrade pip & install all backend package dependencies
-python -m pip install --upgrade pip
-pip install -e .
-pip install prometheus-client prometheus-fastapi-instrumentator aiobotocore celery pytest pytest-asyncio
+poetry install --with dev
 
 # 5. Apply Database Migrations (Creates all 28+ tables and partitioned logs)
-alembic upgrade head
+poetry run alembic upgrade head
 
 # 6. Frontend Dependency Installation
 cd ..\frontend
-npm install
+npm ci
 ```
 
 ---
@@ -138,8 +132,7 @@ npm run dev
 ##### ⚙️ Terminal 2: FastAPI Backend Server
 ```powershell
 cd "D:\ML Projects\API_Weaver\backend"
-.\.venv\Scripts\Activate.ps1
-uvicorn app.main:app --reload --port 8000
+poetry run uvicorn app.main:app --reload --port 8000
 ```
 - **Swagger Interactive API Docs:** [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)
 - **OpenAPI JSON Spec:** [http://localhost:8000/api/v1/openapi.json](http://localhost:8000/api/v1/openapi.json)
@@ -150,8 +143,7 @@ uvicorn app.main:app --reload --port 8000
 ##### 🤖 Terminal 3: Celery Agent Worker (Background Task Orchestrator)
 ```powershell
 cd "D:\ML Projects\API_Weaver\backend"
-.\.venv\Scripts\Activate.ps1
-celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4
+poetry run celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4
 ```
 *(Handles async document ingestion, LLM chunk extraction, sandboxed testing, and packaging).*
 
