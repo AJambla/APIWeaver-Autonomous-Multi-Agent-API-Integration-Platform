@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Shield, Cpu, Zap, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { Shield, Cpu, Zap, ArrowRight } from 'lucide-react';
 
 export const LandingPage: React.FC = () => {
   return (
@@ -71,35 +71,6 @@ export const LandingPage: React.FC = () => {
               <span>Deploy Infrastructure</span>
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
             </Link>
-          </div>
-        </div>
-      </section>
-
-      {/* Stats Footer */}
-      <section className="border-y border-white/10 bg-neutral-950/50 backdrop-blur-md py-12">
-        <div className="max-w-7xl mx-auto px-6 grid grid-cols-1 md:grid-cols-3 gap-8 text-center md:text-left">
-          <div className="glass-card p-8 rounded-2xl flex flex-col gap-2">
-            <div className="text-4xl md:text-5xl font-semibold tracking-tight">10.4M+</div>
-            <div className="text-sm text-neutral-400 font-medium">Workflows Automated Monthly</div>
-            <div className="text-xs text-neutral-500 mt-2 flex items-center gap-1.5">
-              <CheckCircle2 className="w-3.5 h-3.5 text-white" /> 99.99% Execution uptime across clusters
-            </div>
-          </div>
-
-          <div className="glass-card p-8 rounded-2xl flex flex-col gap-2">
-            <div className="text-4xl md:text-5xl font-semibold tracking-tight">84.2%</div>
-            <div className="text-sm text-neutral-400 font-medium">Manual Operation Reduction</div>
-            <div className="text-xs text-neutral-500 mt-2 flex items-center gap-1.5">
-              <CheckCircle2 className="w-3.5 h-3.5 text-white" /> Self-healing DAG recovery loops
-            </div>
-          </div>
-
-          <div className="glass-card p-8 rounded-2xl flex flex-col gap-2">
-            <div className="text-4xl md:text-5xl font-semibold tracking-tight">1,250+</div>
-            <div className="text-sm text-neutral-400 font-medium">Operational Teams Onboarded</div>
-            <div className="text-xs text-neutral-500 mt-2 flex items-center gap-1.5">
-              <CheckCircle2 className="w-3.5 h-3.5 text-white" /> Enterprise compliance & SOC2 Type II
-            </div>
           </div>
         </div>
       </section>
