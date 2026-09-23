@@ -2,25 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { AuthTokens, MeResponse, OrganizationMembership, User } from './types';
 import { apiFetch } from './api';
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useState,
-} from "react";
-import {
-  clearStoredTokens,
-  clearStoredUser,
-  getStoredUser,
-  getRefreshToken,
-  setStoredTokens,
-  setStoredUser,
-} from "@/lib/auth";
-import { apiFetch } from "@/lib/api";
-import type { User } from "@/lib/types";
-
-interface AuthContextValue {
+interface AuthContextType {
   user: User | null;
   organizationId: string | null;
   organizations: OrganizationMembership[];
@@ -28,7 +10,7 @@ interface AuthContextValue {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, fullName?: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -77,21 +59,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCurrentUser(me);
   };
 
-  const logout = useCallback(async () => {
-    try {
-      const refreshToken = getRefreshToken();
-      await apiFetch("/auth/logout", {
-        method: "POST",
-        body: { refresh_token: refreshToken },
-      });
-    } catch {
-      // ignore — clear local state regardless
+  const register = async (email: string, password: string, fullName?: string) => {
+    const organizationName = email.split('@')[1]?.split('.')[0] || 'organization';
+    const tokens = await apiFetch<AuthTokens>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        password,
+        full_name: fullName || email.split('@')[0],
+        organization_name: organizationName,
+      }),
+    });
+    sessionStorage.setItem('access_token', tokens.access_token);
+    if (tokens.refresh_token) {
+      sessionStorage.setItem('refresh_token', tokens.refresh_token);
     }
     const me = await apiFetch<MeResponse>('/auth/me');
     setCurrentUser(me);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    const refreshToken = sessionStorage.getItem('refresh_token');
+    try {
+      await apiFetch('/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+    } catch {
+      // Server-side revocation failed — clear local state regardless.
+    }
     clearSession();
     window.location.href = '/login';
   };
