@@ -8,14 +8,14 @@ WORKDIR /app
 ENV PYTHONPATH=/app/backend:/app
 
 # Copy backend dependency files
-COPY backend/pyproject.toml backend/poetry.lock* ./backend/
+COPY backend/pyproject.toml backend/poetry.lock ./backend/
 
 # Copy agent_worker package
 COPY agent_worker ./agent_worker
 
 # Install poetry and export requirements
 RUN pip install --no-cache-dir poetry poetry-plugin-export && \
-    cd backend && poetry export -f requirements.txt --output ../requirements.txt --without-hashes
+    cd backend && poetry export -f requirements.txt --output ../requirements.txt --only main --without-hashes
 
 
 FROM python:3.12-slim
