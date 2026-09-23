@@ -118,6 +118,73 @@ export interface ToolCall {
   duration_ms: number | null;
 }
 
+export interface AgentEventLog {
+  id: string;
+  event_type: string;
+  agent_name: string | null;
+  payload: Record<string, unknown> | null;
+  created_at: string | null;
+}
+
+export interface DependencyNode {
+  id: string;
+  label: string;
+  method: string;
+  path: string;
+  is_destructive: boolean;
+}
+
+export interface DependencyEdge {
+  from_id: string;
+  to_id: string;
+  relationship: string;
+}
+
+export interface DependencyGraph {
+  nodes: DependencyNode[];
+  edges: DependencyEdge[];
+}
+
+export interface TriggerWorkflowResponse {
+  workflow_run_id: string;
+  status: string;
+}
+
+export interface TestRunTriggerResponse {
+  test_run_id: string;
+  status: string;
+}
+
+export interface TestResultItem {
+  id: string;
+  test_run_id: string;
+  endpoint_id: string | null;
+  status: string;
+  status_code: number | null;
+  latency_ms: number | null;
+  error: string | null;
+}
+
+export interface TestRunSummary {
+  test_run_id: string;
+  status: string;
+  summary: { total?: number; passed?: number; failed?: number; skipped?: number };
+  results: TestResultItem[];
+}
+
+export interface ExportRecord {
+  id: string;
+  export_type: string;
+  status: string;
+  created_at: string | null;
+}
+
+export interface MCPExportResponse {
+  mcp_manifest_url: string;
+  tools_generated: number;
+  flagged_destructive: number;
+}
+
 export interface ApiKey {
   id: string;
   prefix: string;
