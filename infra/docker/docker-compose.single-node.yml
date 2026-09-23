@@ -9,6 +9,9 @@
 services:
   web:
     image: apiweaver/web:latest
+    # The default local workflow runs the frontend with `npm run dev` on the host.
+    # Use `--profile docker-ui` when a containerized frontend is required.
+    profiles: ["docker-ui"]
     build:
       context: ../../frontend
       dockerfile: Dockerfile
@@ -36,6 +39,9 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    volumes:
+      # Local-only JWT key mount. Production keys are mounted by the Vault Agent.
+      - ../../secrets:/app/secrets:ro
     env_file:
       - ../../.env
     environment:
@@ -70,6 +76,9 @@ services:
     build:
       context: ../..
       dockerfile: agent_worker/Dockerfile
+    volumes:
+      # Keep the worker's JWT path consistent with the API service in local Compose.
+      - ../../secrets:/app/secrets:ro
     env_file:
       - ../../.env
     environment:

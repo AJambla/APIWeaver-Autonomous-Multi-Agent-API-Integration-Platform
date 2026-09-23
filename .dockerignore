@@ -26,11 +26,15 @@ __pycache__/
 *.py[cod]
 *.egg-info
 *.pyo
+**/__pycache__/
 
 # Virtual environments
 .venv/
 venv/
 env/
+**/.venv/
+**/venv/
+**/env/
 
 # Test and cache directories
 .pytest_cache/
@@ -38,6 +42,9 @@ env/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
 
 # Logs
 *.log
