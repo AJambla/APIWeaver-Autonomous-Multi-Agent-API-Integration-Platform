@@ -29,7 +29,7 @@ API_Weaver/
 │   │   ├── workflows/agents/  # DocAgent, PlannerAgent, CodeAgent, TestAgent, ExportAgent
 │   │   └── services/          # Qdrant, Vault, GitHub, S3 Storage, Redis Event services
 │   └── tests/                 # 20 pytest test suites + conftest fixtures
-├── agent-worker/              # Celery background task worker definitions
+├── agent_worker/              # Celery background task worker definitions
 ├── infra/                     # Deployment configurations
 │   ├── charts/apiweaver/      # Kubernetes Helm Chart (API, Web, Celery Worker, Ingress, HPA)
 │   ├── terraform/             # AWS Terraform modules (VPC, EKS, RDS, ElastiCache, S3, Vault)

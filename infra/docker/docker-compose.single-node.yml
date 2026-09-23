@@ -10,7 +10,7 @@ services:
   web:
     image: apiweaver/web:latest
     build:
-      context: ../fron
+      context: ../fronend
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
@@ -68,8 +68,8 @@ services:
   agent-worker:
     image: apiweaver/agent-worker:latest
     build:
-      context: ../../backend
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.agent-worker
     env_file:
       - .env
     environment:

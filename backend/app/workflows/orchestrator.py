@@ -417,7 +417,7 @@ class Orchestrator:
 
             if "plan" in stages and current_dict.get("normalized_spec"):
                 result = celery_app.send_task(
-                    "agent_worker.tasks.run_code_agent",
+                    "agent_worker.tasks.run_planner_agent",
                     args=[run_id_str, current_dict],
                 )
                 planner_updates = result.get(timeout=300)
