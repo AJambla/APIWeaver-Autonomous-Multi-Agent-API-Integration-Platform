@@ -5,7 +5,7 @@ import { ArrowLeft, Lock, Mail, User, AlertCircle } from 'lucide-react';
 
 // Mirrors backend RegisterRequest rules (backend/app/schemas/auth.py).
 function validatePassword(password: string): string | null {
-  if (password.length < 12) return 'Password must be at least 12 characters.';
+  if (password.length < 7) return 'Password must be at least 7 characters.';
   if (password.length > 256) return 'Password must be at most 256 characters.';
   if (password !== password.trim()) return 'Password must not begin or end with whitespace.';
   if (new Set(password).size < 5) return 'Password uses too few distinct characters.';
@@ -110,7 +110,7 @@ export const RegisterPage: React.FC = () => {
               />
             </div>
             <p className="mt-2 text-[11px] text-neutral-500">
-              At least 12 characters, no leading/trailing spaces, 5+ distinct characters.
+              At least 7 characters, no leading/trailing spaces, 5+ distinct characters.
             </p>
           </div>
 
