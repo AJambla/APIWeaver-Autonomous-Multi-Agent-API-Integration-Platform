@@ -72,6 +72,14 @@ export interface ApiSpec {
   confidence_score: number | null;
 }
 
+export interface UploadResponse {
+  document_id: string;
+  status: string;
+  workflow_run_id: string | null;
+  api_spec_id: string | null;
+  endpoints_discovered: number | null;
+}
+
 export interface SpecEndpoint {
   id: string;
   method: string;
