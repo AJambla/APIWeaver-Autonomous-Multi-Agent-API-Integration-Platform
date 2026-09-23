@@ -9,7 +9,6 @@ import {
   Bot,
   Activity,
   Settings,
-  BookOpen,
   Check,
   ChevronDown,
   LogOut,
@@ -19,7 +18,7 @@ import {
   UserCircle,
 } from 'lucide-react';
 
-const NAV_GROUPS: Array<{ label: string; items: Array<{ to: string; label: string; icon: React.ElementType; end?: boolean; external?: string }> }> = [
+const NAV_GROUPS: Array<{ label: string; items: Array<{ to: string; label: string; icon: React.ElementType; end?: boolean }> }> = [
   {
     label: 'Workspace',
     items: [
@@ -28,18 +27,6 @@ const NAV_GROUPS: Array<{ label: string; items: Array<{ to: string; label: strin
       { to: '/dashboard/specs', label: 'API Specs', icon: FileCode2 },
       { to: '/dashboard/agents', label: 'Agents', icon: Bot },
       { to: '/dashboard/runs', label: 'Runs', icon: Activity },
-    ],
-  },
-  {
-    label: 'System',
-    items: [
-      { to: '/dashboard/settings', label: 'Settings', icon: Settings },
-      {
-        to: '#',
-        label: 'Help & Docs',
-        icon: BookOpen,
-        external: 'https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/tree/main/Project-docs',
-      },
     ],
   },
 ];
@@ -172,20 +159,6 @@ const SidebarContent: React.FC<{ onNavigate?: () => void }> = ({ onNavigate }) =
           <div className="space-y-0.5">
             {group.items.map(item => {
               const Icon = item.icon;
-              if (item.external) {
-                return (
-                  <a
-                    key={item.label}
-                    href={item.external}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-neutral-400 hover:bg-white/5 hover:text-white transition-colors"
-                  >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    <span>{item.label}</span>
-                  </a>
-                );
-              }
               return (
                 <NavLink
                   key={item.to}
