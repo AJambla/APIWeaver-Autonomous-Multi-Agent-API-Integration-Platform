@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth-context';
 import { apiFetch } from '../lib/api';
 import { Project } from '../lib/types';
-import { Plus, FolderKanban, LogOut, ArrowUpRight, Clock, X } from 'lucide-react';
+import { Plus, FolderKanban, ArrowUpRight, Clock, X, Search } from 'lucide-react';
 
 interface Page<T> {
   data: T[];
@@ -12,13 +12,16 @@ interface Page<T> {
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Unable to complete the request.';
 
 export const DashboardPage: React.FC = () => {
-  const { user, organizationId, logout } = useAuth();
+  const { organizationId } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [sortBy, setSortBy] = useState<'updated' | 'name'>('updated');
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -53,49 +56,76 @@ export const DashboardPage: React.FC = () => {
     }
   };
 
+  const statuses = useMemo(
+    () => Array.from(new Set(projects.map(p => (p.status || 'Active').toLowerCase()))),
+    [projects],
+  );
+
+  const visibleProjects = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    let list = projects;
+    if (term) {
+      list = list.filter(p =>
+        p.name.toLowerCase().includes(term) || (p.description || '').toLowerCase().includes(term),
+      );
+    }
+    if (statusFilter !== 'all') {
+      list = list.filter(p => (p.status || 'Active').toLowerCase() === statusFilter);
+    }
+    return [...list].sort((a, b) =>
+      sortBy === 'name'
+        ? a.name.localeCompare(b.name)
+        : new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+  }, [projects, search, statusFilter, sortBy]);
+
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col selection:bg-white selection:text-black">
-      {/* Header */}
-      <header className="border-b border-white/10 bg-black/60 backdrop-blur-xl sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-white text-black flex items-center justify-center font-bold tracking-tighter text-lg">
-              AW
-            </div>
-            <span className="font-semibold tracking-tight text-lg">API Weaver Workspace</span>
-          </div>
-
-          <div className="flex items-center gap-6">
-            <div className="text-right hidden sm:block">
-              <div className="text-sm font-medium">{user?.full_name || user?.email || 'Operator'}</div>
-              <div className="text-xs text-neutral-400">SOC2 Verified Tier</div>
-            </div>
-            <button
-              onClick={logout}
-              className="p-2.5 rounded-xl glass-pill hover:bg-white/10 text-neutral-300 hover:text-white transition-colors"
-              title="Sign out"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
+    <div className="px-6 lg:px-12 py-12">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+        <div>
+          <h1 className="text-3xl md:text-4xl font-normal tracking-tight mb-2">Projects & Workspaces</h1>
+          <p className="text-neutral-400 text-sm">Manage your autonomous AI agent pipelines and specification specs.</p>
         </div>
-      </header>
+        <button
+          onClick={() => setIsModalOpen(true)}
+          className="px-6 py-3 rounded-full bg-white text-black text-sm font-medium hover:bg-neutral-200 transition-all flex items-center gap-2 shadow-[0_0_25px_rgba(255,255,255,0.2)] self-start md:self-auto"
+        >
+          <Plus className="w-4 h-4" />
+          <span>New Project</span>
+        </button>
+      </div>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-6 py-12 flex-1 w-full">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
-          <div>
-            <h1 className="text-3xl md:text-4xl font-normal tracking-tight mb-2">Projects & Workspaces</h1>
-            <p className="text-neutral-400 text-sm">Manage your autonomous AI agent pipelines and specification specs.</p>
-          </div>
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="px-6 py-3 rounded-full bg-white text-black text-sm font-medium hover:bg-neutral-200 transition-all flex items-center gap-2 shadow-[0_0_25px_rgba(255,255,255,0.2)] self-start md:self-auto"
-          >
-            <Plus className="w-4 h-4" />
-            <span>New Project</span>
-          </button>
+      {/* Search / Filter / Sort toolbar */}
+      <div className="flex flex-col sm:flex-row gap-3 mb-10">
+        <div className="relative flex-1">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-500" />
+          <input
+            type="search"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search projects..."
+            className="w-full bg-neutral-900 border border-white/15 rounded-xl px-4 py-2.5 pl-11 text-sm text-white placeholder-neutral-600 focus:outline-none focus:border-white transition-colors"
+          />
         </div>
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          className="bg-neutral-900 border border-white/15 rounded-xl px-4 py-2.5 text-sm text-neutral-300 focus:outline-none focus:border-white transition-colors capitalize"
+        >
+          <option value="all">All statuses</option>
+          {statuses.map(s => (
+            <option key={s} value={s} className="capitalize">{s}</option>
+          ))}
+        </select>
+        <select
+          value={sortBy}
+          onChange={e => setSortBy(e.target.value as 'updated' | 'name')}
+          className="bg-neutral-900 border border-white/15 rounded-xl px-4 py-2.5 text-sm text-neutral-300 focus:outline-none focus:border-white transition-colors"
+        >
+          <option value="updated">Recently updated</option>
+          <option value="name">Name (A-Z)</option>
+        </select>
+      </div>
 
         {error && (
           <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/40 p-4 text-xs text-red-300">
@@ -122,9 +152,14 @@ export const DashboardPage: React.FC = () => {
               <span>Create Project</span>
             </button>
           </div>
+        ) : visibleProjects.length === 0 ? (
+          <div className="glass-card p-12 rounded-3xl text-center border border-white/10">
+            <h3 className="text-lg font-medium mb-2">No matching projects</h3>
+            <p className="text-neutral-400 text-sm">Try a different search term or clear the filters.</p>
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {projects.map(proj => (
+            {visibleProjects.map(proj => (
               <Link
                 key={proj.id}
                 to={`/projects/${proj.id}`}
@@ -168,7 +203,6 @@ export const DashboardPage: React.FC = () => {
             ))}
           </div>
         )}
-      </main>
 
       {/* New Project Modal */}
       {isModalOpen && (
