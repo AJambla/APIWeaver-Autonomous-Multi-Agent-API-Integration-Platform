@@ -36,7 +36,7 @@ _password_hasher = PasswordHasher(
 
 # Minimum password length. Breached-password checking (Security.md §8, A07) needs an
 # external corpus and lands with the full signup hardening pass.
-MIN_PASSWORD_LENGTH = 12
+MIN_PASSWORD_LENGTH = 7
 
 
 def hash_password(password: str) -> str:
