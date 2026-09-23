@@ -8,12 +8,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.deps import get_db
-from app.core.errors import NotFoundError
 from app.models.enums import ActorType, ExportType
 from app.models.export import Export
 from app.models.project import Project
-from app.rbac.enforce import load_project_for_principal, require_project_permission
-from app.rbac.policy import Permission, Principal
+from app.rbac.enforce import require_project_permission
+from app.rbac.policy import Permission
 from app.schemas.export import ExportRequest, ExportResponse, MCPExportResponse
 from sqlalchemy import select
 from app.services import audit_service
@@ -26,17 +25,12 @@ router = APIRouter(prefix="/projects", tags=["export"])
 
 @router.post("/{id}/export", response_model=ExportResponse, status_code=status.HTTP_202_ACCEPTED)
 async def trigger_export(
-    project_id: uuid.UUID,
     payload: ExportRequest,
     background_tasks: BackgroundTasks,
-    principal: Principal = Depends(require_project_permission(Permission.EXPORT_CREATE)),
+    project: Project = Depends(require_project_permission(Permission.EXPORT_CREATE)),
     session: AsyncSession = Depends(get_db),
 ) -> ExportResponse:
     """Trigger artifact exports for a project."""
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise NotFoundError("Project not found.")
-
     # Create export record
     export_types = payload.export_types or [e.value for e in ExportType]
     artifacts_meta = []
@@ -89,13 +83,10 @@ async def trigger_export(
 
 @router.post("/{id}/export/mcp", response_model=MCPExportResponse)
 async def export_mcp(
-    project_id: uuid.UUID,
-    principal: Principal = Depends(require_project_permission(Permission.EXPORT_CREATE)),
+    project: Project = Depends(require_project_permission(Permission.EXPORT_CREATE)),
     session: AsyncSession = Depends(get_db),
 ) -> MCPExportResponse:
     """Export MCP tools for a project."""
-    project = await load_project_for_principal(session, principal, project_id)
-
     # Run MCP export synchronously for this endpoint
     export_agent = ExportAgent()
     state: WorkflowState = {
@@ -117,7 +108,7 @@ async def export_mcp(
     )
 
     return MCPExportResponse(
-        mcp_manifest_url=f"/api/v1/projects/{project_id}/exports/mcp/manifest.json",
+        mcp_manifest_url=f"/api/v1/projects/{project.id}/exports/mcp/manifest.json",
         tools_generated=mcp_artifact.get("tools_generated", 0),
         flagged_destructive=mcp_artifact.get("flagged_destructive", 0),
     )
@@ -125,13 +116,11 @@ async def export_mcp(
 
 @router.get("/{id}/exports", response_model=list[dict])
 async def list_exports(
-    project_id: uuid.UUID,
-    principal: Principal = Depends(require_project_permission(Permission.EXPORT_READ)),
+    project: Project = Depends(require_project_permission(Permission.EXPORT_READ)),
     session: AsyncSession = Depends(get_db),
     limit: int = 20,
 ) -> list[dict]:
     """List export records for a project."""
-    project = await load_project_for_principal(session, principal, project_id)
     stmt = (
         select(Export)
         .where(Export.project_id == project.id)
