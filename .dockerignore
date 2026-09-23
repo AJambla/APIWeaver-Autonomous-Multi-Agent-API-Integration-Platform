@@ -1,26 +1,86 @@
+# Version control
 .git
 .gitignore
+
+# Environment files
 .env
 .env.*
+.env.local
+.env.*.local
+
+# Secrets and keys
 secrets/
 *.pem
 *.key
 
+# Dependencies
+node_modules/
+
+# Build outputs
+.next/
+dist/
+build/
+
+# Python artifacts
 __pycache__/
 *.py[cod]
+*.egg-info
+*.pyo
+**/__pycache__/
+
+# Virtual environments
 .venv/
 venv/
-.mypy_cache/
-.ruff_cache/
+env/
+**/.venv/
+**/venv/
+**/env/
+
+# Test and cache directories
 .pytest_cache/
 .coverage
-coverage.xml
 htmlcov/
+.mypy_cache/
+.ruff_cache/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
 
-node_modules/
-.next/
+# Logs
+*.log
 
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*~
+
+# Documentation and non-essential files
 Project-docs/
 monitoring/
 infra/terraform/
 **/README.md
+**/README.txt
+**/*.md
+
+# Frontend (not needed for backend/agent-worker builds)
+frontend/
+frontend-*/
+
+# Scripts and CI/CD
+scripts/
+.github/
+
+# Kilo config
+.kilo/
+
+# Database migrations (alembic) - not needed for agent-worker
+backend/alembic/
+
+# Local development
+*.local
+*.dev

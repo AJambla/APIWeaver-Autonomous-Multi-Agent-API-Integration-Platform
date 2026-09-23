@@ -69,7 +69,6 @@ node_modules/
 .turbo/
 .vercel
 pnpm-lock.yaml
-package-lock.json
 yarn.lock
 
 # Jupyter Notebooks

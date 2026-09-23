@@ -43,7 +43,7 @@ middleware.ts             Gates /dashboard and /projects behind the refresh cook
 
 ```bash
 cd frontend
-npm install
+npm ci
 cp .env.example .env.local
 npm run dev        # :3000, API rewrites to http://localhost:8000/api/v1
 ```
