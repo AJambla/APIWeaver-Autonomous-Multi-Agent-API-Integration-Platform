@@ -252,10 +252,9 @@ export const LandingPage: React.FC = () => {
             <span className="text-neutral-400">© 2026 API Weaver. Vesper.ai Aesthetic Infrastructure.</span>
           </div>
           <div className="flex items-center gap-6 text-neutral-400">
-            <a href="#" className="hover:text-white transition-colors">Documentation</a>
-            <a href="#" className="hover:text-white transition-colors">API Reference</a>
-            <a href="#" className="hover:text-white transition-colors">Security</a>
-            <a href="#" className="hover:text-white transition-colors">Terms</a>
+            <a href="https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/tree/main/Project-docs" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">Documentation</a>
+            <a href="https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/blob/main/Project-docs/API.md" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">API Reference</a>
+            <a href="https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/blob/main/Project-docs/Security.md" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">Security</a>
           </div>
         </div>
       </footer>
