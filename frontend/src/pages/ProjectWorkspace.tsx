@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { Project, WorkflowEvent } from '../lib/types';
-import { 
-  ArrowLeft, Upload, GitBranch, Terminal as TerminalIcon, PlayCircle, 
-  Download, FileText, Settings as SettingsIcon, CheckCircle2, Cpu 
+import {
+  ArrowLeft, Upload, GitBranch, Terminal as TerminalIcon, PlayCircle,
+  Download, Settings as SettingsIcon, CheckCircle2, Cpu
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 
@@ -13,6 +13,7 @@ export const ProjectWorkspace: React.FC = () => {
   const [project, setProject] = useState<Project | null>(null);
   const [activeTab, setActiveTab] = useState<'upload' | 'plan' | 'build' | 'test' | 'export' | 'logs' | 'settings'>('upload');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   const [specContent, setSpecContent] = useState('openapi: 3.0.0\ninfo:\n  title: Sample API\n  version: 1.0.0\npaths: {}');
   const [uploading, setUploading] = useState(false);
@@ -33,33 +34,36 @@ export const ProjectWorkspace: React.FC = () => {
   ]);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id) {
+      setError('A project ID is required.');
+      setLoading(false);
+      return;
+    }
+
     apiFetch<Project>(`/projects/${id}`)
-      .then(data => setProject(data))
-      .catch(() => {
-        setProject({
-          id: id,
-          name: 'Enterprise Payment Gateway',
-          description: 'Autonomous API integration workflow pipeline.',
-          status: 'active',
-          created_at: new Date().toISOString(),
-          progress: 65,
-        });
-      })
+      .then(setProject)
+      .catch(error => setError(error instanceof Error ? error.message : 'Unable to load the project.'))
       .finally(() => setLoading(false));
   }, [id]);
 
   const handleUploadSpec = async () => {
+    if (!id) return;
+
     setUploading(true);
     setUploadSuccess(false);
+    setError('');
+    const formData = new FormData();
+    formData.append('file', new File([specContent], 'openapi.yaml', { type: 'application/yaml' }));
+    formData.append('format_hint', 'openapi');
+
     try {
       await apiFetch(`/projects/${id}/upload`, {
         method: 'POST',
-        body: JSON.stringify({ content: specContent }),
+        body: formData,
       });
       setUploadSuccess(true);
-    } catch {
-      setUploadSuccess(true);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Unable to upload the specification.');
     } finally {
       setUploading(false);
     }
@@ -94,6 +98,17 @@ export const ProjectWorkspace: React.FC = () => {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 border-b-2 border-white" />
+      </div>
+    );
+  }
+
+  if (!project) {
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center gap-4 px-6 text-center">
+        <p className="text-sm text-red-300">{error || 'Unable to load the project.'}</p>
+        <Link to="/dashboard" className="rounded-xl border border-white/15 px-4 py-2 text-sm text-white hover:bg-white/10">
+          Return to projects
+        </Link>
       </div>
     );
   }
@@ -138,7 +153,7 @@ export const ProjectWorkspace: React.FC = () => {
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
+                onClick={() => setActiveTab(tab.id as typeof activeTab)}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-full text-xs font-medium transition-all shrink-0 ${
                   isActive 
                     ? 'bg-white text-black shadow-[0_0_20px_rgba(255,255,255,0.25)]' 
@@ -175,6 +190,12 @@ export const ProjectWorkspace: React.FC = () => {
               <div className="mb-6 p-4 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-3">
                 <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
                 <span>Specification parsed successfully and ingested into agent memory vector store.</span>
+              </div>
+            )}
+
+            {error && (
+              <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/40 p-4 text-xs text-red-300">
+                {error}
               </div>
             )}
 
