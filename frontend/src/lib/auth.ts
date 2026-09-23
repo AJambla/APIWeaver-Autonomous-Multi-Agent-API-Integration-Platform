@@ -55,7 +55,9 @@ export function setAccessToken(token: string): void {
 
 export function setStoredTokens(tokens: AuthTokens): void {
   setAccessToken(tokens.access_token);
-  setCookie(REFRESH_COOKIE, tokens.refresh_token);
+  if (tokens.refresh_token) {
+    setCookie(REFRESH_COOKIE, tokens.refresh_token);
+  }
 }
 
 export function clearStoredTokens(): void {

@@ -1,97 +1,109 @@
-import { ApiError, type ApiErrorBody, type Page, type Project } from "./types";
-import { getAccessToken, refreshTokens } from "./auth";
+const API_PREFIX = '/api/v1';
 
-/**
- * Typed fetch wrapper for the APIWeaver v1 API.
- *
- * - Prefixes absolute paths with the API base (`/api/v1` in the browser, the
- *   configured URL on the server).
- * - Attaches the bearer token and decodes the standard error envelope into `ApiError`.
- * - On a 401 with a refresh token, performs a single silent refresh and retries.
- */
+let isRefreshing = false;
+let failedQueue: Array<{
+  resolve: (token: string) => void;
+  reject: (error: unknown) => void;
+}> = [];
 
-const API_BASE = "/api/v1";
-
-export interface RequestOptions extends Omit<RequestInit, "body"> {
-  body?: unknown;
-  /** Override the API base (used in server components). */
-  baseUrl?: string;
-}
-
-function buildUrl(path: string, baseUrl?: string): string {
-  const base = baseUrl ?? API_BASE;
-  if (path.startsWith("http")) return path;
-  const clean = path.startsWith("/") ? path : `/${path}`;
-  return `${base}${clean}`;
-}
-
-async function parseError(res: Response): Promise<ApiError> {
-  let body: ApiErrorBody | null = null;
-  try {
-    body = (await res.json()) as ApiErrorBody;
-  } catch {
-    body = null;
-  }
-  if (body && body.error) {
-    return new ApiError(res.status, body);
-  }
-  return new ApiError(res.status, {
-    error: {
-      code: "UNKNOWN",
-      message: `Request failed with status ${res.status}`,
-      request_id: res.headers.get("X-Request-ID") ?? undefined,
-    },
-  });
-}
-
-async function request<T>(path: string, options: RequestOptions): Promise<T> {
-  const { body, baseUrl, headers, ...rest } = options;
-  const token = getAccessToken();
-
-  const init: RequestInit = {
-    ...rest,
-    headers: {
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(headers as Record<string, string> | undefined),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  };
-
-  const res = await fetch(buildUrl(path, baseUrl), init);
-
-  if (!res.ok) {
-    throw await parseError(res);
-  }
-  if (res.status === 204) {
-    return undefined as T;
-  }
-  return (await res.json()) as T;
-}
-
-export async function apiFetch<T>(
-  path: string,
-  options: RequestOptions = {},
-): Promise<T> {
-  try {
-    return await request<T>(path, options);
-  } catch (err) {
-    if (
-      err instanceof ApiError &&
-      err.status === 401 &&
-      !(options as RequestOptions & { __retried?: boolean }).__retried
-    ) {
-      const refreshed = await refreshTokens(options.baseUrl);
-      if (refreshed) {
-        return request<T>(path, {
-          ...options,
-          ...({ __retried: true } as object),
-        });
-      }
+const processQueue = (error: unknown, token: string | null = null) => {
+  failedQueue.forEach(request => {
+    if (error) {
+      request.reject(error);
+    } else {
+      request.resolve(token!);
     }
-    throw err;
-  }
-}
+  });
+  failedQueue = [];
+};
 
-// Convenience re-exports.
-export type { Page, Project };
+export async function apiFetch<T = unknown>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const token = sessionStorage.getItem('access_token');
+  const headers = new Headers(options.headers);
+
+  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  const url = endpoint.startsWith('http') ? endpoint : `${API_PREFIX}${endpoint}`;
+  const response = await fetch(url, { ...options, headers });
+
+  if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
+    if (isRefreshing) {
+      return new Promise<string>((resolve, reject) => {
+        failedQueue.push({ resolve, reject });
+      }).then(newToken => {
+        headers.set('Authorization', `Bearer ${newToken}`);
+        return fetch(url, { ...options, headers }).then(res => res.json() as Promise<T>);
+      });
+    }
+
+    isRefreshing = true;
+
+    try {
+      const refreshToken = sessionStorage.getItem('refresh_token');
+      if (!refreshToken) {
+        throw new Error('Your session has expired. Please sign in again.');
+      }
+
+      const refreshResponse = await fetch(`${API_PREFIX}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+
+      if (!refreshResponse.ok) {
+        throw new Error('Your session has expired. Please sign in again.');
+      }
+
+      const data = await refreshResponse.json() as { access_token: string; refresh_token: string };
+      sessionStorage.setItem('access_token', data.access_token);
+      sessionStorage.setItem('refresh_token', data.refresh_token);
+      isRefreshing = false;
+      processQueue(null, data.access_token);
+
+      headers.set('Authorization', `Bearer ${data.access_token}`);
+      const retryResponse = await fetch(url, { ...options, headers });
+      if (!retryResponse.ok) {
+        throw new Error(await retryResponse.text());
+      }
+      return retryResponse.json() as Promise<T>;
+    } catch (error) {
+      isRefreshing = false;
+      processQueue(error);
+      sessionStorage.removeItem('access_token');
+      sessionStorage.removeItem('refresh_token');
+      window.location.href = '/login';
+      throw error;
+    }
+  }
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    let message = response.statusText;
+    try {
+      const parsed = JSON.parse(errorBody) as {
+        detail?: string;
+        message?: string;
+        error?: { message?: string };
+      };
+      message = parsed.error?.message || parsed.detail || parsed.message || message;
+    } catch {
+      message = errorBody || message;
+    }
+    throw new Error(message);
+  }
+
+  if (response.status === 204) {
+    return {} as T;
+  }
+
+  return response.json() as Promise<T>;
+}
