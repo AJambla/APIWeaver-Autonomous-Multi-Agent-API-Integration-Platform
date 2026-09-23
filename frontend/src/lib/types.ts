@@ -11,6 +11,17 @@ export interface AuthTokens {
   token_type?: string;
 }
 
+export interface OrganizationMembership {
+  organization_id: string;
+  organization_name: string;
+  role: string;
+}
+
+export interface MeResponse {
+  user: User;
+  organizations: OrganizationMembership[];
+}
+
 export interface Project {
   id: string;
   name: string;

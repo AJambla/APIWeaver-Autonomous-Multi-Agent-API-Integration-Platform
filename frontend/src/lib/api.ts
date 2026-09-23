@@ -3,82 +3,85 @@ const API_PREFIX = '/api/v1';
 let isRefreshing = false;
 let failedQueue: Array<{
   resolve: (token: string) => void;
-  reject: (error: any) => void;
+  reject: (error: unknown) => void;
 }> = [];
 
-const processQueue = (error: any, token: string | null = null) => {
-  failedQueue.forEach(prom => {
+const processQueue = (error: unknown, token: string | null = null) => {
+  failedQueue.forEach(request => {
     if (error) {
-      prom.reject(error);
+      request.reject(error);
     } else {
-      prom.resolve(token!);
+      request.resolve(token!);
     }
   });
   failedQueue = [];
 };
 
-export async function apiFetch<T = any>(
+export async function apiFetch<T = unknown>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
   const token = sessionStorage.getItem('access_token');
-  
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string>),
-  };
+  const headers = new Headers(options.headers);
+
+  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
 
   if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+    headers.set('Authorization', `Bearer ${token}`);
   }
 
   const url = endpoint.startsWith('http') ? endpoint : `${API_PREFIX}${endpoint}`;
-
-  let response = await fetch(url, {
-    ...options,
-    headers,
-  });
+  const response = await fetch(url, { ...options, headers });
 
   if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
     if (isRefreshing) {
-      return new Promise((resolve, reject) => {
+      return new Promise<string>((resolve, reject) => {
         failedQueue.push({ resolve, reject });
       }).then(newToken => {
-        headers['Authorization'] = `Bearer ${newToken}`;
-        return fetch(url, { ...options, headers }).then(res => res.json());
+        headers.set('Authorization', `Bearer ${newToken}`);
+        return fetch(url, { ...options, headers }).then(res => res.json() as Promise<T>);
       });
     }
 
     isRefreshing = true;
 
     try {
-      const refreshRes = await fetch(`${API_PREFIX}/auth/refresh`, {
+      const refreshToken = sessionStorage.getItem('refresh_token');
+      if (!refreshToken) {
+        throw new Error('Your session has expired. Please sign in again.');
+      }
+
+      const refreshResponse = await fetch(`${API_PREFIX}/auth/refresh`, {
         method: 'POST',
-        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
       });
 
-      if (!refreshRes.ok) {
-        throw new Error('Refresh token expired');
+      if (!refreshResponse.ok) {
+        throw new Error('Your session has expired. Please sign in again.');
       }
 
-      const data = await refreshRes.json();
-      const newToken = data.access_token;
-      sessionStorage.setItem('access_token', newToken);
+      const data = await refreshResponse.json() as { access_token: string; refresh_token: string };
+      sessionStorage.setItem('access_token', data.access_token);
+      sessionStorage.setItem('refresh_token', data.refresh_token);
       isRefreshing = false;
-      processQueue(null, newToken);
+      processQueue(null, data.access_token);
 
-      headers['Authorization'] = `Bearer ${newToken}`;
-      const retryRes = await fetch(url, { ...options, headers });
-      if (!retryRes.ok) {
-        throw new Error(await retryRes.text());
+      headers.set('Authorization', `Bearer ${data.access_token}`);
+      const retryResponse = await fetch(url, { ...options, headers });
+      if (!retryResponse.ok) {
+        throw new Error(await retryResponse.text());
       }
-      return retryRes.json();
-    } catch (err) {
+      return retryResponse.json() as Promise<T>;
+    } catch (error) {
       isRefreshing = false;
-      processQueue(err, null);
+      processQueue(error);
       sessionStorage.removeItem('access_token');
+      sessionStorage.removeItem('refresh_token');
       window.location.href = '/login';
-      throw err;
+      throw error;
     }
   }
 
@@ -86,8 +89,12 @@ export async function apiFetch<T = any>(
     const errorBody = await response.text();
     let message = response.statusText;
     try {
-      const parsed = JSON.parse(errorBody);
-      message = parsed.detail || parsed.message || message;
+      const parsed = JSON.parse(errorBody) as {
+        detail?: string;
+        message?: string;
+        error?: { message?: string };
+      };
+      message = parsed.error?.message || parsed.detail || parsed.message || message;
     } catch {
       message = errorBody || message;
     }
@@ -98,5 +105,5 @@ export async function apiFetch<T = any>(
     return {} as T;
   }
 
-  return response.json();
+  return response.json() as Promise<T>;
 }

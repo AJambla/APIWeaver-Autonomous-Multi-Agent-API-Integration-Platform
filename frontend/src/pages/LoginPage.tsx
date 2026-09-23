@@ -18,8 +18,8 @@ export const LoginPage: React.FC = () => {
     try {
       await login(email, password);
       navigate('/dashboard');
-    } catch (err: any) {
-      setError(err.message || 'Authentication failed');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Authentication failed');
     } finally {
       setLoading(false);
     }
@@ -73,6 +73,7 @@ export const LoginPage: React.FC = () => {
               <input
                 type="password"
                 required
+                maxLength={256}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 placeholder="••••••••••••"
