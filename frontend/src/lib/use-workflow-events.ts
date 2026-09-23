@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 export type WorkflowEvent = {
   event_type: string;
-  payload: any;
+  payload: unknown;
   id: string;
 };
 

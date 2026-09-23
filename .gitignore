@@ -108,3 +108,6 @@ alembic.db
 *.tfstate.backup
 *.tfplan
 .terraform.lock.hcl
+
+# Skill
+ui-ux-pro-max-skill/

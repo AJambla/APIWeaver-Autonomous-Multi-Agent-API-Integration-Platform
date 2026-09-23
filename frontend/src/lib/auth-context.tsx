@@ -1,4 +1,6 @@
-"use client";
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import { AuthTokens, MeResponse, User } from './types';
+import { apiFetch } from './api';
 
 import {
   createContext,
@@ -20,107 +22,56 @@ import type { User } from "@/lib/types";
 
 interface AuthContextValue {
   user: User | null;
+  organizationId: string | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (input: {
-    email: string;
-    password: string;
-    full_name: string;
-    organization_name: string;
-  }) => Promise<void>;
-  logout: () => Promise<void>;
+  register: (email: string, password: string, fullName?: string) => Promise<void>;
+  logout: () => void;
 }
 
-const AuthContext = createContext<AuthContextValue | null>(null);
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-interface BackendMeResponse {
-  user: {
-    id: string;
-    email: string;
-    full_name: string;
-    mfa_enabled: boolean;
-  };
-  organizations: Array<{
-    organization_id: string;
-    organization_name: string;
-    role: string;
-  }>;
-}
-
-async function fetchMe(): Promise<User> {
-  const data = await apiFetch<BackendMeResponse>("/auth/me");
-  const firstOrg = data.organizations[0];
-  return {
-    id: data.user.id,
-    email: data.user.email,
-    full_name: data.user.full_name,
-    organization_id: firstOrg?.organization_id ?? "",
-    organization_name: firstOrg?.organization_name,
-  };
-}
-
-export function AuthProvider({ children }: { children: React.ReactNode }) {
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [organizationId, setOrganizationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const setCurrentUser = (data: MeResponse) => {
+    setUser(data.user);
+    setOrganizationId(data.organizations[0]?.organization_id ?? null);
+  };
+
+  const clearSession = () => {
+    sessionStorage.removeItem('access_token');
+    sessionStorage.removeItem('refresh_token');
+    setUser(null);
+    setOrganizationId(null);
+  };
+
   useEffect(() => {
-    let active = true;
-    (async () => {
-      const stored = getStoredUser();
-      if (stored) {
-        try {
-          const me = await fetchMe();
-          if (active) setUser(me);
-        } catch {
-          if (active) setUser(null);
-        }
-      }
-      if (active) setLoading(false);
-    })();
-    return () => {
-      active = false;
-    };
+    if (!sessionStorage.getItem('access_token')) {
+      setLoading(false);
+      return;
+    }
+
+    apiFetch<MeResponse>('/auth/me')
+      .then(setCurrentUser)
+      .catch(clearSession)
+      .finally(() => setLoading(false));
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const tokens = await apiFetch<{
-      access_token: string;
-      refresh_token: string;
-      expires_in: number;
-      token_type: string;
-    }>("/auth/login", {
-      method: "POST",
-      body: { email, password },
+  const login = async (email: string, password: string) => {
+    const tokens = await apiFetch<AuthTokens>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
     });
-    setStoredTokens(tokens);
-    const me = await fetchMe();
-    setStoredUser(me);
-    setUser(me);
-  }, []);
-
-  const register = useCallback(
-    async (input: {
-      email: string;
-      password: string;
-      full_name: string;
-      organization_name: string;
-    }) => {
-      const tokens = await apiFetch<{
-        access_token: string;
-        refresh_token: string;
-        expires_in: number;
-        token_type: string;
-      }>("/auth/register", {
-        method: "POST",
-        body: input,
-      });
-      setStoredTokens(tokens);
-      const me = await fetchMe();
-      setStoredUser(me);
-      setUser(me);
-    },
-    [],
-  );
+    sessionStorage.setItem('access_token', tokens.access_token);
+    if (tokens.refresh_token) {
+      sessionStorage.setItem('refresh_token', tokens.refresh_token);
+    }
+    const me = await apiFetch<MeResponse>('/auth/me');
+    setCurrentUser(me);
+  };
 
   const logout = useCallback(async () => {
     try {
@@ -132,22 +83,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // ignore — clear local state regardless
     }
-    clearStoredTokens();
-    clearStoredUser();
-    setUser(null);
-  }, []);
+    const me = await apiFetch<MeResponse>('/auth/me');
+    setCurrentUser(me);
+  };
+
+  const logout = () => {
+    clearSession();
+    window.location.href = '/login';
+  };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, organizationId, loading, login, register, logout }}>
       {children}
     </AuthContext.Provider>
   );
-}
+};
 
-export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext);
-  if (!ctx) {
-    throw new Error("useAuth must be used within AuthProvider");
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
   }
-  return ctx;
-}
+  return context;
+};
