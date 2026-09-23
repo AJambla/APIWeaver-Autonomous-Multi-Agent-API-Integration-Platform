@@ -3,19 +3,19 @@
 # This is the full-stack topology for local/self-hosted deployment.
 # For API-only development during Phase 1-4, use docker-compose.dev.yml instead.
 #
-# Credentials are development-only and loaded from .env.
+# Credentials are development-only and loaded from the repository root .env.
 # Production deployments should use Vault for secrets (Security.md §7).
 
 services:
   web:
     image: apiweaver/web:latest
     build:
-      context: ../fronend
+      context: ../../frontend
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
     env_file:
-      - .env
+      - ../../.env
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
     depends_on:
@@ -37,7 +37,7 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - .env
+      - ../../.env
     environment:
       DATABASE_URL: postgresql+asyncpg://apiweaver:apiweaver@postgres:5432/apiweaver
       REDIS_URL: redis://redis:6379/0
@@ -69,9 +69,9 @@ services:
     image: apiweaver/agent-worker:latest
     build:
       context: ../..
-      dockerfile: infra/docker/Dockerfile.agent-worker
+      dockerfile: agent_worker/Dockerfile
     env_file:
-      - .env
+      - ../../.env
     environment:
       DATABASE_URL: postgresql+asyncpg://apiweaver:apiweaver@postgres:5432/apiweaver
       REDIS_URL: redis://redis:6379/1
