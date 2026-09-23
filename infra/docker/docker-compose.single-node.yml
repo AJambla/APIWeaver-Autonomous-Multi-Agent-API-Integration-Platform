@@ -13,21 +13,17 @@ services:
     # Use `--profile docker-ui` when a containerized frontend is required.
     profiles: ["docker-ui"]
     build:
-      context: ../../frontend
+      context: ../../Frontend
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
-    env_file:
-      - ../../.env
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+      - "3000:80"
     depends_on:
       api:
         condition: service_healthy
     networks:
       - apiweaver
     healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/" ]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/" ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -66,7 +62,7 @@ services:
     networks:
       - apiweaver
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')" ]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')" ]
       interval: 30s
       timeout: 5s
       retries: 3

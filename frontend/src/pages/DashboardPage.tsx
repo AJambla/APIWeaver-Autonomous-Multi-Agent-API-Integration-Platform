@@ -1,66 +1,53 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth-context';
 import { apiFetch } from '../lib/api';
 import { Project } from '../lib/types';
-import { Plus, FolderKanban, LogOut, Terminal, Activity, ArrowUpRight, Clock, ShieldCheck, X } from 'lucide-react';
+import { Plus, FolderKanban, LogOut, ArrowUpRight, Clock, X } from 'lucide-react';
+
+interface Page<T> {
+  data: T[];
+}
+
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Unable to complete the request.';
 
 export const DashboardPage: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, organizationId, logout } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
-  const [newProjectDesc, setNewProjectDesc] = useState('');
   const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
   const navigate = useNavigate();
 
   useEffect(() => {
-    apiFetch<Project[]>('/projects')
-      .then(data => setProjects(Array.isArray(data) ? data : []))
-      .catch(() => {
-        setProjects([
-          {
-            id: 'proj_demo_1',
-            name: 'Enterprise Payment Gateway',
-            description: 'Automated OpenAPI specification to Celery workflow execution pipeline.',
-            status: 'active',
-            created_at: new Date().toISOString(),
-            progress: 88,
-          }
-        ]);
-      })
+    apiFetch<Page<Project>>('/projects')
+      .then(({ data }) => setProjects(data))
+      .catch(error => setError(errorMessage(error)))
       .finally(() => setLoading(false));
   }, []);
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newProjectName.trim()) return;
+    if (!newProjectName.trim() || !organizationId) {
+      setError('An organization is required to create a project.');
+      return;
+    }
+
     setCreating(true);
+    setError('');
     try {
       const created = await apiFetch<Project>('/projects', {
         method: 'POST',
-        body: JSON.stringify({ name: newProjectName, description: newProjectDesc }),
+        body: JSON.stringify({ name: newProjectName.trim(), organization_id: organizationId }),
       });
-      setProjects([created, ...projects]);
+      setProjects(currentProjects => [created, ...currentProjects]);
       setIsModalOpen(false);
       setNewProjectName('');
-      setNewProjectDesc('');
       navigate(`/projects/${created.id}`);
-    } catch {
-      const mockProj: Project = {
-        id: `proj_${Date.now()}`,
-        name: newProjectName,
-        description: newProjectDesc,
-        status: 'active',
-        created_at: new Date().toISOString(),
-        progress: 10,
-      };
-      setProjects([mockProj, ...projects]);
-      setIsModalOpen(false);
-      setNewProjectName('');
-      setNewProjectDesc('');
-      navigate(`/projects/${mockProj.id}`);
+    } catch (error) {
+      setError(errorMessage(error));
     } finally {
       setCreating(false);
     }
@@ -109,6 +96,12 @@ export const DashboardPage: React.FC = () => {
             <span>New Project</span>
           </button>
         </div>
+
+        {error && (
+          <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-950/40 p-4 text-xs text-red-300">
+            {error}
+          </div>
+        )}
 
         {loading ? (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -201,17 +194,6 @@ export const DashboardPage: React.FC = () => {
                   onChange={e => setNewProjectName(e.target.value)}
                   placeholder="e.g. Acme Billing Engine"
                   className="w-full bg-neutral-900 border border-white/15 rounded-xl px-4 py-3 text-sm text-white placeholder-neutral-600 focus:outline-none focus:border-white transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-neutral-300 mb-2">Description (Optional)</label>
-                <textarea
-                  value={newProjectDesc}
-                  onChange={e => setNewProjectDesc(e.target.value)}
-                  placeholder="Describe your workflows, target APIs, or agent parameters..."
-                  rows={3}
-                  className="w-full bg-neutral-900 border border-white/15 rounded-xl px-4 py-3 text-sm text-white placeholder-neutral-600 focus:outline-none focus:border-white transition-colors resize-none"
                 />
               </div>
 
