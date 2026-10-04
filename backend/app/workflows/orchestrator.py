@@ -440,7 +440,10 @@ class Orchestrator:
                 from app.workflows.agents.test_agent import run_test_agent
 
                 tokens_before = current_dict.get("total_tokens_used", 0)
-                test_updates = await run_test_agent(cast(WorkflowState, current_dict))
+                test_updates = await run_test_agent(
+                    cast(WorkflowState, current_dict),
+                    session_factory=self.session_factory,
+                )
                 current_dict.update(test_updates)
                 current_dict["progress_percent"] = 75
 
