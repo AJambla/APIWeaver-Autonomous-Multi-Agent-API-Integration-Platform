@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     jwt_algorithm: Literal["RS256"] = "RS256"
     jwt_issuer: str = "apiweaver"
 
+    # --- Per-account lockout (Security.md §1, audit M2) -----------------------
+    # Counted in the `users` row, not the Redis limiter, because the Redis limiter
+    # fails open and is keyed per IP; a distributed attack or an outage must not
+    # turn into an unlocked front door.
+    login_max_failed_attempts: int = 5
+    login_lockout_minutes: int = 15
+
     # --- GitHub Export (Phase 4) -------------------------------------------------
     github_app_id: str | None = None
     github_app_private_key_path: Path | None = None

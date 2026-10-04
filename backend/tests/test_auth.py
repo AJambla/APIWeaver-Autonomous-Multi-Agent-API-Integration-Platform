@@ -152,6 +152,127 @@ async def test_failed_login_is_audited(
     assert AuditAction.USER_LOGIN_FAILED in actions
 
 
+# --- Per-account lockout (audit M2) -------------------------------------------------
+
+
+async def _wrong_password_attempts(client: AsyncClient, email: str, count: int) -> list[int]:
+    """Hammer the login endpoint with bad passwords for one account; returns the codes."""
+    codes = []
+    for _ in range(count):
+        response = await client.post(
+            "/api/v1/auth/login", json={"email": email, "password": "wrong-password-x"}
+        )
+        codes.append(response.status_code)
+    return codes
+
+
+async def _load_user(
+    session_factory: async_sessionmaker[AsyncSession], email: str
+) -> User:
+    async with session_factory() as session:
+        return (
+            await session.execute(select(User).where(User.email == email))
+        ).scalar_one()
+
+
+async def test_repeated_bad_passwords_lock_the_account(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The per-IP Redis limiter fails open and is IP-keyed, so credential stuffing from
+    many addresses never tripped it; the account itself now has a ceiling."""
+    await register(client)
+    assert await _wrong_password_attempts(client, "maya@example.com", 4) == [401] * 4
+    assert await _wrong_password_attempts(client, "maya@example.com", 1) == [401]
+
+    correct = await client.post(
+        "/api/v1/auth/login", json={"email": "maya@example.com", "password": TEST_PASSWORD}
+    )
+    assert correct.status_code == 401, "the right password must not work while locked"
+
+    locked_user = await _load_user(session_factory, "maya@example.com")
+    assert locked_user.locked_until is not None
+    assert locked_user.failed_login_count == 0
+
+    # Attempts in flight must not extend the lock, or lockout becomes a permanent DoS.
+    await _wrong_password_attempts(client, "maya@example.com", 3)
+    after = await _load_user(session_factory, "maya@example.com")
+    assert after.locked_until == locked_user.locked_until
+    assert after.failed_login_count == 0
+
+
+async def test_a_locked_account_is_indistinguishable_from_an_unknown_email(
+    client: AsyncClient,
+) -> None:
+    await register(client)
+    await _wrong_password_attempts(client, "maya@example.com", 5)
+
+    locked = await client.post(
+        "/api/v1/auth/login", json={"email": "maya@example.com", "password": TEST_PASSWORD}
+    )
+    unknown = await client.post(
+        "/api/v1/auth/login", json={"email": "nobody@example.com", "password": TEST_PASSWORD}
+    )
+    assert locked.status_code == unknown.status_code == 401
+    locked_body = locked.json()["error"]
+    unknown_body = unknown.json()["error"]
+    assert {k: v for k, v in locked_body.items() if k != "request_id"} == {
+        k: v for k, v in unknown_body.items() if k != "request_id"
+    }
+
+
+async def test_lockout_expiry_restores_access(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    await register(client)
+    await _wrong_password_attempts(client, "maya@example.com", 5)
+
+    async with session_factory() as session:
+        user = (
+            await session.execute(select(User).where(User.email == "maya@example.com"))
+        ).scalar_one()
+        user.locked_until = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=1)
+        await session.commit()
+
+    recovered = await client.post(
+        "/api/v1/auth/login", json={"email": "maya@example.com", "password": TEST_PASSWORD}
+    )
+    assert recovered.status_code == 200, recovered.text
+
+
+async def test_a_successful_login_clears_the_failure_ledger(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Failures before a good login must not be counted against the next streak."""
+    await register(client)
+    await _wrong_password_attempts(client, "maya@example.com", 4)
+
+    first = await client.post(
+        "/api/v1/auth/login", json={"email": "maya@example.com", "password": TEST_PASSWORD}
+    )
+    assert first.status_code == 200
+    assert (await _load_user(session_factory, "maya@example.com")).failed_login_count == 0
+
+    assert await _wrong_password_attempts(client, "maya@example.com", 4) == [401] * 4
+    second = await client.post(
+        "/api/v1/auth/login", json={"email": "maya@example.com", "password": TEST_PASSWORD}
+    )
+    assert second.status_code == 200
+
+
+async def test_lockout_is_written_to_the_audit_log(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    await register(client)
+    await _wrong_password_attempts(client, "maya@example.com", 5)
+
+    async with session_factory() as session:
+        stmt = select(AuditLog).where(AuditLog.action == AuditAction.USER_LOGIN_FAILED)
+        rows = (await session.execute(stmt)).scalars().all()
+    reasons = [(row.event_metadata or {}).get("reason") for row in rows]
+    assert reasons.count("bad_password") == 4
+    assert reasons.count("account_locked") == 1
+
+
 # --- Refresh rotation (Security.md §1) ----------------------------------------------
 
 
