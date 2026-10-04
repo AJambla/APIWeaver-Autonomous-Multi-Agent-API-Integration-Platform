@@ -204,6 +204,18 @@ async def _upsert_to_qdrant(
             logger.warning("qdrant_upsert_skipped", reason="no_chunks_generated")
             return
 
+        cap = client.settings.max_embedding_chunks
+        if len(chunks) > cap:
+            # Chunk count is proportional to document size, and one upload may be
+            # max_upload_bytes large — unbounded here means unbounded provider spend.
+            logger.warning(
+                "embedding_chunk_cap_exceeded",
+                document_id=doc_id,
+                total_chunks=len(chunks),
+                embedded_chunks=cap,
+            )
+            chunks = chunks[:cap]
+
         vectors = []
         for chunk in chunks:
             vector = await client.generate_embedding(chunk)

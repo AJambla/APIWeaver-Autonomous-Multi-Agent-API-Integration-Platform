@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     embedding_model: str = "text-embedding-3-small"
+    # Chunks of a single document that get embedded and indexed. Without a ceiling, one
+    # 50MB upload is ~100k provider calls (audit M8); the remainder is skipped loudly.
+    max_embedding_chunks: int = 2000
 
     # --- LLM resilience (transient failures + provider circuit breaker) -------
     llm_max_retries: int = 2

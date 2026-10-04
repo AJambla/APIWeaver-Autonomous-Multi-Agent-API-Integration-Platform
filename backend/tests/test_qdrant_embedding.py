@@ -10,7 +10,7 @@ import pytest
 from app.services.chunker import chunk_text
 from app.services.document_parser import extract_text
 from app.services.qdrant_service import FakeQdrantClient, ScoredChunk
-from app.workflows.agents.doc_agent import run_doc_agent
+from app.workflows.agents.doc_agent import _upsert_to_qdrant, run_doc_agent
 from app.workflows.llm import LLMClient
 from app.workflows.state import WorkflowState
 
@@ -193,3 +193,36 @@ class TestRunDocAgentWithQdrant:
             limit=5,
         )
         assert len(search_results) > 0
+
+
+class TestEmbeddingChunkCap:
+    @pytest.mark.asyncio
+    async def test_upsert_stops_at_the_configured_cap(self, monkeypatch) -> None:
+        """One upload may be `max_upload_bytes` large; embedding calls must not scale
+        with it without a ceiling (audit M8)."""
+        embedded: list[str] = []
+
+        async def fake_generate_embedding(chunk: str) -> list[float]:
+            embedded.append(chunk)
+            return [0.0] * 1536
+
+        client = LLMClient()
+        client.settings = client.settings.model_copy(update={"max_embedding_chunks": 3})
+        monkeypatch.setattr(client, "generate_embedding", fake_generate_embedding)
+
+        fake_qdrant = FakeQdrantClient()
+        project_id, document_id = uuid.uuid4(), uuid.uuid4()
+        state: WorkflowState = {
+            "project_id": str(project_id),
+            "document_id": str(document_id),
+        }
+        long_text = " ".join(f"Endpoint number {i} returns data." for i in range(400))
+        assert len(chunk_text(long_text)) > 3
+
+        await _upsert_to_qdrant(fake_qdrant, client, state, long_text)  # type: ignore[arg-type]
+
+        assert len(embedded) == 3
+        stored = await fake_qdrant.search(
+            project_id=project_id, query_vector=[0.0] * 1536, limit=50
+        )
+        assert len(stored) == 3
