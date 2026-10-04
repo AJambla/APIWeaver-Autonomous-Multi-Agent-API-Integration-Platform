@@ -105,8 +105,21 @@ class TestEventsAPI:
     """Integration tests for event SSE endpoints."""
 
     @pytest.mark.asyncio
-    async def test_sse_endpoint_returns_streaming_response(self, client, auth_headers):
+    async def test_sse_endpoint_returns_streaming_response(
+        self, client, auth_headers, monkeypatch
+    ):
         """SSE endpoint returns text/event-stream content type."""
+        # The real generator polls Redis forever; ASGITransport only returns the
+        # response once the app completes, so an unpatched stream would hang the
+        # client indefinitely. Substitute a finite stream to exercise the full
+        # HTTP path (auth, run access, media type, SSE framing) and terminate.
+        from app.api.v1 import events as events_module
+
+        async def finite_stream(*args, **kwargs):
+            yield "event: workflow.started\ndata: {}\n\n"
+
+        monkeypatch.setattr(events_module, "_stream_redis_events", finite_stream)
+
         project_id, _, headers = await _setup_project(client)
         response = await client.post(
             f"/api/v1/projects/{project_id}/workflows",
@@ -122,6 +135,7 @@ class TestEventsAPI:
         )
         assert sse_res.status_code == 200
         assert sse_res.headers["content-type"] == "text/event-stream; charset=utf-8"
+        assert sse_res.text.startswith("event: ")
 
     @pytest.mark.asyncio
     async def test_sse_endpoint_requires_auth(self, client):
