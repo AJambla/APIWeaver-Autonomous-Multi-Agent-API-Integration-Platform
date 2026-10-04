@@ -211,9 +211,12 @@ async def _main() -> int:
     if client_class is None:
         raise RuntimeError(f"no client class found in module {payload['module_name']}")
 
+    # Credentials arrive via the APIWEAVER_API_KEY env var (never a file inside
+    # the container — Security.md §7); payload["api_key"] stays as a secondary
+    # source for hosts that pre-date the env-var channel.
     client = client_class(
-        base_url=payload.get("base_url") or "http://mock.local",
-        api_key=payload.get("api_key") or "test-key",
+        base_url=payload.get("base_url"),
+        api_key=os.environ.get("APIWEAVER_API_KEY") or payload.get("api_key"),
     )
 
     operation = getattr(client, payload["op_id"], None)
@@ -326,6 +329,7 @@ class DockerSandboxExecutor:
         self._workspace: Path | None = None
         self._client_module: str | None = None
         self._base_url: str | None = None
+        self._api_key: str | None = None
 
     def _get_docker_client(self) -> Any:
         if self._docker_client is None:
@@ -340,9 +344,11 @@ class DockerSandboxExecutor:
         project_id: Any,
         files: dict[str, str],
         base_url: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         """Stage generated files into a host workspace the container will bind."""
         self._base_url = base_url
+        self._api_key = api_key
         workspace = Path(tempfile.mkdtemp(prefix=f"apiweaver-sandbox-{project_id or 'run'}-"))
         for rel_path, content in files.items():
             target = workspace / rel_path
@@ -397,7 +403,6 @@ class DockerSandboxExecutor:
             },
             "expected_status": fixture.get("expected_status", 200),
             "base_url": self._base_url,
-            "api_key": "test-key",
         }
         (self._workspace / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
 
@@ -405,13 +410,18 @@ class DockerSandboxExecutor:
         started = time.perf_counter()
         container = None
         try:
+            environment = {
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "APIWEAVER_PAYLOAD_PATH": "/sandbox/payload.json",
+            }
+            if self._api_key:
+                # Runtime secret injection (Security.md §7): the credential travels
+                # in the container environment, never inside a file.
+                environment["APIWEAVER_API_KEY"] = self._api_key
             run_kwargs = dict(
                 image=self._settings.sandbox_image,
                 command=["python", "/sandbox/runner.py"],
-                environment={
-                    "PYTHONDONTWRITEBYTECODE": "1",
-                    "APIWEAVER_PAYLOAD_PATH": "/sandbox/payload.json",
-                },
+                environment=environment,
                 binds={str(self._workspace): {"bind": "/sandbox", "mode": "ro"}},
                 tmpfs={"/tmp": "size=64m"},
                 nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
