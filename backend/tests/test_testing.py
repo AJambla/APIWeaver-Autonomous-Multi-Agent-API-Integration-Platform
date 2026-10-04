@@ -219,7 +219,13 @@ class TestTestingAPI:
         only by bypassing the path-based authorization.
         """
         from app.models.testing import RepairAttempt, TestResult, TestRun
-        from tests.conftest import add_org_member, add_project_member, make_org, make_project, make_user
+        from tests.conftest import (
+            add_org_member,
+            add_project_member,
+            make_org,
+            make_project,
+            make_user,
+        )
 
         async with db as session:
             org = await make_org(session, name=f"{tag} Org {uuid.uuid4().hex[:6]}")
