@@ -171,8 +171,10 @@ async def get_workflow_run(
 async def approve_workflow_gate(
     run_id: uuid.UUID,
     payload: ApproveWorkflowRequest,
+    background_tasks: BackgroundTasks,
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ) -> ApproveWorkflowResponse:
     """Approve a human-in-the-loop gate before generated code runs."""
     run = await session.get(WorkflowRun, run_id)
@@ -193,6 +195,17 @@ async def approve_workflow_gate(
     if run.status != WorkflowStatus.PAUSED_FOR_APPROVAL:
         raise UnprocessableEntityError("Workflow is not waiting for approval.")
 
+    latest_checkpoint: WorkflowCheckpoint | None = None
+    if payload.approved:
+        latest_checkpoint = await session.scalar(
+            select(WorkflowCheckpoint)
+            .where(WorkflowCheckpoint.workflow_run_id == run.id)
+            .order_by(WorkflowCheckpoint.created_at.desc())
+            .limit(1)
+        )
+        if latest_checkpoint is None:
+            raise UnprocessableEntityError("Workflow has no checkpoint to resume from.")
+
     run.status = WorkflowStatus.RUNNING if payload.approved else WorkflowStatus.FAILED
     await session.flush()
 
@@ -205,6 +218,21 @@ async def approve_workflow_gate(
         resource_id=str(run.id),
         metadata={"notes": payload.notes, "approved": payload.approved},
     )
+
+    if payload.approved:
+        resume_state = dict(latest_checkpoint.state_snapshot)
+        resume_state["plan_approved"] = True
+        resume_state["approval_notes"] = payload.notes
+        resume_state["stages"] = ["generate", "test", "export"]
+
+        engine_session_factory = async_sessionmaker(
+            bind=session.bind, class_=AsyncSession, expire_on_commit=False
+        )
+        orchestrator = Orchestrator(
+            engine_session_factory,
+            event_publisher=EventPublisher(redis_client),
+        )
+        background_tasks.add_task(orchestrator.run, run.id, resume_state)
 
     return ApproveWorkflowResponse(
         workflow_run_id=run.id,
