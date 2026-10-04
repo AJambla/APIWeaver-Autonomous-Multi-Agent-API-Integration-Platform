@@ -24,7 +24,7 @@ from app.services.sandbox_service import DockerSandboxExecutor, _safe_workspace_
 from app.services.storage_service import storage_service
 from app.services.vault_service import create_vault_client
 from app.workflows.agents.code_agent import run_code_agent
-from app.workflows.llm import LLMClient
+from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -201,11 +201,14 @@ class FailureClassifier:
 
     async def classify(self, error: dict[str, Any], endpoint: dict[str, Any], history: list[dict] | None = None) -> dict[str, Any]:
         """Classify a test failure."""
-        endpoint_history = json.dumps(history or [], indent=2)
+        response_body = fence_untrusted(
+            "RESPONSE DATA", json.dumps(error.get("response_snapshot", {}), indent=2)[:2000]
+        )
+        endpoint_history = fence_untrusted("HISTORY DATA", json.dumps(history or [], indent=2))
 
         prompt = FAILURE_CLASSIFICATION_PROMPT.format(
             status_code=error.get("status_code", 0),
-            response_body=json.dumps(error.get("response_snapshot", {}), indent=2)[:2000],
+            response_body=response_body,
             endpoint_history=endpoint_history,
         )
 
@@ -234,9 +237,15 @@ async def generate_test_fixtures(spec: dict[str, Any], llm_client: LLMClient | N
         prompt = TEST_FIXTURE_GENERATION_PROMPT.format(
             method=method,
             path=path,
-            request_schema=json.dumps(ep.get("request_schema") or {}, indent=2),
-            response_schemas=json.dumps(ep.get("response_schemas") or {}, indent=2),
-            parameters=json.dumps(ep.get("parameters") or [], indent=2),
+            request_schema=fence_untrusted(
+                "REQUEST SCHEMA", json.dumps(ep.get("request_schema") or {}, indent=2)
+            ),
+            response_schemas=fence_untrusted(
+                "RESPONSE SCHEMA", json.dumps(ep.get("response_schemas") or {}, indent=2)
+            ),
+            parameters=fence_untrusted(
+                "PARAMETER DATA", json.dumps(ep.get("parameters") or [], indent=2)
+            ),
         )
 
         try:

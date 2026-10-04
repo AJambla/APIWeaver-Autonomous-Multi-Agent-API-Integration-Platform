@@ -9,7 +9,7 @@ import json
 from typing import Any
 
 from app.core.logging import get_logger
-from app.workflows.llm import LLMClient
+from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -122,7 +122,7 @@ async def run_planner_agent(
         "destructive_endpoints": destructive,
     }
 
-    user_prompt = f"Normalized API Spec:\n{json.dumps(spec, indent=2)[:8000]}"
+    user_prompt = fence_untrusted("SPEC DATA", json.dumps(spec, indent=2)[:8000])
     plan_json, tokens = await client.generate_json(
         system_prompt=PLANNER_SYSTEM_PROMPT,
         user_prompt=user_prompt,

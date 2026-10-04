@@ -13,7 +13,7 @@ from typing import Any
 
 from app.core.logging import get_logger
 from app.services.storage_service import storage_service
-from app.workflows.llm import LLMClient
+from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -137,7 +137,9 @@ async def _run_self_review(
     if not file_contents:
         return {"self_review_passed": True, "self_review_issues": [], "self_review_summary": "No file contents available"}
 
-    review_prompt = SELF_REVIEW_SYSTEM_PROMPT.format(files_json=json.dumps(file_contents, indent=2)[:20000])
+    review_prompt = SELF_REVIEW_SYSTEM_PROMPT.format(
+        files_json=fence_untrusted("FILE CONTENTS", json.dumps(file_contents, indent=2)[:20000])
+    )
     try:
         review_json, tokens = await llm_client.generate_json(
             system_prompt=review_prompt,
@@ -287,21 +289,29 @@ async def run_code_agent(
 
         # Build repair prompt
         repair_prompt = REPAIR_SYSTEM_PROMPT.format(
-            file_content=file_content,
+            file_content=fence_untrusted("FILE CONTENT", file_content),
             method=failure_diagnosis.get("method", ""),
             path=failure_diagnosis.get("path", ""),
-            request_snapshot=json.dumps(failure_diagnosis.get("request_snapshot", {})),
-            response_snapshot=json.dumps(failure_diagnosis.get("response_snapshot", {})),
+            request_snapshot=fence_untrusted(
+                "REQUEST DATA", json.dumps(failure_diagnosis.get("request_snapshot", {}))
+            ),
+            response_snapshot=fence_untrusted(
+                "RESPONSE DATA", json.dumps(failure_diagnosis.get("response_snapshot", {}))
+            ),
             status_code=failure_diagnosis.get("status_code", 0),
             failure_classification=failure_diagnosis.get("classification", "unknown"),
-            prior_attempts_summary=failure_diagnosis.get("prior_attempts", "None"),
+            prior_attempts_summary=fence_untrusted(
+                "PRIOR ATTEMPTS", failure_diagnosis.get("prior_attempts", "None")
+            ),
             repair_output_schema=json.dumps({
                 "diagnosis": "string",
                 "corrected_content": "string"
             })
         )
 
-        user_prompt = f"Failure Diagnosis:\n{json.dumps(failure_diagnosis, indent=2)}"
+        user_prompt = fence_untrusted(
+            "FAILURE DIAGNOSIS", json.dumps(failure_diagnosis, indent=2)
+        )
 
         repair_json, tokens = await client.generate_json(
             system_prompt=repair_prompt,
@@ -344,7 +354,9 @@ async def run_code_agent(
 
         if all_files:
             consistency_prompt = CONSISTENCY_SYSTEM_PROMPT.format(
-                files_json=json.dumps(all_files, indent=2)[:15000]
+                files_json=fence_untrusted(
+                    "FILE CONTENTS", json.dumps(all_files, indent=2)[:15000]
+                )
             )
 
             consistency_json, tokens = await client.generate_json(
@@ -381,13 +393,21 @@ async def run_code_agent(
         llm_prompt = CODE_GENERATOR_SYSTEM_PROMPT.format(
             target_language=language,
             auth_scheme=_get_auth_scheme(spec),
-            endpoint_group_json=json.dumps(endpoint_group, indent=2)[:12000],
+            endpoint_group_json=fence_untrusted(
+                "ENDPOINT GROUP DATA", json.dumps(endpoint_group, indent=2)[:12000]
+            ),
         )
 
+        endpoint_list = json.dumps(
+            [f'{e.get("method")} {e.get("path")}' for e in endpoint_group.get("endpoints", [])],
+            indent=2,
+        )
+        phase_label = current_phase.get("name") if current_phase else "complete API"
         user_prompt = (
-            f"Generate {language} code for phase {current_phase.get('phase_number') if current_phase else 'all'} "
-            f"({current_phase.get('name') if current_phase else 'complete API'}).\n"
-            f"Endpoints: {json.dumps([f'{e.get('method')} {e.get('path')}' for e in endpoint_group.get('endpoints', [])], indent=2)}"
+            f"Generate {language} code for phase "
+            f"{current_phase.get('phase_number') if current_phase else 'all'}.\n"
+            f"{fence_untrusted('PHASE NAME', phase_label)}\n"
+            f"Endpoints:\n{fence_untrusted('ENDPOINT LIST', endpoint_list)}"
         )
 
         fallback_files = template_files  # Use templates as fallback
