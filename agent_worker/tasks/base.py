@@ -19,6 +19,27 @@ def _send_dead_letter(app: Any, record: dict[str, Any]) -> None:
     app.send_task("agent_worker.tasks.dead_letter", args=[record], queue="dlq")
 
 
+def _safe_input_summary(args: tuple, kwargs: dict) -> dict[str, Any]:
+    """Describe a failed task's inputs without copying their values anywhere.
+
+    Stage tasks are dispatched as `(run_id, state[, phase_number])`, and `state`
+    carries the tenant's uploaded document, so the only publishable fields are
+    the run id, the phase number and the shapes of the arguments. The state
+    itself stays in the run's workflow_checkpoint rows for triage.
+    """
+    run_id = args[0] if args and isinstance(args[0], str) else None
+    phase_number = next(
+        (arg for arg in args[1:] if isinstance(arg, int) and not isinstance(arg, bool)),
+        None,
+    )
+    return {
+        "run_id": run_id,
+        "phase_number": phase_number,
+        "arg_types": [type(arg).__name__ for arg in args],
+        "kwarg_keys": sorted(str(key) for key in kwargs),
+    }
+
+
 class AsyncTask(Task):
     """Run an async task implementation in Celery's synchronous task boundary.
 
@@ -58,8 +79,7 @@ class AsyncTask(Task):
         record = {
             "task": self.name,
             "task_id": task_id,
-            "args": repr(args)[:2000],
-            "kwargs": repr(kwargs)[:2000],
+            "inputs": _safe_input_summary(args, kwargs),
             "error": f"{type(exc).__name__}: {exc}",
         }
         logger.error("task_dead_letter", **record)
