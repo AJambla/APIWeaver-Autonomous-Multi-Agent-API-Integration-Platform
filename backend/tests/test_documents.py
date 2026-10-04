@@ -244,6 +244,15 @@ def _minimal_pdf(hex_text: str) -> bytes:
     return bytes(out)
 
 
+def test_multipart_parser_floor_guard() -> None:
+    """Audit finding H6: python-multipart before 0.0.27 is vulnerable to a
+    multipart/form-data DoS, and this is the parser behind every upload route here."""
+    from importlib.metadata import version
+
+    parsed = tuple(int(part) for part in version("python-multipart").split(".")[:3])
+    assert parsed >= (0, 0, 27)
+
+
 def test_pdf_extraction_survives_pypdf_upgrade() -> None:
     """Audit finding H5: pypdf 4.x carried PDF-parsing DoS CVEs.
 
