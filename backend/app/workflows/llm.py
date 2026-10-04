@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings, get_settings
+from app.core.errors import DependencyUnavailableError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -46,6 +47,11 @@ class LLMClient:
 
         if self.settings.anthropic_api_key:
             return await self._call_anthropic(full_system_prompt, user_prompt)
+
+        if self.settings.is_production:
+            raise DependencyUnavailableError(
+                "No LLM provider configured; set OPENAI_API_KEY or ANTHROPIC_API_KEY."
+            )
 
         logger.info("llm_mock_invocation", reason="no_api_key_configured")
         return fallback_json or {}, 50
@@ -271,9 +277,14 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
         """Generate embedding vector for the given text.
 
         Uses OpenAI text-embedding-3-small (1536 dimensions) matching Qdrant config.
-        Returns zero vector when no API key is configured (mock mode).
+        Returns a zero vector when no API key is configured (development only;
+        production raises rather than silently embedding into an unusable index).
         """
         if not self.settings.openai_api_key:
+            if self.settings.is_production:
+                raise DependencyUnavailableError(
+                    "No embedding provider configured; set OPENAI_API_KEY."
+                )
             logger.info("embedding_mock_invocation", reason="no_openai_api_key")
             return [0.0] * 1536
 
