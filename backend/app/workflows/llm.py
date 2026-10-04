@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import Any
 
 import httpx
@@ -15,6 +17,44 @@ from app.core.errors import DependencyUnavailableError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_MAX_RETRY_DELAY_SECONDS = 8.0
+_MAX_RETRY_AFTER_SECONDS = 10.0
+
+
+class _TransientProviderError(Exception):
+    """A retryable provider failure; carries the status code and Retry-After hint."""
+
+    def __init__(
+        self, message: str, *, status_code: int | None = None, retry_after: float | None = None
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+
+
+class _Circuit:
+    """Consecutive-transient-failure tracker for one provider (process-wide)."""
+
+    __slots__ = ("failures", "opened_at")
+
+    def __init__(self) -> None:
+        self.failures = 0
+        self.opened_at: float | None = None
+
+
+_CIRCUITS: dict[str, _Circuit] = {}
+
+
+def _retry_after_seconds(response: Any) -> float | None:
+    raw = getattr(response, "headers", {}).get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 SHARED_SAFETY_PREAMBLE = """You are a component of APIWeaver.
 You must:
@@ -31,6 +71,61 @@ class LLMClient:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+
+    async def _call_provider(self, provider: str, send: Any) -> Any:
+        """Run one provider request with retries, backoff, and a circuit breaker.
+
+        Only transient failures (rate limits, 5xx, transport errors) are retried or
+        counted; a 401 is a misconfiguration and surfaces immediately.
+        """
+        circuit = _CIRCUITS.setdefault(provider, _Circuit())
+
+        def _raise_if_open() -> None:
+            if circuit.opened_at is None:
+                return
+            elapsed = time.monotonic() - circuit.opened_at
+            cooldown = self.settings.llm_circuit_cooldown_seconds
+            if elapsed < cooldown:
+                raise DependencyUnavailableError(
+                    f"{provider} circuit breaker is open; retry in {cooldown - elapsed:.0f}s"
+                )
+
+        _raise_if_open()
+        last_error: Exception | None = None
+        for attempt in range(self.settings.llm_max_retries + 1):
+            try:
+                result = await send()
+            except _TransientProviderError as exc:
+                last_error = exc
+                circuit.failures += 1
+                if circuit.failures >= self.settings.llm_circuit_failure_threshold:
+                    circuit.opened_at = time.monotonic()
+                    _raise_if_open()
+                if attempt >= self.settings.llm_max_retries:
+                    break
+                delay = min(
+                    self.settings.llm_retry_backoff_seconds * (2**attempt),
+                    _MAX_RETRY_DELAY_SECONDS,
+                )
+                if exc.retry_after is not None:
+                    delay = max(delay, min(exc.retry_after, _MAX_RETRY_AFTER_SECONDS))
+                logger.warning(
+                    "llm_transient_failure",
+                    provider=provider,
+                    attempt=attempt + 1,
+                    status_code=exc.status_code,
+                    retry_in_seconds=round(delay, 2),
+                )
+                await asyncio.sleep(delay)
+                _raise_if_open()
+            else:
+                circuit.failures = 0
+                circuit.opened_at = None
+                return result
+        raise DependencyUnavailableError(
+            f"{provider} unavailable after {self.settings.llm_max_retries + 1} attempts: "
+            f"{last_error}"
+        )
 
     async def generate_json(
         self,
@@ -265,13 +360,28 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             "response_format": {"type": "json_object"},
             "temperature": 0.1,
         }
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            res = await client.post(url, json=payload, headers=headers)
-            res.raise_for_status()
+        async def send() -> tuple[dict[str, Any], int]:
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    res = await client.post(url, json=payload, headers=headers)
+                    res.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status in TRANSIENT_STATUS_CODES:
+                    raise _TransientProviderError(
+                        f"openai returned HTTP {status}",
+                        status_code=status,
+                        retry_after=_retry_after_seconds(exc.response),
+                    ) from exc
+                raise
+            except httpx.TransportError as exc:
+                raise _TransientProviderError(f"openai transport error: {exc}") from exc
             data = res.json()
             content = data["choices"][0]["message"]["content"]
             tokens = int(data.get("usage", {}).get("total_tokens", 0))
             return json.loads(content), tokens
+
+        return await self._call_provider("openai", send)
 
     async def generate_embedding(self, text: str) -> list[float]:
         """Generate embedding vector for the given text.
@@ -297,12 +407,26 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             "model": self.settings.embedding_model,
             "input": text,
         }
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            res = await client.post(url, json=payload, headers=headers)
-            res.raise_for_status()
+        async def send() -> list[float]:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    res = await client.post(url, json=payload, headers=headers)
+                    res.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status in TRANSIENT_STATUS_CODES:
+                    raise _TransientProviderError(
+                        f"openai returned HTTP {status}",
+                        status_code=status,
+                        retry_after=_retry_after_seconds(exc.response),
+                    ) from exc
+                raise
+            except httpx.TransportError as exc:
+                raise _TransientProviderError(f"openai transport error: {exc}") from exc
             data = res.json()
-            embedding = data["data"][0]["embedding"]
-            return embedding
+            return data["data"][0]["embedding"]
+
+        return await self._call_provider("openai", send)
 
     async def _call_anthropic(self, system: str, user: str) -> tuple[dict[str, Any], int]:
         url = "https://api.anthropic.com/v1/messages"
@@ -320,9 +444,22 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             "max_tokens": 4096,
             "temperature": 0.1,
         }
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            res = await client.post(url, json=payload, headers=headers)
-            res.raise_for_status()
+        async def send() -> tuple[dict[str, Any], int]:
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    res = await client.post(url, json=payload, headers=headers)
+                    res.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status in TRANSIENT_STATUS_CODES:
+                    raise _TransientProviderError(
+                        f"anthropic returned HTTP {status}",
+                        status_code=status,
+                        retry_after=_retry_after_seconds(exc.response),
+                    ) from exc
+                raise
+            except httpx.TransportError as exc:
+                raise _TransientProviderError(f"anthropic transport error: {exc}") from exc
             data = res.json()
             content = data["content"][0]["text"]
             usage = data.get("usage", {})
@@ -335,3 +472,5 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             if cleaned.endswith("```"):
                 cleaned = cleaned[:-3]
             return json.loads(cleaned.strip()), tokens
+
+        return await self._call_provider("anthropic", send)

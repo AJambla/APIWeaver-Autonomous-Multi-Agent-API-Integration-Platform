@@ -102,6 +102,7 @@ async def trigger_workflow(
             celery_app.send_task(
                 "agent_worker.tasks.run_workflow",
                 args=[str(run.id), initial_state],
+                task_id=f"run_workflow:{run.id}",
             )
         except Exception:
             background_tasks.add_task(orchestrator.run, run.id, initial_state)
