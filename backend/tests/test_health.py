@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
-from httpx import AsyncClient
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from app.core.config import Settings
+from app.main import create_app
 from tests.conftest import FakeRedis
 
 
@@ -104,3 +109,51 @@ async def test_healthz_is_exempt_from_rate_limiting(client: AsyncClient) -> None
     """The load balancer polls this constantly; it must never be throttled."""
     for _ in range(150):
         assert (await client.get("/healthz")).status_code == 200
+
+
+@asynccontextmanager
+async def _client_for(settings: Settings) -> AsyncIterator[AsyncClient]:
+    """A client over an app built from a settings variant.
+
+    `/metrics` wiring depends on `app_env` and `METRICS_TOKEN`, which the shared dev
+    fixture cannot express. These probes build their own app instead.
+    """
+    transport = ASGITransport(app=create_app(settings))
+    async with AsyncClient(transport=transport, base_url="http://testserver") as http:
+        yield http
+
+
+async def test_metrics_requires_the_configured_token(test_settings: Settings) -> None:
+    scoped = test_settings.model_copy(update={"metrics_token": "scrape-token"})
+    async with _client_for(scoped) as http:
+        anonymous = await http.get("/metrics")
+        assert anonymous.status_code == 401
+        assert anonymous.json()["error"]["code"] == "UNAUTHENTICATED"
+
+        authorized = await http.get(
+            "/metrics", headers={"X-Metrics-Token": "scrape-token"}
+        )
+        assert authorized.status_code == 200
+        assert "# HELP apiweaver_auth_success_total" in authorized.text
+
+
+async def test_metrics_rejects_a_wrong_token(test_settings: Settings) -> None:
+    scoped = test_settings.model_copy(update={"metrics_token": "scrape-token"})
+    async with _client_for(scoped) as http:
+        response = await http.get("/metrics", headers={"X-Metrics-Token": "wrong"})
+        assert response.status_code == 401
+
+
+async def test_metrics_is_not_exposed_in_production_without_a_token(
+    test_settings: Settings,
+) -> None:
+    """Fail closed: an unprotected scrape endpoint is not shipped to production."""
+    production = test_settings.model_copy(update={"app_env": "production"})
+    async with _client_for(production) as http:
+        assert (await http.get("/metrics")).status_code == 404
+
+
+async def test_metrics_stays_open_in_development(test_settings: Settings) -> None:
+    """Local scraping keeps working with no token configured."""
+    async with _client_for(test_settings) as http:
+        assert (await http.get("/metrics")).status_code == 200
