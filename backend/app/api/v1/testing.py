@@ -31,17 +31,12 @@ router = APIRouter(prefix="/projects", tags=["testing"])
 
 @router.post("/{id}/test", response_model=TestRunResponse, status_code=status.HTTP_202_ACCEPTED)
 async def trigger_test(
-    project_id: uuid.UUID,
     payload: TestRequest,
     background_tasks: BackgroundTasks,
-    principal: Principal = Depends(require_project_permission(Permission.TEST_RUN)),
+    project: Project = Depends(require_project_permission(Permission.TEST_RUN)),
     session: AsyncSession = Depends(get_db),
 ) -> TestRunResponse:
     """Trigger tests for a project."""
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise NotFoundError("Project not found.")
-
     # Validate environment
     env = payload.environment
     if env not in (TestEnvironment.SANDBOX.value, TestEnvironment.LIVE.value):

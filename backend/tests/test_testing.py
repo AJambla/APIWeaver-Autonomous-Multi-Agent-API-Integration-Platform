@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import select
 
 from app.workflows.agents.test_agent import (
     FailureClassifier,
@@ -12,6 +14,7 @@ from app.workflows.agents.test_agent import (
     run_test_agent,
 )
 from app.workflows.state import WorkflowState
+from tests.conftest import TEST_PASSWORD
 
 
 class TestTestingAgent:
@@ -159,10 +162,54 @@ class User(BaseModel):
 class TestTestingAPI:
     """Integration tests for the Testing API."""
 
+    async def _register_with_project(self, client, tag: str) -> tuple[dict[str, str], str]:
+        """Register a fresh user/org plus one project; returns (headers, project_id)."""
+        res = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": f"h3-{tag}-{uuid.uuid4().hex[:8]}@example.com",
+                "password": TEST_PASSWORD,
+                "full_name": f"H3 {tag}",
+                "organization_name": f"H3 Org {tag} {uuid.uuid4().hex[:6]}",
+            },
+        )
+        assert res.status_code == 201, res.text
+        headers = {"Authorization": f"Bearer {res.json()['access_token']}"}
+        me = await client.get("/api/v1/auth/me", headers=headers)
+        org_id = me.json()["organizations"][0]["organization_id"]
+        proj = await client.post(
+            "/api/v1/projects",
+            json={"name": f"H3 Project {tag}", "organization_id": org_id},
+            headers=headers,
+        )
+        assert proj.status_code == 201, proj.text
+        return headers, proj.json()["id"]
+
     @pytest.mark.asyncio
-    async def test_trigger_test_endpoint(self, client, auth_headers):
-        """Test POST /projects/{id}/test endpoint."""
-        pass
+    async def test_trigger_test_ignores_query_project_id(self, client, db):
+        """The test run must target the authorized path {id}, never a caller-supplied
+        `project_id` query param (audit finding H3, IDOR)."""
+        from app.models.testing import TestRun
+
+        headers_a, project_a = await self._register_with_project(client, "a")
+        _, project_b = await self._register_with_project(client, "b")
+
+        res = await client.post(
+            f"/api/v1/projects/{project_a}/test",
+            params={"project_id": project_b},
+            json={"environment": "sandbox"},
+            headers=headers_a,
+        )
+        assert res.status_code == 202, res.text
+
+        async with db as session:
+            run = await session.get(TestRun, uuid.UUID(res.json()["test_run_id"]))
+            assert run is not None
+            assert str(run.project_id) == project_a
+            foreign = list((await session.execute(
+                select(TestRun).where(TestRun.project_id == uuid.UUID(project_b))
+            )).scalars())
+            assert foreign == []
 
     @pytest.mark.asyncio
     async def test_get_test_run_endpoint(self, client, auth_headers):
