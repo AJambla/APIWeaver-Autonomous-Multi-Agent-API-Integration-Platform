@@ -13,7 +13,9 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.services.sandbox_service import DockerSandboxExecutor
 from app.services.storage_service import storage_service
 from app.workflows.agents.code_agent import run_code_agent
 from app.workflows.llm import LLMClient
@@ -178,6 +180,12 @@ class MockSandboxClient:
 
         return result
 
+    async def cleanup(self) -> None:
+        """Drop the sys.path entries added by _load_modules."""
+        for entry in list(sys.path):
+            if "apiweaver_sandbox" in entry:
+                sys.path.remove(entry)
+
 
 class FailureClassifier:
     """Classifies test failures using LLM."""
@@ -247,6 +255,41 @@ async def generate_test_fixtures(spec: dict[str, Any], llm_client: LLMClient | N
     return fixtures
 
 
+async def _create_sandbox(
+    state: WorkflowState,
+    generated_files: list[dict[str, Any]],
+    spec: dict[str, Any],
+) -> MockSandboxClient | DockerSandboxExecutor:
+    """Build the sandbox backend selected by settings (mock by default)."""
+    settings = get_settings()
+    if settings.sandbox_backend != "docker":
+        sandbox = MockSandboxClient(generated_files, spec)
+        await sandbox._load_modules()
+        return sandbox
+
+    files: dict[str, str] = {}
+    for file_meta in generated_files:
+        if file_meta.get("language") != "python":
+            continue
+        try:
+            raw = await storage_service.download(file_meta["content_s3_key"])
+            files[file_meta["file_path"]] = (
+                raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            )
+        except Exception as e:
+            logger.warning(
+                "sandbox_file_download_failed", file=file_meta.get("file_path"), error=str(e)
+            )
+
+    executor = DockerSandboxExecutor(settings)
+    await executor.load(
+        project_id=state.get("project_id"),
+        files=files,
+        base_url=spec.get("base_url"),
+    )
+    return executor
+
+
 async def run_test_agent(
     state: WorkflowState,
     llm_client: LLMClient | None = None,
@@ -280,143 +323,145 @@ async def run_test_agent(
     fixtures = await generate_test_fixtures(spec, client)
 
     # Create sandbox client
-    sandbox = MockSandboxClient(generated_files, spec)
-    await sandbox._load_modules()
+    sandbox = await _create_sandbox(state, generated_files, spec)
     classifier = FailureClassifier(client)
 
-    # Run tests for each endpoint
-    test_results = []
-    all_passed = True
+    try:
+        # Run tests for each endpoint
+        test_results = []
+        all_passed = True
 
-    for ep in spec.get("endpoints", []):
-        method = ep.get("method", "GET").upper()
-        path = ep.get("path", "/")
-        ep_key = f"{method} {path}"
-        fixture = fixtures.get(ep_key, {})
+        for ep in spec.get("endpoints", []):
+            method = ep.get("method", "GET").upper()
+            path = ep.get("path", "/")
+            ep_key = f"{method} {path}"
+            fixture = fixtures.get(ep_key, {})
 
-        result = await sandbox.execute_test(ep, fixture)
-        test_results.append(result)
+            result = await sandbox.execute_test(ep, fixture)
+            test_results.append(result)
 
-        if result["status"] != "passed":
-            all_passed = False
+            if result["status"] != "passed":
+                all_passed = False
 
-    # Self-healing repair loop (max 3 attempts)
-    repair_attempts = []
-    max_attempts = 3
+        # Self-healing repair loop (max 3 attempts)
+        repair_attempts = []
+        max_attempts = 3
 
-    for attempt in range(1, max_attempts + 1):
-        failed_tests = [r for r in test_results if r["status"] == "failed"]
-        if not failed_tests:
-            break
+        for attempt in range(1, max_attempts + 1):
+            failed_tests = [r for r in test_results if r["status"] == "failed"]
+            if not failed_tests:
+                break
 
-        logger.info("repair_attempt_started", attempt=attempt, failed_count=len(failed_tests))
+            logger.info("repair_attempt_started", attempt=attempt, failed_count=len(failed_tests))
 
-        for failed_test in failed_tests:
-            # Find the endpoint
-            endpoint = next(
-                (ep for ep in spec.get("endpoints", [])
-                 if f"{ep.get('method', '').upper()} {ep.get('path', '')}" == f"{failed_test['method']} {failed_test['path']}"),
-                None
-            )
-            if not endpoint:
-                continue
+            for failed_test in failed_tests:
+                # Find the endpoint
+                endpoint = next(
+                    (ep for ep in spec.get("endpoints", [])
+                     if f"{ep.get('method', '').upper()} {ep.get('path', '')}" == f"{failed_test['method']} {failed_test['path']}"),
+                    None
+                )
+                if not endpoint:
+                    continue
 
-            # Classify failure
-            classification = await classifier.classify(
-                failed_test,
-                endpoint,
-                test_results,
-            )
+                # Classify failure
+                classification = await classifier.classify(
+                    failed_test,
+                    endpoint,
+                    test_results,
+                )
 
-            # Find the file to repair (client file for the endpoint's language)
-            target_files = [
-                f for f in generated_files
-                if f.get("language") == "python" and "client" in f["file_path"]
-            ]
-            if not target_files:
-                continue
+                # Find the file to repair (client file for the endpoint's language)
+                target_files = [
+                    f for f in generated_files
+                    if f.get("language") == "python" and "client" in f["file_path"]
+                ]
+                if not target_files:
+                    continue
 
-            target_file = target_files[0]["file_path"]
+                target_file = target_files[0]["file_path"]
 
-            # Prepare failure diagnosis
-            failure_diagnosis = {
-                "method": failed_test["method"],
-                "path": failed_test["path"],
-                "status_code": failed_test.get("status_code"),
-                "request_snapshot": fixture.get("request", {}),
-                "response_snapshot": failed_test.get("response_snapshot", {}),
-                "classification": classification.get("classification"),
-                "confidence": classification.get("confidence"),
-                "reasoning": classification.get("reasoning"),
-                "prior_attempts": [
-                    ra.get("diff_summary") for ra in repair_attempts
-                    if ra.get("target_file") == target_file
-                ],
-            }
+                # Prepare failure diagnosis
+                failure_diagnosis = {
+                    "method": failed_test["method"],
+                    "path": failed_test["path"],
+                    "status_code": failed_test.get("status_code"),
+                    "request_snapshot": fixture.get("request", {}),
+                    "response_snapshot": failed_test.get("response_snapshot", {}),
+                    "classification": classification.get("classification"),
+                    "confidence": classification.get("confidence"),
+                    "reasoning": classification.get("reasoning"),
+                    "prior_attempts": [
+                        ra.get("diff_summary") for ra in repair_attempts
+                        if ra.get("target_file") == target_file
+                    ],
+                }
 
-            # Trigger repair via Code Generator Agent
-            repair_result = await run_code_agent(
-                state,
-                failure_diagnosis=failure_diagnosis,
-                target_file=target_file,
-                llm_client=client,
-            )
+                # Trigger repair via Code Generator Agent
+                repair_result = await run_code_agent(
+                    state,
+                    failure_diagnosis=failure_diagnosis,
+                    target_file=target_file,
+                    llm_client=client,
+                )
 
-            # Re-run the failed test
-            new_result = await sandbox.execute_test(endpoint, fixture)
+                # Re-run the failed test
+                new_result = await sandbox.execute_test(endpoint, fixture)
 
-            repair_attempt = {
-                "attempt_number": attempt,
-                "endpoint_id": failed_test.get("endpoint_id"),
-                "target_file": target_file,
-                "classification": classification,
-                "diff_summary": repair_result.get("generated_files", [{}])[0].get("repair_diagnosis", "Unknown"),
-                "outcome": "resolved" if new_result["status"] == "passed" else "still_failing",
-            }
-            repair_attempts.append(repair_attempt)
+                repair_attempt = {
+                    "attempt_number": attempt,
+                    "endpoint_id": failed_test.get("endpoint_id"),
+                    "target_file": target_file,
+                    "classification": classification,
+                    "diff_summary": repair_result.get("generated_files", [{}])[0].get("repair_diagnosis", "Unknown"),
+                    "outcome": "resolved" if new_result["status"] == "passed" else "still_failing",
+                }
+                repair_attempts.append(repair_attempt)
 
-            # Update test result
-            failed_test.update(new_result)
-            if new_result["status"] == "passed":
+                # Update test result
+                failed_test.update(new_result)
+                if new_result["status"] == "passed":
+                    all_passed = True
+                    break
+
+            # Check if all resolved
+            if all(r["status"] == "passed" for r in test_results):
                 all_passed = True
                 break
 
-        # Check if all resolved
-        if all(r["status"] == "passed" for r in test_results):
-            all_passed = True
-            break
+        # Escalate remaining failures
+        for failed_test in [r for r in test_results if r["status"] == "failed"]:
+            repair_attempts.append({
+                "attempt_number": max_attempts + 1,
+                "endpoint_id": failed_test.get("endpoint_id"),
+                "target_file": "escalated",
+                "classification": {"classification": "escalated", "confidence": 1.0, "reasoning": "Max repair attempts exceeded"},
+                "diff_summary": None,
+                "outcome": "escalated",
+            })
 
-    # Escalate remaining failures
-    for failed_test in [r for r in test_results if r["status"] == "failed"]:
-        repair_attempts.append({
-            "attempt_number": max_attempts + 1,
-            "endpoint_id": failed_test.get("endpoint_id"),
-            "target_file": "escalated",
-            "classification": {"classification": "escalated", "confidence": 1.0, "reasoning": "Max repair attempts exceeded"},
-            "diff_summary": None,
-            "outcome": "escalated",
-        })
+        # Build test run summary
+        passed = sum(1 for r in test_results if r["status"] == "passed")
+        failed = sum(1 for r in test_results if r["status"] == "failed")
+        skipped = sum(1 for r in test_results if r["status"] == "skipped")
 
-    # Build test run summary
-    passed = sum(1 for r in test_results if r["status"] == "passed")
-    failed = sum(1 for r in test_results if r["status"] == "failed")
-    skipped = sum(1 for r in test_results if r["status"] == "skipped")
+        test_run_summary = {
+            "total": len(test_results),
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+            "pass_rate": passed / len(test_results) if test_results else 0,
+            "repair_attempts": len(repair_attempts),
+        }
 
-    test_run_summary = {
-        "total": len(test_results),
-        "passed": passed,
-        "failed": failed,
-        "skipped": skipped,
-        "pass_rate": passed / len(test_results) if test_results else 0,
-        "repair_attempts": len(repair_attempts),
-    }
-
-    return {
-        "test_suite": test_results,
-        "test_run_summary": test_run_summary,
-        "repair_attempts": repair_attempts,
-        "current_node": "test_agent",
-        "progress_percent": 85,
-        "status": "completed" if all_passed else "completed_with_failures",
-        "total_tokens_used": total_tokens,
-    }
+        return {
+            "test_suite": test_results,
+            "test_run_summary": test_run_summary,
+            "repair_attempts": repair_attempts,
+            "current_node": "test_agent",
+            "progress_percent": 85,
+            "status": "completed" if all_passed else "completed_with_failures",
+            "total_tokens_used": total_tokens,
+        }
+    finally:
+        await sandbox.cleanup()
