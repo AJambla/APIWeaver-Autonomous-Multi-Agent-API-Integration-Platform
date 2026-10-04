@@ -20,7 +20,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.auth_config import AuthConfig, SecretRef
 from app.models.enums import AuthScheme
-from app.services.sandbox_service import DockerSandboxExecutor
+from app.services.sandbox_service import DockerSandboxExecutor, _safe_workspace_target
 from app.services.storage_service import storage_service
 from app.services.vault_service import create_vault_client
 from app.workflows.agents.code_agent import run_code_agent
@@ -83,7 +83,10 @@ class MockSandboxClient:
                 temp_dir = Path(tempfile.gettempdir()) / "apiweaver_sandbox" / file_meta.get("project_id", "default")
                 temp_dir.mkdir(parents=True, exist_ok=True)
 
-                full_path = temp_dir / file_path
+                full_path = _safe_workspace_target(temp_dir, file_path)
+                if full_path is None:
+                    logger.warning("sandbox_path_rejected", file=file_path)
+                    continue
                 full_path.parent.mkdir(parents=True, exist_ok=True)
                 full_path.write_bytes(content)
 
