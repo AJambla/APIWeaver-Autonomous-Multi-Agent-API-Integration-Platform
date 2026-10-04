@@ -288,6 +288,29 @@ if __name__ == "__main__":
 '''
 
 
+def _safe_workspace_target(workspace: Path, rel_path: str) -> Path | None:
+    """Join rel_path under workspace, or None if it would escape.
+
+    Generated file names come from LLM output, so POSIX/Windows absolute
+    paths and any ".." segment are rejected before touching the filesystem.
+    """
+    text = rel_path.replace("\\", "/")
+    if not text or "\x00" in text:
+        return None
+    if text.startswith("/") or text[1:2] == ":":
+        return None
+    parts = [part for part in text.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        return None
+    target = workspace.joinpath(*parts)
+    try:
+        if not target.resolve().is_relative_to(workspace.resolve()):
+            return None
+    except OSError:
+        return None
+    return target
+
+
 def _cpu_to_nano_cpus(raw: str) -> int:
     """Convert a quota string ("0.5", "500m", "1") to Docker nano_cpus."""
     text = str(raw).strip()
@@ -351,7 +374,10 @@ class DockerSandboxExecutor:
         self._api_key = api_key
         workspace = Path(tempfile.mkdtemp(prefix=f"apiweaver-sandbox-{project_id or 'run'}-"))
         for rel_path, content in files.items():
-            target = workspace / rel_path
+            target = _safe_workspace_target(workspace, rel_path)
+            if target is None:
+                logger.warning("sandbox_path_rejected", path=rel_path)
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
 
