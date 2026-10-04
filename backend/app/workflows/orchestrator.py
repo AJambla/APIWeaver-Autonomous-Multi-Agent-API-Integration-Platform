@@ -440,7 +440,10 @@ class Orchestrator:
                 from app.workflows.agents.test_agent import run_test_agent
 
                 tokens_before = current_dict.get("total_tokens_used", 0)
-                test_updates = await run_test_agent(cast(WorkflowState, current_dict))
+                test_updates = await run_test_agent(
+                    cast(WorkflowState, current_dict),
+                    session_factory=self.session_factory,
+                )
                 current_dict.update(test_updates)
                 current_dict["progress_percent"] = 75
 
@@ -627,6 +630,7 @@ class Orchestrator:
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_document_agent",
                     args=[run_id_str, current_dict],
+                    task_id=f"run_document_agent:{run_id_str}",
                 )
                 tokens_before = current_dict.get("total_tokens_used", 0)
                 doc_updates = result.get(timeout=300)
@@ -653,6 +657,7 @@ class Orchestrator:
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_planner_agent",
                     args=[run_id_str, current_dict],
+                    task_id=f"run_planner_agent:{run_id_str}",
                 )
                 planner_updates = result.get(timeout=300)
                 current_dict.update(planner_updates)
@@ -692,6 +697,7 @@ class Orchestrator:
                     result = celery_app.send_task(
                         "agent_worker.tasks.run_code_agent",
                         args=[run_id_str, current_dict, phase_number],
+                        task_id=f"run_code_agent:{run_id_str}:phase_{phase_number}",
                     )
                     code_updates = result.get(timeout=300)
                     current_dict.update(code_updates)
@@ -725,6 +731,7 @@ class Orchestrator:
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_code_agent",
                     args=[run_id_str, current_dict, None],
+                    task_id=f"run_code_agent:{run_id_str}:consistency",
                 )
                 consistency_updates = result.get(timeout=300)
                 current_dict.update(consistency_updates)
@@ -753,6 +760,7 @@ class Orchestrator:
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_testing_agent",
                     args=[run_id_str, current_dict],
+                    task_id=f"run_testing_agent:{run_id_str}",
                 )
                 test_updates = result.get(timeout=300)
                 current_dict.update(test_updates)
@@ -780,6 +788,7 @@ class Orchestrator:
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_export_agent",
                     args=[run_id_str, current_dict],
+                    task_id=f"run_export_agent:{run_id_str}",
                 )
                 export_updates = result.get(timeout=300)
                 current_dict.update(export_updates)
