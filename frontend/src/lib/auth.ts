@@ -3,8 +3,8 @@ import type { AuthTokens, User } from "./types";
 /**
  * Client-side token storage. The backend returns tokens as JSON (it does not set
  * HttpOnly cookies), so we persist the refresh token in a cookie and the access
- * token in memory. The cookie is readable by `middleware.ts` for route gating and
- * by the refresh flow; the access token is intentionally not written to storage.
+ * token in memory. The cookie is read by the silent refresh flow; the access
+ * token is intentionally not written to storage.
  *
  * Note: a true HttpOnly refresh cookie would require the backend to set it. Until
  * then the refresh token lives in a client-readable cookie. Keep access tokens
