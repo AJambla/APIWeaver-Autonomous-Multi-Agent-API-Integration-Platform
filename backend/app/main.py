@@ -187,6 +187,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         json_output=settings.app_env != "development",
     )
 
+    # API.md §7 — the spec is served under the version prefix it documents. In production
+    # the spec and the Swagger page disclose the whole API surface to anyone who finds the
+    # port, so neither is mounted (audit M1).
+    expose_spec = None if settings.is_production else "/api/v1/openapi.json"
     app = FastAPI(
         title="APIWeaver Platform API",
         version="1.0.0",
@@ -195,9 +199,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "This spec is generated from the same normalization format the product "
             "produces for user-uploaded APIs."
         ),
-        # API.md §7 — the spec is served under the version prefix it documents.
-        openapi_url="/api/v1/openapi.json",
-        docs_url="/api/v1/docs",
+        openapi_url=expose_spec,
+        docs_url=None if settings.is_production else "/api/v1/docs",
         redoc_url=None,
         lifespan=lifespan,
     )
