@@ -11,7 +11,7 @@ import functools
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AppEnv = Literal["development", "staging", "production"]
@@ -119,6 +119,21 @@ class Settings(BaseSettings):
                 "(postgresql+asyncpg:// or sqlite+aiosqlite:// for tests)"
             )
         return value
+
+    @model_validator(mode="after")
+    def _refuse_unsandboxed_production(self) -> Settings:
+        """Fail boot rather than run generated code inside the API process (audit C2/M1).
+
+        `sandbox_backend="mock"` imports and executes LLM-authored modules in-process, so
+        it is a test-only opt-in; a production deployment that asks for it is a
+        misconfiguration, not a supported mode.
+        """
+        if self.app_env == "production" and self.sandbox_backend == "mock":
+            raise ValueError(
+                "SANDBOX_BACKEND=mock runs LLM-generated code in this process and is "
+                "test-only; production must use SANDBOX_BACKEND=docker."
+            )
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

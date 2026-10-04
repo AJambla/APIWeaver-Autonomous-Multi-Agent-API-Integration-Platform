@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.main import create_app
@@ -157,3 +160,55 @@ async def test_metrics_stays_open_in_development(test_settings: Settings) -> Non
     """Local scraping keeps working with no token configured."""
     async with _client_for(test_settings) as http:
         assert (await http.get("/metrics")).status_code == 200
+
+
+def _boot_settings(base: Settings, **overrides: Any) -> Settings:
+    """Construct fresh Settings, because `model_copy` skips validators.
+
+    Startup guardrails are validation-time rules, so these probes have to build a real
+    `Settings` rather than copy the fixture's.
+    """
+    values = {
+        "database_url": "sqlite+aiosqlite:///:memory:",
+        "redis_url": base.redis_url,
+        "jwt_private_key_path": base.jwt_private_key_path,
+        "jwt_public_key_path": base.jwt_public_key_path,
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+def test_production_refuses_the_in_process_sandbox(test_settings: Settings) -> None:
+    """`mock` execs LLM-generated code in this process; booting it in production is a
+    misconfiguration, not a supported mode (audit C2/M1)."""
+    with pytest.raises(ValidationError, match="SANDBOX_BACKEND=mock"):
+        _boot_settings(test_settings, app_env="production", sandbox_backend="mock")
+
+
+def test_production_boots_with_the_docker_sandbox(test_settings: Settings) -> None:
+    settings = _boot_settings(
+        test_settings, app_env="production", sandbox_backend="docker"
+    )
+    assert settings.sandbox_backend == "docker"
+
+
+def test_development_may_opt_into_the_in_process_sandbox(test_settings: Settings) -> None:
+    """The suite and local runs rely on the in-process sandbox."""
+    settings = _boot_settings(test_settings, sandbox_backend="mock")
+    assert settings.sandbox_backend == "mock"
+
+
+async def test_docs_and_spec_are_not_served_in_production(test_settings: Settings) -> None:
+    production = test_settings.model_copy(update={"app_env": "production"})
+    async with _client_for(production) as http:
+        assert (await http.get("/api/v1/docs")).status_code == 404
+        assert (await http.get("/api/v1/openapi.json")).status_code == 404
+
+
+async def test_docs_and_spec_are_served_in_development(test_settings: Settings) -> None:
+    """`API.md §7` — the versioned spec stays available locally."""
+    async with _client_for(test_settings) as http:
+        assert (await http.get("/api/v1/docs")).status_code == 200
+        spec = await http.get("/api/v1/openapi.json")
+        assert spec.status_code == 200
+        assert spec.json()["info"]["title"] == "APIWeaver Platform API"
