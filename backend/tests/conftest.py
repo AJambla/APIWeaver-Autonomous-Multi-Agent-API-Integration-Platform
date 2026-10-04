@@ -1,9 +1,10 @@
 """Test fixtures.
 
 The suite runs against aiosqlite and a fake Redis so it needs no external services. The
-two natively-partitioned tables are Postgres-only and excluded from the schema build (see
-`non_partitioned_tables`); anything that must exercise real partitioning carries the
-`postgres` marker.
+natively-partitioned tables are Postgres-only: `agent_events` is included via a SQLite
+stand-in DDL (see `AGENT_EVENTS_SQLITE_DDL`), while `usage_metrics` is excluded from the
+schema build entirely (see `non_partitioned_tables`); anything that must exercise real
+partitioning carries the `postgres` marker.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings, get_settings
@@ -32,6 +34,22 @@ from app.services.qdrant_service import FakeQdrantClient, create_qdrant_client
 from app.services.vault_service import FakeVaultClient, create_vault_client
 
 TEST_PASSWORD = "correct-horse-battery-staple"
+
+# `agent_events` is Postgres-partitioned (migration 0002) and excluded from `create_all`;
+# this SQLite stand-in keeps the composite-PK shape while giving `id` the autoincrement
+# behavior BIGSERIAL provides in production.
+AGENT_EVENTS_SQLITE_DDL = """
+CREATE TABLE agent_events (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    workflow_run_id CHAR(32) NOT NULL,
+    agent_name VARCHAR(100) NOT NULL,
+    event_type VARCHAR(50) NOT NULL,
+    payload JSON,
+    FOREIGN KEY (workflow_run_id) REFERENCES workflow_runs (id) ON DELETE CASCADE,
+    CONSTRAINT uniq_agent_events_id_created UNIQUE (id, created_at)
+)
+"""
 
 
 class FakeRedis:
@@ -174,6 +192,7 @@ async def session_factory(
     tables = non_partitioned_tables()
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tables))
+        await conn.execute(text(AGENT_EVENTS_SQLITE_DDL))
 
     yield async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
