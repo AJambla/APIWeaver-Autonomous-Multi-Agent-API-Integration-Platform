@@ -18,7 +18,7 @@ from app.core.logging import get_logger
 from app.models.enums import WorkflowStatus
 from app.models.workflow import WorkflowCheckpoint, WorkflowRun
 from app.services.event_publisher import EventPublisher
-from app.services.ingestion_service import persist_normalized_spec
+from app.services.ingestion_service import persist_endpoint_dependencies, persist_normalized_spec
 from app.services.qdrant_service import QdrantClient
 from app.workflows.agents.planner_agent import run_planner_agent
 from app.workflows.state import WorkflowState
@@ -163,6 +163,12 @@ class Orchestrator:
                 current_dict["progress_percent"] = 30
 
                 async with self.session_factory() as session:
+                    await persist_endpoint_dependencies(
+                        session,
+                        project_id=uuid.UUID(current_dict["project_id"]),
+                        execution_plan=current_dict.get("execution_plan") or {},
+                        normalized_spec=current_dict.get("normalized_spec") or {},
+                    )
                     await record_checkpoint(
                         session,
                         workflow_run_id=workflow_run_id,
@@ -431,6 +437,14 @@ class Orchestrator:
                 planner_updates = result.get(timeout=300)
                 current_dict.update(planner_updates)
                 current_dict["progress_percent"] = 30
+                async with self.session_factory() as session:
+                    await persist_endpoint_dependencies(
+                        session,
+                        project_id=uuid.UUID(current_dict["project_id"]),
+                        execution_plan=current_dict.get("execution_plan") or {},
+                        normalized_spec=current_dict.get("normalized_spec") or {},
+                    )
+                    await session.commit()
                 await self._emit_progress(workflow_run_id, current_dict, "planner_agent")
 
             if "generate" in stages and current_dict.get("plan_approved"):

@@ -6,15 +6,18 @@ import hashlib
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ConflictError, UnprocessableEntityError
+from app.core.logging import get_logger
 from app.models.document import Document, DocumentVersion
-from app.models.enums import DocumentFormat
-from app.models.spec import APISpec, Endpoint, EndpointParameter
+from app.models.enums import DependencyRelationship, DocumentFormat
+from app.models.spec import APISpec, Endpoint, EndpointDependency, EndpointParameter
 from app.services.spec_normalizer import NormalizedSpec, normalize
 from app.services.storage_service import ObjectStorage
+
+logger = get_logger(__name__)
 
 
 def _guess_format_from_filename(filename: str) -> str:
@@ -168,3 +171,105 @@ async def persist_normalized_spec(
     await session.flush()
 
     return api_spec
+
+
+async def persist_endpoint_dependencies(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    execution_plan: dict[str, Any],
+    normalized_spec: dict[str, Any],
+) -> int:
+    """Write the planner's dependency_graph into EndpointDependency rows.
+
+    Planner node ids resolve to persisted Endpoint rows by matching the node label
+    ("METHOD path") against the spec endpoints; the 0-based positional index into
+    normalized_spec["endpoints"] is the fallback when a label is missing or
+    unparseable. Rows are replaced per project so re-plans stay idempotent.
+    Returns the number of edges written.
+    """
+    graph = execution_plan.get("dependency_graph") or {}
+    edges = graph.get("edges") or []
+    if not edges:
+        return 0
+
+    spec_endpoints = normalized_spec.get("endpoints", [])
+
+    node_keys: dict[str, tuple[str, str]] = {}
+    for node in graph.get("nodes") or []:
+        label = str(node.get("label", ""))
+        parts = label.split(" ", 1)
+        if len(parts) == 2 and parts[0]:
+            node_keys[str(node.get("id", ""))] = (parts[0].upper(), parts[1])
+
+    def _resolve_key(node_id: str) -> tuple[str, str] | None:
+        if node_id in node_keys:
+            return node_keys[node_id]
+        suffix = node_id.removeprefix("ep_")
+        try:
+            idx = int(suffix)
+        except ValueError:
+            return None
+        if 0 <= idx < len(spec_endpoints):
+            ep = spec_endpoints[idx]
+            return (str(ep.get("method", "GET")).upper(), str(ep.get("path", "/")))
+        return None
+
+    latest_spec = await session.scalar(
+        select(APISpec)
+        .where(APISpec.project_id == project_id)
+        .order_by(APISpec.created_at.desc())
+        .limit(1)
+    )
+    if latest_spec is None:
+        logger.warning("dependency_persist_no_spec", project_id=str(project_id))
+        return 0
+
+    db_endpoints = list(
+        (await session.scalars(select(Endpoint).where(Endpoint.api_spec_id == latest_spec.id))).all()
+    )
+    endpoint_ids: dict[tuple[str, str], uuid.UUID] = {}
+    for ep in db_endpoints:
+        endpoint_ids.setdefault((ep.method.upper(), ep.path), ep.id)
+
+    resolved: dict[str, uuid.UUID] = {}
+
+    def _resolve_endpoint(node_id: str) -> uuid.UUID | None:
+        if node_id in resolved:
+            return resolved[node_id]
+        key = _resolve_key(node_id)
+        endpoint_id = endpoint_ids.get(key) if key is not None else None
+        resolved[node_id] = endpoint_id  # type: ignore[assignment]
+        return endpoint_id
+
+    await session.execute(
+        delete(EndpointDependency).where(EndpointDependency.project_id == project_id)
+    )
+
+    valid_relationships = {r.value for r in DependencyRelationship}
+    written = 0
+    for edge in edges:
+        from_id = _resolve_endpoint(str(edge.get("from", "")))
+        to_id = _resolve_endpoint(str(edge.get("to", "")))
+        if from_id is None or to_id is None or from_id == to_id:
+            logger.warning(
+                "dependency_edge_skipped",
+                project_id=str(project_id),
+                from_node=str(edge.get("from", "")),
+                to_node=str(edge.get("to", "")),
+            )
+            continue
+        relationship = edge.get("relationship")
+        if relationship not in valid_relationships:
+            relationship = None
+        session.add(
+            EndpointDependency(
+                project_id=project_id,
+                from_endpoint_id=from_id,
+                to_endpoint_id=to_id,
+                relationship=relationship,
+            )
+        )
+        written += 1
+    await session.flush()
+    return written
