@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -105,3 +107,102 @@ async def test_orchestrator_agent_nodes(
     planner_out = await run_planner_agent(state)
     assert planner_out["status"] == "plan_ready"
     assert planner_out["execution_plan"] is not None
+
+
+async def _seed_run_with_org_member(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    tag: str,
+) -> tuple[dict[str, str], str, str, str]:
+    """A running workflow run in a project the caller can only see, not act on.
+
+    The principal holds the org role `member`, which grants nothing on a project
+    (`enforce.py` resolve_project_role), so this is exactly the principal the old
+    membership-only checks let through (audit M5).
+    """
+    from app.models.enums import OrgRole
+    from tests.conftest import add_org_member, make_org, make_project, make_user
+
+    async with session_factory() as session:
+        org = await make_org(session, name=f"{tag} Org {uuid.uuid4().hex[:6]}")
+        member = await make_user(session, email=f"{tag}-{uuid.uuid4().hex[:8]}@example.com")
+        await add_org_member(session, org=org, user=member, role=OrgRole.MEMBER)
+        project = await make_project(session, org=org, name=f"{tag} Project")
+        run = WorkflowRun(project_id=project.id, status=WorkflowStatus.RUNNING)
+        session.add(run)
+        await session.flush()
+        project_id, run_id, user_id, email = (
+            str(project.id),
+            str(run.id),
+            str(member.id),
+            member.email,
+        )
+        await session.commit()
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": TEST_PASSWORD},
+    )
+    assert login.status_code == 200, login.text
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    return headers, project_id, run_id, user_id
+
+
+async def _grant_project_role(
+    session_factory: async_sessionmaker[AsyncSession],
+    project_id: str,
+    user_id: str,
+    role: str,
+) -> None:
+    from app.models.project import Project
+    from app.models.user import User
+    from tests.conftest import add_project_member
+
+    async with session_factory() as session:
+        project = await session.get(Project, uuid.UUID(project_id))
+        user = await session.get(User, uuid.UUID(user_id))
+        assert project is not None and user is not None
+        await add_project_member(session, project=project, user=user, role=role)
+        await session.commit()
+
+
+async def test_cancel_requires_project_editor(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """`WORKFLOW_CANCEL` is in the matrix as editor+; cancel must enforce it (audit M5)."""
+    from app.models.enums import ProjectRole
+
+    headers, project_id, run_id, user_id = await _seed_run_with_org_member(
+        client, session_factory, "m5cancel"
+    )
+
+    denied = await client.post(f"/api/v1/workflows/{run_id}/cancel", headers=headers)
+    assert denied.status_code == 403, denied.text
+
+    await _grant_project_role(session_factory, project_id, user_id, ProjectRole.EDITOR)
+    allowed = await client.post(f"/api/v1/workflows/{run_id}/cancel", headers=headers)
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["status"] == WorkflowStatus.CANCELLED
+
+
+async def test_list_workflows_requires_project_viewer(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Any org member could enumerate another project's runs; the read gate is viewer."""
+    from app.models.enums import ProjectRole
+
+    headers, project_id, run_id, user_id = await _seed_run_with_org_member(
+        client, session_factory, "m5list"
+    )
+
+    denied = await client.get(
+        "/api/v1/workflows", params={"project_id": project_id}, headers=headers
+    )
+    assert denied.status_code == 403, denied.text
+
+    await _grant_project_role(session_factory, project_id, user_id, ProjectRole.VIEWER)
+    allowed = await client.get(
+        "/api/v1/workflows", params={"project_id": project_id}, headers=headers
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert [row["id"] for row in allowed.json()] == [run_id]
