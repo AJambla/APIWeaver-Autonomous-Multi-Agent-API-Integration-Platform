@@ -10,13 +10,19 @@ import importlib.util
 import json
 import sys
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.models.auth_config import AuthConfig, SecretRef
+from app.models.enums import AuthScheme
 from app.services.sandbox_service import DockerSandboxExecutor
 from app.services.storage_service import storage_service
+from app.services.vault_service import create_vault_client
 from app.workflows.agents.code_agent import run_code_agent
 from app.workflows.llm import LLMClient
 from app.workflows.state import WorkflowState
@@ -129,9 +135,6 @@ class MockSandboxClient:
                 return result
 
             # Instantiate client with mock configuration
-            import os
-            os.environ["MOCK_MODE"] = "true"
-
             client = ClientClass(
                 base_url="http://mock.local",
                 api_key="test-key",
@@ -255,12 +258,93 @@ async def generate_test_fixtures(spec: dict[str, Any], llm_client: LLMClient | N
     return fixtures
 
 
+# The generated-client contract accepts a single credential string (api_key);
+# these are the common keys a project's Vault secret may hold, in preference order.
+_CREDENTIAL_KEYS = (
+    "api_key",
+    "key",
+    "token",
+    "access_token",
+    "bearer_token",
+    "api_token",
+    "client_secret",
+)
+
+
+def _credential_from_auth(auth: dict[str, Any] | None) -> str | None:
+    """Pick the credential string the generated client constructor expects."""
+    if not auth or auth.get("scheme") == AuthScheme.NONE.value:
+        return None
+    credentials = auth.get("credentials") or {}
+    for key in _CREDENTIAL_KEYS:
+        value = credentials.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+async def _resolve_target_auth(
+    session_factory: Any,
+    project_id: str | None,
+    settings: Any,
+) -> dict[str, Any] | None:
+    """Load the project's target-API auth: scheme, non-secret config, Vault credentials.
+
+    Returns None (testing proceeds without injected credentials) when there is no
+    session, no auth config, or any lookup fails. Credential values are never logged.
+    """
+    if session_factory is None or not project_id:
+        return None
+    try:
+        project_uuid = uuid.UUID(str(project_id))
+    except ValueError:
+        return None
+
+    try:
+        async with session_factory() as session:
+            row = await session.execute(
+                select(AuthConfig.scheme, AuthConfig.config_json, SecretRef.vault_path)
+                .join(SecretRef, SecretRef.auth_config_id == AuthConfig.id)
+                .where(AuthConfig.project_id == project_uuid)
+                .limit(1)
+            )
+            found = row.first()
+    except Exception as e:
+        logger.warning("target_auth_lookup_failed", project_id=str(project_id), error=str(e))
+        return None
+
+    if found is None:
+        return None
+    scheme, config_json, vault_path = found
+
+    try:
+        secret = await create_vault_client(settings).read_secret(vault_path)
+    except Exception as e:
+        logger.warning(
+            "target_auth_secret_read_failed",
+            project_id=str(project_id),
+            scheme=scheme,
+            error=str(e),
+        )
+        return None
+    if not secret:
+        return None
+
+    return {"scheme": scheme, "config": config_json or {}, "credentials": secret}
+
+
 async def _create_sandbox(
     state: WorkflowState,
     generated_files: list[dict[str, Any]],
     spec: dict[str, Any],
+    auth: dict[str, Any] | None = None,
 ) -> MockSandboxClient | DockerSandboxExecutor:
-    """Build the sandbox backend selected by settings (mock by default)."""
+    """Build the sandbox backend selected by settings (mock by default).
+
+    Live credentials are only handed to the Docker executor — the mock backend
+    runs generated code in-process, which must never see target-API secrets
+    (Security.md §19).
+    """
     settings = get_settings()
     if settings.sandbox_backend != "docker":
         sandbox = MockSandboxClient(generated_files, spec)
@@ -286,6 +370,7 @@ async def _create_sandbox(
         project_id=state.get("project_id"),
         files=files,
         base_url=spec.get("base_url"),
+        api_key=_credential_from_auth(auth),
     )
     return executor
 
@@ -293,6 +378,7 @@ async def _create_sandbox(
 async def run_test_agent(
     state: WorkflowState,
     llm_client: LLMClient | None = None,
+    session_factory: Any | None = None,
 ) -> dict[str, Any]:
     """Execution node for the Testing Agent."""
     logger.info("test_agent_started", workflow_run_id=state.get("workflow_run_id"))
@@ -319,11 +405,23 @@ async def run_test_agent(
             "errors": ["No generated files to test."],
         }
 
+    auth = None
+    if session_factory is not None:
+        auth = await _resolve_target_auth(
+            session_factory, state.get("project_id"), get_settings()
+        )
+        if auth:
+            logger.info(
+                "target_auth_resolved",
+                workflow_run_id=state.get("workflow_run_id"),
+                scheme=auth.get("scheme"),
+            )
+
     # Generate test fixtures
     fixtures = await generate_test_fixtures(spec, client)
 
     # Create sandbox client
-    sandbox = await _create_sandbox(state, generated_files, spec)
+    sandbox = await _create_sandbox(state, generated_files, spec, auth=auth)
     classifier = FailureClassifier(client)
 
     try:

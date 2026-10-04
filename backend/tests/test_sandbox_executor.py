@@ -147,6 +147,30 @@ async def test_execute_test_enforces_quotas_and_parses_result():
     assert payload["op_id"] == "listUsers"
     assert payload["base_url"] == "http://api.test"
     assert payload["expected_status"] == 200
+    assert "api_key" not in payload
+    assert "APIWEAVER_API_KEY" not in kwargs["environment"]
+
+
+@pytest.mark.asyncio
+async def test_execute_test_injects_credential_via_env():
+    container = FakeContainer(exit_code=0, output="")
+    client = FakeDockerClient(container)
+    executor = DockerSandboxExecutor(_make_settings(), docker_client=client)
+    await executor.load(
+        project_id="proj-1",
+        files={"client.py": "x = 1\n"},
+        base_url="https://api.target.example",
+        api_key="sk-live-secret",
+    )
+
+    await executor.execute_test({"method": "GET", "path": "/users"}, {})
+
+    kwargs = client.run_kwargs
+    assert kwargs["environment"]["APIWEAVER_API_KEY"] == "sk-live-secret"
+    payload = json.loads(
+        (executor._workspace / "payload.json").read_text(encoding="utf-8")
+    )
+    assert "api_key" not in payload
 
 
 @pytest.mark.asyncio
@@ -264,6 +288,50 @@ def test_runner_source_executes_payload(tmp_path, monkeypatch):
     assert parsed["error"] is None
 
 
+def test_runner_source_prefers_env_credential(tmp_path, monkeypatch):
+    payload = {
+        "module_name": "stub_sandbox_module",
+        "op_id": "list_users",
+        "request": {"params": {}, "body": None},
+        "expected_status": 200,
+        "base_url": "http://api.test",
+    }
+    (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("APIWEAVER_PAYLOAD_PATH", str(tmp_path / "payload.json"))
+    monkeypatch.setenv("APIWEAVER_API_KEY", "env-injected-secret")
+
+    seen: dict = {}
+
+    class StubClient:
+        def __init__(self, base_url=None, api_key=None, **kwargs) -> None:
+            seen["base_url"] = base_url
+            seen["api_key"] = api_key
+
+        async def list_users(self, **kwargs):
+            return SimpleNamespace(
+                status_code=200,
+                headers={},
+                json=lambda: {"ok": True},
+            )
+
+        async def close(self) -> None:
+            return None
+
+    module = types.ModuleType("stub_sandbox_module")
+    module.StubClient = StubClient
+    monkeypatch.setitem(sys.modules, "stub_sandbox_module", module)
+
+    runner_globals: dict = {"__name__": "apiweaver_runner_under_test"}
+    exec(compile(RUNNER_SOURCE, "<runner>", "exec"), runner_globals)
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        exit_code = runner_globals["_run"]()
+
+    assert exit_code == 0
+    assert seen == {"base_url": "http://api.test", "api_key": "env-injected-secret"}
+
+
 @pytest.mark.asyncio
 async def test_create_sandbox_selects_docker_executor(monkeypatch):
     captured: dict = {}
@@ -272,8 +340,8 @@ async def test_create_sandbox_selects_docker_executor(monkeypatch):
         def __init__(self, settings) -> None:
             captured["settings"] = settings
 
-        async def load(self, *, project_id, files, base_url=None) -> None:
-            captured["load"] = (project_id, files, base_url)
+        async def load(self, *, project_id, files, base_url=None, api_key=None) -> None:
+            captured["load"] = (project_id, files, base_url, api_key)
 
     monkeypatch.setattr(test_agent_module, "DockerSandboxExecutor", StubExecutor)
     monkeypatch.setattr(
@@ -298,7 +366,45 @@ async def test_create_sandbox_selects_docker_executor(monkeypatch):
         "proj-1",
         {"client.py": "class X:\n    pass\n"},
         "http://api.test",
+        None,
     )
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_passes_resolved_credential(monkeypatch):
+    captured: dict = {}
+
+    class StubExecutor:
+        def __init__(self, settings) -> None:
+            pass
+
+        async def load(self, *, project_id, files, base_url=None, api_key=None) -> None:
+            captured["api_key"] = api_key
+
+    monkeypatch.setattr(test_agent_module, "DockerSandboxExecutor", StubExecutor)
+    monkeypatch.setattr(
+        test_agent_module,
+        "get_settings",
+        lambda: SimpleNamespace(sandbox_backend="docker"),
+    )
+    monkeypatch.setattr(
+        test_agent_module,
+        "storage_service",
+        SimpleNamespace(download=AsyncMock(return_value=b"class X:\n    pass\n")),
+    )
+
+    await test_agent_module._create_sandbox(
+        {"project_id": "proj-1"},
+        [{"file_path": "client.py", "content_s3_key": "k", "language": "python"}],
+        {"base_url": "http://api.test"},
+        auth={
+            "scheme": "api_key",
+            "config": {},
+            "credentials": {"api_key": "sk-vault-secret"},
+        },
+    )
+
+    assert captured["api_key"] == "sk-vault-secret"
 
 
 @pytest.mark.asyncio
