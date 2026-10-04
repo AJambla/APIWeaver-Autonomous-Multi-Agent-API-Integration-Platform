@@ -58,9 +58,8 @@ class MockSandboxClient:
         self.generated_files = generated_files
         self.spec = spec
         self._modules: dict[str, Any] = {}
-        self._load_modules()
 
-    def _load_modules(self) -> None:
+    async def _load_modules(self) -> None:
         """Load generated Python modules into memory."""
         # Create a temporary directory structure in memory
         for file_meta in self.generated_files:
@@ -68,7 +67,7 @@ class MockSandboxClient:
                 continue
 
             try:
-                content = storage_service.download(file_meta["content_s3_key"])
+                content = await storage_service.download(file_meta["content_s3_key"])
                 file_path = file_meta["file_path"]
 
                 # Write to a temporary location for import
@@ -282,6 +281,7 @@ async def run_test_agent(
 
     # Create sandbox client
     sandbox = MockSandboxClient(generated_files, spec)
+    await sandbox._load_modules()
     classifier = FailureClassifier(client)
 
     # Run tests for each endpoint

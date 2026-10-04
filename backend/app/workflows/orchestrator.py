@@ -18,9 +18,10 @@ from app.core.logging import get_logger
 from app.models.enums import WorkflowStatus
 from app.models.workflow import WorkflowCheckpoint, WorkflowRun
 from app.services.event_publisher import EventPublisher
-from app.services.ingestion_service import persist_normalized_spec
+from app.services.ingestion_service import persist_endpoint_dependencies, persist_normalized_spec
 from app.services.qdrant_service import QdrantClient
 from app.workflows.agents.planner_agent import run_planner_agent
+from app.workflows.event_recorder import record_agent_event
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -58,6 +59,35 @@ async def record_checkpoint(
     return checkpoint
 
 
+def _storage_tool_calls(
+    previous_files: list[dict[str, Any]], updated_files: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """ToolCall rows for files the code agent newly uploaded this stage."""
+    prev_paths = {f.get("file_path") for f in previous_files}
+    return [
+        {
+            "tool_name": "storage.upload",
+            "arguments": {"file_path": f.get("file_path"), "language": f.get("language")},
+            "result": {"s3_key": f.get("content_s3_key")},
+        }
+        for f in updated_files
+        if f.get("file_path") not in prev_paths
+    ]
+
+
+def _sandbox_tool_calls(test_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """ToolCall rows for the sandbox executions driven by the testing agent."""
+    return [
+        {
+            "tool_name": "sandbox.execute_test",
+            "arguments": {"method": r.get("method"), "path": r.get("path")},
+            "result": {"status": r.get("status"), "error": r.get("error")},
+            "duration_ms": r.get("latency_ms"),
+        }
+        for r in test_results
+    ]
+
+
 class Orchestrator:
     """Executes the deterministic state machine for a workflow run."""
 
@@ -91,6 +121,27 @@ class Orchestrator:
             progress_percent=progress,
         )
 
+    async def _record_event(
+        self,
+        run_id: uuid.UUID,
+        *,
+        agent_name: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Persist an AgentEvent (+ tool calls) in its own transaction."""
+        async with self.session_factory() as session:
+            await record_agent_event(
+                session,
+                workflow_run_id=run_id,
+                agent_name=agent_name,
+                event_type=event_type,
+                payload=payload,
+                tool_calls=tool_calls,
+            )
+            await session.commit()
+
     async def run(
         self,
         workflow_run_id: uuid.UUID,
@@ -121,11 +172,19 @@ class Orchestrator:
 
         stages = current_dict.get("stages", ["plan"])
 
+        await self._record_event(
+            workflow_run_id,
+            agent_name="orchestrator",
+            event_type="workflow_started",
+            payload={"stages": stages, "execution_mode": self.execution_mode},
+        )
+
         try:
             # 1. Documentation Stage (always needed if normalized spec is not ready)
             if not current_dict.get("normalized_spec"):
                 await _check_token_budget(current_dict)
                 from app.workflows.agents.doc_agent import run_doc_agent
+                tokens_before = current_dict.get("total_tokens_used", 0)
                 doc_updates = await run_doc_agent(
                     cast(WorkflowState, current_dict),
                     qdrant_client=self.qdrant_client,
@@ -154,15 +213,36 @@ class Orchestrator:
                     )
                     await session.commit()
                 await self._emit_progress(workflow_run_id, current_dict, "doc_agent")
+                await self._record_event(
+                    workflow_run_id,
+                    agent_name="doc_agent",
+                    event_type="stage_completed",
+                    payload={
+                        "node_name": "doc_agent",
+                        "status": doc_updates.get("status"),
+                        "progress_percent": 15,
+                        "llm_tokens": max(
+                            current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                        ),
+                        "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                    },
+                )
 
             # 2. Planner Stage (if "plan" stage is in stages)
             if "plan" in stages and current_dict.get("normalized_spec"):
                 await _check_token_budget(current_dict)
+                tokens_before = current_dict.get("total_tokens_used", 0)
                 planner_updates = await run_planner_agent(cast(WorkflowState, current_dict))
                 current_dict.update(planner_updates)
                 current_dict["progress_percent"] = 30
 
                 async with self.session_factory() as session:
+                    edges_written = await persist_endpoint_dependencies(
+                        session,
+                        project_id=uuid.UUID(current_dict["project_id"]),
+                        execution_plan=current_dict.get("execution_plan") or {},
+                        normalized_spec=current_dict.get("normalized_spec") or {},
+                    )
                     await record_checkpoint(
                         session,
                         workflow_run_id=workflow_run_id,
@@ -171,6 +251,21 @@ class Orchestrator:
                     )
                     await session.commit()
                 await self._emit_progress(workflow_run_id, current_dict, "planner_agent")
+                await self._record_event(
+                    workflow_run_id,
+                    agent_name="planner_agent",
+                    event_type="stage_completed",
+                    payload={
+                        "node_name": "planner_agent",
+                        "status": planner_updates.get("status"),
+                        "progress_percent": 30,
+                        "llm_tokens": max(
+                            current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                        ),
+                        "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                        "edges_written": edges_written,
+                    },
+                )
 
             # 3. Code Generation Stage
             if "generate" in stages and current_dict.get("plan_approved"):
@@ -205,6 +300,8 @@ class Orchestrator:
                         phase_number = phase.get("phase_number")
                         if isinstance(result, BaseException):
                             raise result
+                        tokens_before = current_dict.get("total_tokens_used", 0)
+                        files_before = list(current_dict.get("generated_files", []))
                         merged["generated_files"] = (
                             merged.get("generated_files", []) + result.get("generated_files", [])
                         )
@@ -221,6 +318,24 @@ class Orchestrator:
                             await session.commit()
                         await self._emit_progress(
                             workflow_run_id, current_dict, f"code_agent_phase_{phase_number}"
+                        )
+                        await self._record_event(
+                            workflow_run_id,
+                            agent_name="code_agent",
+                            event_type="stage_completed",
+                            payload={
+                                "node_name": f"code_agent_phase_{phase_number}",
+                                "phase_number": phase_number,
+                                "status": result.get("status"),
+                                "progress_percent": current_dict.get("progress_percent"),
+                                "llm_tokens": max(
+                                    current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                                ),
+                                "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                            },
+                            tool_calls=_storage_tool_calls(
+                                files_before, result.get("generated_files", [])
+                            ),
                         )
                     current_dict.update(merged)
                     current_dict["progress_percent"] = 60
@@ -240,6 +355,8 @@ class Orchestrator:
                     for phase in phases:
                         phase_number = phase.get("phase_number")
                         logger.info("code_generation_phase", phase=phase_number)
+                        tokens_before = current_dict.get("total_tokens_used", 0)
+                        files_before = list(current_dict.get("generated_files", []))
                         code_updates = await run_code_agent(
                             cast(WorkflowState, current_dict),
                             phase_number=phase_number,
@@ -260,9 +377,29 @@ class Orchestrator:
                         await self._emit_progress(
                             workflow_run_id, current_dict, f"code_agent_phase_{phase_number}"
                         )
+                        await self._record_event(
+                            workflow_run_id,
+                            agent_name="code_agent",
+                            event_type="stage_completed",
+                            payload={
+                                "node_name": f"code_agent_phase_{phase_number}",
+                                "phase_number": phase_number,
+                                "status": code_updates.get("status"),
+                                "progress_percent": current_dict.get("progress_percent"),
+                                "llm_tokens": max(
+                                    current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                                ),
+                                "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                            },
+                            tool_calls=_storage_tool_calls(
+                                files_before, code_updates.get("generated_files", [])
+                            ),
+                        )
 
                 # Cross-chunk consistency pass
                 logger.info("code_generation_consistency")
+                tokens_before = current_dict.get("total_tokens_used", 0)
+                files_before = list(current_dict.get("generated_files", []))
                 consistency_updates = await run_code_agent(
                     cast(WorkflowState, current_dict),
                     phase_number=None,
@@ -279,12 +416,30 @@ class Orchestrator:
                     )
                     await session.commit()
                 await self._emit_progress(workflow_run_id, current_dict, "code_agent_consistency")
+                await self._record_event(
+                    workflow_run_id,
+                    agent_name="code_agent",
+                    event_type="stage_completed",
+                    payload={
+                        "node_name": "code_agent_consistency",
+                        "status": consistency_updates.get("status"),
+                        "progress_percent": current_dict.get("progress_percent"),
+                        "llm_tokens": max(
+                            current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                        ),
+                        "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                    },
+                    tool_calls=_storage_tool_calls(
+                        files_before, consistency_updates.get("generated_files", [])
+                    ),
+                )
 
             # 4. Testing Stage
             if "test" in stages and current_dict.get("generated_files"):
                 await _check_token_budget(current_dict)
                 from app.workflows.agents.test_agent import run_test_agent
 
+                tokens_before = current_dict.get("total_tokens_used", 0)
                 test_updates = await run_test_agent(cast(WorkflowState, current_dict))
                 current_dict.update(test_updates)
                 current_dict["progress_percent"] = 75
@@ -298,13 +453,30 @@ class Orchestrator:
                     )
                     await session.commit()
                 await self._emit_progress(workflow_run_id, current_dict, "test_agent")
+                await self._record_event(
+                    workflow_run_id,
+                    agent_name="test_agent",
+                    event_type="stage_completed",
+                    payload={
+                        "node_name": "test_agent",
+                        "status": test_updates.get("status"),
+                        "progress_percent": current_dict.get("progress_percent"),
+                        "llm_tokens": max(
+                            current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                        ),
+                        "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                        "test_summary": test_updates.get("test_run_summary"),
+                    },
+                    tool_calls=_sandbox_tool_calls(test_updates.get("test_suite", [])),
+                )
 
             # 5. Export Stage
             if "export" in stages and current_dict.get("test_suite"):
                 await _check_token_budget(current_dict)
                 from app.workflows.agents.export_agent import ExportAgent
 
-                export_agent = ExportAgent()
+                export_agent = ExportAgent(session_factory=self.session_factory)
+                tokens_before = current_dict.get("total_tokens_used", 0)
                 export_updates = await export_agent.run(cast(WorkflowState, current_dict))
                 current_dict.update(export_updates)
                 current_dict["progress_percent"] = 95
@@ -318,6 +490,20 @@ class Orchestrator:
                     )
                     await session.commit()
                 await self._emit_progress(workflow_run_id, current_dict, "export_agent")
+                await self._record_event(
+                    workflow_run_id,
+                    agent_name="export_agent",
+                    event_type="stage_completed",
+                    payload={
+                        "node_name": "export_agent",
+                        "status": export_updates.get("status"),
+                        "progress_percent": current_dict.get("progress_percent"),
+                        "llm_tokens": max(
+                            current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                        ),
+                        "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                    },
+                )
 
             # 6. Determine final status
             final_status = WorkflowStatus.COMPLETED
@@ -328,6 +514,14 @@ class Orchestrator:
                 )
                 if escalated:
                     final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+            if (
+                current_dict.get("execution_plan")
+                and not current_dict.get("plan_approved")
+                and not current_dict.get("generated_files")
+            ):
+                # Plan produced but never approved, so generation was skipped —
+                # park the run at the human-approval gate instead of completing.
+                final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
 
             current_dict["status"] = final_status
             is_done = final_status == WorkflowStatus.COMPLETED
@@ -341,6 +535,16 @@ class Orchestrator:
                     if final_status == WorkflowStatus.COMPLETED:
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
                     await session.commit()
+
+            await self._record_event(
+                workflow_run_id,
+                agent_name="orchestrator",
+                event_type="workflow_finished",
+                payload={
+                    "status": final_status.value,
+                    "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                },
+            )
 
             if self.event_publisher is not None:
                 await self.event_publisher.publish_workflow_completed(
@@ -356,6 +560,13 @@ class Orchestrator:
             logger.error("workflow_execution_failed", run_id=str(workflow_run_id), error=str(exc))
             current_dict["status"] = WorkflowStatus.FAILED
             current_dict.setdefault("errors", []).append(str(exc))
+
+            await self._record_event(
+                workflow_run_id,
+                agent_name="orchestrator",
+                event_type="workflow_failed",
+                payload={"error": str(exc), "status": WorkflowStatus.FAILED.value},
+            )
 
             async with self.session_factory() as session:
                 run_obj = await session.get(WorkflowRun, workflow_run_id)
@@ -405,17 +616,40 @@ class Orchestrator:
 
             stages = current_dict.get("stages", ["plan"])
 
+            await self._record_event(
+                workflow_run_id,
+                agent_name="orchestrator",
+                event_type="workflow_started",
+                payload={"stages": stages, "execution_mode": self.execution_mode},
+            )
+
             if not current_dict.get("normalized_spec"):
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_document_agent",
                     args=[run_id_str, current_dict],
                 )
+                tokens_before = current_dict.get("total_tokens_used", 0)
                 doc_updates = result.get(timeout=300)
                 current_dict.update(doc_updates)
                 current_dict["progress_percent"] = 15
                 await self._emit_progress(workflow_run_id, current_dict, "doc_agent")
+                await self._record_event(
+                    workflow_run_id,
+                    agent_name="doc_agent",
+                    event_type="stage_completed",
+                    payload={
+                        "node_name": "doc_agent",
+                        "status": doc_updates.get("status"),
+                        "progress_percent": 15,
+                        "llm_tokens": max(
+                            current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                        ),
+                        "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                    },
+                )
 
             if "plan" in stages and current_dict.get("normalized_spec"):
+                tokens_before = current_dict.get("total_tokens_used", 0)
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_planner_agent",
                     args=[run_id_str, current_dict],
@@ -423,6 +657,29 @@ class Orchestrator:
                 planner_updates = result.get(timeout=300)
                 current_dict.update(planner_updates)
                 current_dict["progress_percent"] = 30
+                async with self.session_factory() as session:
+                    edges_written = await persist_endpoint_dependencies(
+                        session,
+                        project_id=uuid.UUID(current_dict["project_id"]),
+                        execution_plan=current_dict.get("execution_plan") or {},
+                        normalized_spec=current_dict.get("normalized_spec") or {},
+                    )
+                    await session.commit()
+                await self._record_event(
+                    workflow_run_id,
+                    agent_name="planner_agent",
+                    event_type="stage_completed",
+                    payload={
+                        "node_name": "planner_agent",
+                        "status": planner_updates.get("status"),
+                        "progress_percent": 30,
+                        "llm_tokens": max(
+                            current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                        ),
+                        "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                        "edges_written": edges_written,
+                    },
+                )
                 await self._emit_progress(workflow_run_id, current_dict, "planner_agent")
 
             if "generate" in stages and current_dict.get("plan_approved"):
@@ -430,6 +687,8 @@ class Orchestrator:
                 phases = plan.get("phases", [])
                 for phase in phases:
                     phase_number = phase.get("phase_number")
+                    tokens_before = current_dict.get("total_tokens_used", 0)
+                    files_before = list(current_dict.get("generated_files", []))
                     result = celery_app.send_task(
                         "agent_worker.tasks.run_code_agent",
                         args=[run_id_str, current_dict, phase_number],
@@ -442,7 +701,27 @@ class Orchestrator:
                     await self._emit_progress(
                         workflow_run_id, current_dict, f"code_agent_phase_{phase_number}"
                     )
+                    await self._record_event(
+                        workflow_run_id,
+                        agent_name="code_agent",
+                        event_type="stage_completed",
+                        payload={
+                            "node_name": f"code_agent_phase_{phase_number}",
+                            "phase_number": phase_number,
+                            "status": code_updates.get("status"),
+                            "progress_percent": current_dict.get("progress_percent"),
+                            "llm_tokens": max(
+                                current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                            ),
+                            "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                        },
+                        tool_calls=_storage_tool_calls(
+                            files_before, code_updates.get("generated_files", [])
+                        ),
+                    )
 
+                tokens_before = current_dict.get("total_tokens_used", 0)
+                files_before = list(current_dict.get("generated_files", []))
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_code_agent",
                     args=[run_id_str, current_dict, None],
@@ -451,8 +730,26 @@ class Orchestrator:
                 current_dict.update(consistency_updates)
                 current_dict["progress_percent"] = 60
                 await self._emit_progress(workflow_run_id, current_dict, "code_agent_consistency")
+                await self._record_event(
+                    workflow_run_id,
+                    agent_name="code_agent",
+                    event_type="stage_completed",
+                    payload={
+                        "node_name": "code_agent_consistency",
+                        "status": consistency_updates.get("status"),
+                        "progress_percent": current_dict.get("progress_percent"),
+                        "llm_tokens": max(
+                            current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                        ),
+                        "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                    },
+                    tool_calls=_storage_tool_calls(
+                        files_before, consistency_updates.get("generated_files", [])
+                    ),
+                )
 
             if "test" in stages and current_dict.get("generated_files"):
+                tokens_before = current_dict.get("total_tokens_used", 0)
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_testing_agent",
                     args=[run_id_str, current_dict],
@@ -461,8 +758,25 @@ class Orchestrator:
                 current_dict.update(test_updates)
                 current_dict["progress_percent"] = 75
                 await self._emit_progress(workflow_run_id, current_dict, "test_agent")
+                await self._record_event(
+                    workflow_run_id,
+                    agent_name="test_agent",
+                    event_type="stage_completed",
+                    payload={
+                        "node_name": "test_agent",
+                        "status": test_updates.get("status"),
+                        "progress_percent": current_dict.get("progress_percent"),
+                        "llm_tokens": max(
+                            current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                        ),
+                        "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                        "test_summary": test_updates.get("test_run_summary"),
+                    },
+                    tool_calls=_sandbox_tool_calls(test_updates.get("test_suite", [])),
+                )
 
             if "export" in stages and current_dict.get("test_suite"):
+                tokens_before = current_dict.get("total_tokens_used", 0)
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_export_agent",
                     args=[run_id_str, current_dict],
@@ -471,6 +785,20 @@ class Orchestrator:
                 current_dict.update(export_updates)
                 current_dict["progress_percent"] = 95
                 await self._emit_progress(workflow_run_id, current_dict, "export_agent")
+                await self._record_event(
+                    workflow_run_id,
+                    agent_name="export_agent",
+                    event_type="stage_completed",
+                    payload={
+                        "node_name": "export_agent",
+                        "status": export_updates.get("status"),
+                        "progress_percent": current_dict.get("progress_percent"),
+                        "llm_tokens": max(
+                            current_dict.get("total_tokens_used", 0) - tokens_before, 0
+                        ),
+                        "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                    },
+                )
 
             final_status = WorkflowStatus.COMPLETED
             if current_dict.get("repair_attempts"):
@@ -480,6 +808,14 @@ class Orchestrator:
                 )
                 if escalated:
                     final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+            if (
+                current_dict.get("execution_plan")
+                and not current_dict.get("plan_approved")
+                and not current_dict.get("generated_files")
+            ):
+                # Plan produced but never approved, so generation was skipped —
+                # park the run at the human-approval gate instead of completing.
+                final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
 
             current_dict["status"] = final_status
             is_done = final_status == WorkflowStatus.COMPLETED
@@ -493,6 +829,16 @@ class Orchestrator:
                     if final_status == WorkflowStatus.COMPLETED:
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
                     await session.commit()
+
+            await self._record_event(
+                workflow_run_id,
+                agent_name="orchestrator",
+                event_type="workflow_finished",
+                payload={
+                    "status": final_status.value,
+                    "total_tokens_used": current_dict.get("total_tokens_used", 0),
+                },
+            )
 
             if self.event_publisher is not None:
                 await self.event_publisher.publish_workflow_completed(
@@ -508,6 +854,13 @@ class Orchestrator:
             logger.error("workflow_execution_failed", run_id=run_id_str, error=str(exc))
             current_dict["status"] = WorkflowStatus.FAILED
             current_dict.setdefault("errors", []).append(str(exc))
+
+            await self._record_event(
+                workflow_run_id,
+                agent_name="orchestrator",
+                event_type="workflow_failed",
+                payload={"error": str(exc), "status": WorkflowStatus.FAILED.value},
+            )
 
             async with self.session_factory() as session:
                 run_obj = await session.get(WorkflowRun, workflow_run_id)

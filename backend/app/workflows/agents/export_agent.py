@@ -7,13 +7,19 @@ and stores them in S3 with metadata in Postgres.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
+
+from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.enums import ExportType
+from app.models.github import GitHubConnection
+from app.models.project import ProjectMember
 from app.services.github_service import GitHubAppClient
 from app.services.storage_service import storage_service
+from app.services.vault_service import create_vault_client
 from app.workflows.llm import LLMClient
 from app.workflows.state import WorkflowState
 
@@ -23,8 +29,13 @@ logger = get_logger(__name__)
 class ExportAgent:
     """Packages final artifacts from generated code and test results."""
 
-    def __init__(self, llm_client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient | None = None,
+        session_factory: Any | None = None,
+    ) -> None:
         self.llm_client = llm_client or LLMClient()
+        self.session_factory = session_factory
 
     async def run(
         self,
@@ -352,11 +363,89 @@ volumes:
             ],
         }
 
+    async def _resolve_github_installation(
+        self, project_id: str, settings: Any
+    ) -> tuple[int | None, str | None]:
+        """Find an active GitHub connection for a project member and its App installation.
+
+        Returns (installation_id, user_token), or (None, None) when no usable
+        connection exists so the export can degrade to a graceful skip.
+        """
+        if self.session_factory is None or not project_id:
+            return None, None
+        try:
+            project_uuid = uuid.UUID(str(project_id))
+        except ValueError:
+            return None, None
+
+        try:
+            async with self.session_factory() as session:
+                result = await session.execute(
+                    select(GitHubConnection)
+                    .join(ProjectMember, ProjectMember.user_id == GitHubConnection.user_id)
+                    .where(
+                        ProjectMember.project_id == project_uuid,
+                        GitHubConnection.revoked_at.is_(None),
+                        GitHubConnection.access_token_vault_path.is_not(None),
+                    )
+                    .order_by(GitHubConnection.created_at.desc())
+                    .limit(1)
+                )
+                connection = result.scalar_one_or_none()
+        except Exception as e:
+            logger.warning(
+                "github_connection_lookup_failed", project_id=project_id, error=str(e)
+            )
+            return None, None
+
+        if connection is None:
+            return None, None
+
+        secret = await create_vault_client(settings).read_secret(
+            connection.access_token_vault_path
+        )
+        user_token = (secret or {}).get("access_token")
+        if not user_token:
+            logger.warning(
+                "github_connection_token_missing",
+                project_id=project_id,
+                github_username=connection.github_username,
+            )
+            return None, None
+
+        github_client = GitHubAppClient(settings)
+        try:
+            installations = await github_client.get_user_installations(user_token)
+        except Exception as e:
+            logger.warning(
+                "github_installations_lookup_failed", project_id=project_id, error=str(e)
+            )
+            return None, None
+
+        for installation in installations:
+            if installation.get("id") is not None:
+                return int(installation["id"]), user_token
+        return None, None
+
+    async def _resolve_file_content(self, gf: dict[str, Any]) -> str:
+        """Download generated file content from storage, falling back to inline content."""
+        s3_key = gf.get("content_s3_key")
+        if not s3_key:
+            return gf.get("content", "")
+        try:
+            raw = await storage_service.download(s3_key)
+            return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        except Exception as e:
+            logger.warning(
+                "github_export_content_download_failed", s3_key=s3_key, error=str(e)
+            )
+            return gf.get("content", "")
+
     async def _package_github(
         self,
         *,
         project_id: str,
-        export_types: list[str],
+        export_types: list[str] | None = None,
         generated_files: list[dict[str, Any]],
         github_repo_name: str | None = None,
         github_org: str | None = None,
@@ -367,7 +456,7 @@ volumes:
     ) -> dict[str, Any]:
         """Create GitHub repo and push files + CI/CD workflows via GitHub API."""
         settings = get_settings()
-        
+
         if not settings.github_app_id:
             logger.warning("github_app_not_configured", project_id=project_id)
             return {
@@ -375,16 +464,17 @@ volumes:
                 "status": "skipped",
                 "error": "GitHub App not configured",
             }
-        
+
         try:
             github_client = GitHubAppClient(settings)
-            
+
             repo_name = github_repo_name or f"apiweaver-project-{project_id[:8]}"
-            
-            _user_installations: list[dict[str, Any]] = []
-            installation_id = None
-            
-            if not installation_id:
+
+            installation_id, user_token = await self._resolve_github_installation(
+                project_id, settings
+            )
+
+            if installation_id is None:
                 logger.info(
                     "github_export_no_installation",
                     project_id=project_id,
@@ -393,12 +483,12 @@ volumes:
                 return {
                     "type": "github",
                     "status": "skipped",
-                    "error": "No GitHub App installation found. Install the app on your repository or organization.",
+                    "error": "No GitHub App installation found. Connect GitHub and install the app on your repository or organization.",
                     "install_url": "https://github.com/apps/apiweaver/installations",
                 }
-            
+
             installation_token = await github_client.get_installation_token(installation_id)
-            
+
             repo = await github_client.create_repository(
                 installation_token=installation_token,
                 org=github_org,
@@ -406,12 +496,13 @@ volumes:
                 private=github_private,
             )
             repo_full_name = repo["full_name"]
-            
+
             files_to_push = []
             for gf in generated_files:
+                content = await self._resolve_file_content(gf)
                 files_to_push.append({
                     "path": gf.get("file_path", gf.get("filename", "unknown")),
-                    "content": gf.get("content", ""),
+                    "content": content,
                     "encoding": "utf-8",
                 })
             
@@ -446,7 +537,7 @@ volumes:
                 "commit_sha": commit_sha,
                 "pushed_at": pushed_at,
                 "files_pushed": len(files_to_push),
-                "export_types": export_types,
+                "export_types": export_types or [],
                 "branch": github_branch,
                 "private": github_private,
             }
