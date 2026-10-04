@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -206,3 +207,155 @@ async def test_list_workflows_requires_project_viewer(
     )
     assert allowed.status_code == 200, allowed.text
     assert [row["id"] for row in allowed.json()] == [run_id]
+
+
+async def _seed_project_run(
+    session_factory: async_sessionmaker[AsyncSession], tag: str
+) -> tuple[str, str]:
+    """An org, project and RUNNING run row for orchestrator tests."""
+    from tests.conftest import make_org, make_project
+
+    async with session_factory() as session:
+        org = await make_org(session, name=f"{tag} Org {uuid.uuid4().hex[:6]}")
+        project = await make_project(session, org=org, name=f"{tag} Project")
+        run = WorkflowRun(project_id=project.id, status=WorkflowStatus.RUNNING)
+        session.add(run)
+        await session.flush()
+        project_id, run_id = str(project.id), str(run.id)
+        await session.commit()
+    return project_id, run_id
+
+
+def _generate_state(project_id: str, run_id: str, *, phase_count: int, token_budget: int) -> Any:
+    """A state parked at the approved-plan gate, ready for the generate stage."""
+    return {
+        "project_id": project_id,
+        "workflow_run_id": run_id,
+        "stages": ["generate"],
+        "normalized_spec": {
+            "title": "Budget API",
+            "base_url": "https://api.example.com",
+            "endpoints": [],
+        },
+        "execution_plan": {"phases": [{"phase_number": n} for n in range(1, phase_count + 1)]},
+        "plan_approved": True,
+        "generated_files": [],
+        "token_budget": token_budget,
+        "total_tokens_used": 0,
+        "errors": [],
+    }
+
+
+def _spending_code_agent(calls: list[Any], spend: int):
+    """Stand-in for `run_code_agent`: records the phase it was asked for and reports
+    cumulative token usage the way the real agent does."""
+
+    async def _run_code_agent(
+        state: Any, phase_number: int | None = None, **_: Any
+    ) -> dict[str, Any]:
+        calls.append(phase_number)
+        return {
+            "total_tokens_used": state.get("total_tokens_used", 0) + spend,
+            "generated_files": [{"file_path": f"phase_{phase_number}.py", "language": "python"}],
+        }
+
+    return _run_code_agent
+
+
+async def test_generation_stops_before_a_phase_the_budget_cannot_pay_for(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Phase-level enforcement: before M13 the budget was only checked between stages,
+    so every phase of an approved plan ran regardless of how much it had already spent."""
+    from unittest.mock import patch
+
+    from app.workflows.agents import code_agent as code_agent_module
+    from app.workflows.orchestrator import Orchestrator
+
+    project_id, run_id = await _seed_project_run(session_factory, "m13phases")
+    calls: list[Any] = []
+    state = _generate_state(project_id, run_id, phase_count=3, token_budget=1_000)
+
+    with patch.object(code_agent_module, "run_code_agent", _spending_code_agent(calls, 600)):
+        result = await Orchestrator(session_factory).run(uuid.UUID(run_id), state)
+
+    assert calls == [1, 2]
+    assert result["status"] == WorkflowStatus.FAILED
+    assert any("token_budget_exceeded" in error for error in result["errors"])
+
+    async with session_factory() as session:
+        run_obj = await session.get(WorkflowRun, uuid.UUID(run_id))
+        assert run_obj is not None
+        assert run_obj.status == WorkflowStatus.FAILED
+
+
+async def test_consistency_pass_respects_the_token_budget(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The cross-chunk consistency pass is a further LLM call, not part of the phase loop."""
+    from unittest.mock import patch
+
+    from app.workflows.agents import code_agent as code_agent_module
+    from app.workflows.orchestrator import Orchestrator
+
+    project_id, run_id = await _seed_project_run(session_factory, "m13consistency")
+    calls: list[Any] = []
+    state = _generate_state(project_id, run_id, phase_count=1, token_budget=1_000)
+
+    with patch.object(code_agent_module, "run_code_agent", _spending_code_agent(calls, 1_200)):
+        result = await Orchestrator(session_factory).run(uuid.UUID(run_id), state)
+
+    assert calls == [1]
+    assert result["status"] == WorkflowStatus.FAILED
+
+
+class _FakeAsyncResult:
+    def __init__(self, updates: dict[str, Any]) -> None:
+        self._updates = updates
+
+    def get(self, timeout: int | None = None) -> dict[str, Any]:
+        return self._updates
+
+
+class _FakeCeleryApp:
+    """Records dispatched tasks and answers them the way the agent workers do."""
+
+    def __init__(self, spend: int) -> None:
+        self.dispatched: list[tuple[str, Any]] = []
+        self._spend = spend
+
+    def send_task(self, name: str, args: list[Any] | None = None, **_: Any) -> _FakeAsyncResult:
+        self.dispatched.append((name, args))
+        state = args[1] if args else {}
+        return _FakeAsyncResult(
+            {
+                "total_tokens_used": state.get("total_tokens_used", 0) + self._spend,
+                "generated_files": [{"file_path": "async_phase.py", "language": "python"}],
+            }
+        )
+
+
+async def test_async_dispatch_enforces_the_token_budget(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The Celery dispatch path checked the budget nowhere, so async runs could spend
+    without limit."""
+    from unittest.mock import patch
+
+    from agent_worker import celery_app as celery_module
+
+    from app.workflows.orchestrator import Orchestrator
+
+    project_id, run_id = await _seed_project_run(session_factory, "m13async")
+    fake_celery = _FakeCeleryApp(spend=600)
+    state = _generate_state(project_id, run_id, phase_count=3, token_budget=1_000)
+
+    with patch.object(celery_module, "app", fake_celery):
+        result = await Orchestrator(
+            session_factory, execution_mode="async"
+        ).run(uuid.UUID(run_id), state)
+
+    dispatched_phases = [args[2] for _, args in fake_celery.dispatched]
+    assert dispatched_phases == [1, 2]
+    assert result["status"] == WorkflowStatus.FAILED
+    assert any("token_budget_exceeded" in error for error in result["errors"])
