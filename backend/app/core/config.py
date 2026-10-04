@@ -78,9 +78,13 @@ class Settings(BaseSettings):
     github_webhook_secret: str | None = None
 
     # --- Sandbox quotas (required by §9; enforced in Phase 4) -----------------
+    sandbox_backend: Literal["mock", "docker"] = "mock"
+    sandbox_image: str = "python:3.12-slim"
     sandbox_max_cpu: str = "1"
     sandbox_max_memory: str = "1Gi"
     sandbox_timeout_seconds: int = 300
+    sandbox_pids_limit: int = 64
+    sandbox_network_enabled: bool = False
 
     # --- Observability (recommended) ------------------------------------------
     langsmith_api_key: str | None = None
