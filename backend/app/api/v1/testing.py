@@ -13,8 +13,8 @@ from app.core.errors import NotFoundError
 from app.models.enums import ActorType, TestEnvironment
 from app.models.project import Project
 from app.models.testing import TestResult, TestRun
-from app.rbac.enforce import load_project_for_principal, require_project_permission
-from app.rbac.policy import Permission, Principal
+from app.rbac.enforce import require_project_permission
+from app.rbac.policy import Permission
 from app.schemas.testing import (
     RepairAttemptResponse,
     TestRequest,
@@ -86,14 +86,11 @@ async def trigger_test(
 
 @router.get("/{id}/test-runs/{run_id}", response_model=TestRunSummaryResponse)
 async def get_test_run(
-    project_id: uuid.UUID,
     run_id: uuid.UUID,
-    principal: Principal = Depends(require_project_permission(Permission.TEST_READ)),
+    project: Project = Depends(require_project_permission(Permission.TEST_READ)),
     session: AsyncSession = Depends(get_db),
 ) -> TestRunSummaryResponse:
     """Get a test run with results and summary."""
-    project = await load_project_for_principal(session, principal, project_id)
-
     test_run = await session.get(TestRun, run_id)
     if test_run is None or test_run.project_id != project.id:
         raise NotFoundError("Test run not found.")
@@ -136,17 +133,16 @@ async def get_test_run(
 
 @router.get("/{id}/test-runs/{run_id}/repairs", response_model=list[RepairAttemptResponse])
 async def list_repair_attempts(
-    project_id: uuid.UUID,
     run_id: uuid.UUID,
-    principal: Principal = Depends(require_project_permission(Permission.TEST_READ)),
+    project: Project = Depends(require_project_permission(Permission.TEST_READ)),
     session: AsyncSession = Depends(get_db),
 ) -> list[RepairAttemptResponse]:
     """List repair attempts for a test run."""
-    await load_project_for_principal(session, principal, project_id)
-
-    # Get test results for this run
+    # Get test results for this run, but only if the run belongs to this project.
     results = list((await session.execute(
-        select(TestResult).where(TestResult.test_run_id == run_id)
+        select(TestResult)
+        .join(TestRun, TestResult.test_run_id == TestRun.id)
+        .where(TestResult.test_run_id == run_id, TestRun.project_id == project.id)
     )).scalars())
 
     result_ids = [r.id for r in results]

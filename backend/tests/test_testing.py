@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
+from app.models.enums import OrgRole, ProjectRole
 from app.workflows.agents.test_agent import (
     FailureClassifier,
     generate_test_fixtures,
@@ -211,12 +212,95 @@ class TestTestingAPI:
             )).scalars())
             assert foreign == []
 
-    @pytest.mark.asyncio
-    async def test_get_test_run_endpoint(self, client, auth_headers):
-        """Test GET /projects/{id}/test-runs/{run_id} endpoint."""
-        pass
+    async def _seed_viewer_with_two_projects(self, client, db, tag: str):
+        """One org with two projects; the user can only read project A. Returns everything.
+
+        Org role is `member`, which grants nothing by itself, so project B is reachable
+        only by bypassing the path-based authorization.
+        """
+        from app.models.testing import RepairAttempt, TestResult, TestRun
+        from tests.conftest import add_org_member, add_project_member, make_org, make_project, make_user
+
+        async with db as session:
+            org = await make_org(session, name=f"{tag} Org {uuid.uuid4().hex[:6]}")
+            viewer = await make_user(
+                session, email=f"{tag}-viewer-{uuid.uuid4().hex[:8]}@example.com"
+            )
+            await add_org_member(session, org=org, user=viewer, role=OrgRole.MEMBER)
+            project_a = await make_project(session, org=org, name=f"{tag} Project A")
+            project_b = await make_project(session, org=org, name=f"{tag} Project B")
+            await add_project_member(
+                session, project=project_a, user=viewer, role=ProjectRole.VIEWER
+            )
+
+            seeded = {}
+            for label, project in (("a", project_a), ("b", project_b)):
+                run = TestRun(project_id=project.id, environment="sandbox", status="completed")
+                session.add(run)
+                await session.flush()
+                result = TestResult(test_run_id=run.id, status="failed")
+                session.add(result)
+                await session.flush()
+                session.add(
+                    RepairAttempt(
+                        test_result_id=result.id,
+                        attempt_number=1,
+                        failure_classification="auth",
+                        outcome="resolved",
+                    )
+                )
+                seeded[label] = (run.id, result.id)
+            await session.commit()
+
+        login = await self._client_login(client, viewer.email)
+        return login, project_a.id, project_b.id, seeded["a"], seeded["b"]
+
+    async def _client_login(self, client, email: str) -> dict[str, str]:
+        res = await client.post(
+            "/api/v1/auth/login", json={"email": email, "password": TEST_PASSWORD}
+        )
+        assert res.status_code == 200, res.text
+        return {"Authorization": f"Bearer {res.json()['access_token']}"}
 
     @pytest.mark.asyncio
-    async def test_list_repairs_endpoint(self, client, auth_headers):
-        """Test GET /projects/{id}/test-runs/{run_id}/repairs endpoint."""
-        pass
+    async def test_get_test_run_is_scoped_to_path_project(self, client, db):
+        """A viewer cannot read a sibling project's run by overriding project_id on the
+        query string (audit finding H4, IDOR)."""
+        headers, project_a, project_b, (run_a, _), (run_b, _) = (
+            await self._seed_viewer_with_two_projects(client, db, "h4run")
+        )
+
+        res = await client.get(
+            f"/api/v1/projects/{project_a}/test-runs/{run_b}",
+            params={"project_id": str(project_b)},
+            headers=headers,
+        )
+        assert res.status_code == 404
+
+        own = await client.get(
+            f"/api/v1/projects/{project_a}/test-runs/{run_a}", headers=headers
+        )
+        assert own.status_code == 200, own.text
+        assert own.json()["test_run_id"] == str(run_a)
+
+    @pytest.mark.asyncio
+    async def test_list_repairs_is_scoped_to_path_project(self, client, db):
+        """Repair attempts are read through the run's owning project, so a foreign run id
+        yields nothing instead of another project's self-healing history (audit H4)."""
+        headers, project_a, project_b, (run_a, _), (run_b, _) = (
+            await self._seed_viewer_with_two_projects(client, db, "h4repair")
+        )
+
+        leaked = await client.get(
+            f"/api/v1/projects/{project_a}/test-runs/{run_b}/repairs",
+            params={"project_id": str(project_b)},
+            headers=headers,
+        )
+        assert leaked.status_code == 200, leaked.text
+        assert leaked.json() == []
+
+        own = await client.get(
+            f"/api/v1/projects/{project_a}/test-runs/{run_a}/repairs", headers=headers
+        )
+        assert own.status_code == 200, own.text
+        assert [r["outcome"] for r in own.json()] == ["resolved"]
