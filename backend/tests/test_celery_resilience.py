@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -79,14 +80,57 @@ def test_on_failure_publishes_dead_letter_record(monkeypatch):
     monkeypatch.setattr("agent_worker.tasks.base._send_dead_letter", fake_send)
     task = RecordingTask()
 
-    task.on_failure(ValueError("boom"), "task-123", (1, "two"), {"k": 1}, None)
+    task.on_failure(
+        ValueError("boom"),
+        "task-123",
+        ("run-77", {"project_id": "org-1"}, 2),
+        {"retry_count": 1},
+        None,
+    )
 
     record = captured["record"]
     assert record["task"] == "agent_worker.tests.recording"
     assert record["task_id"] == "task-123"
     assert record["error"] == "ValueError: boom"
-    assert "'two'" in record["args"]
+    assert record["inputs"]["run_id"] == "run-77"
+    assert record["inputs"]["phase_number"] == 2
+    assert record["inputs"]["arg_types"] == ["str", "dict", "int"]
+    assert record["inputs"]["kwarg_keys"] == ["retry_count"]
     assert captured["app"] is task.app
+
+
+def test_on_failure_never_publishes_document_content(monkeypatch):
+    """H7: task args hold the uploaded document; only shapes may be logged or queued."""
+    secret = "CONFIDENTIAL-ACQUISITION-TARGET-LIST"
+    captured: dict[str, Any] = {}
+    logged: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_send(app: Any, record: dict[str, Any]) -> None:
+        captured["record"] = record
+
+    def fake_error(event: str, **fields: Any) -> None:
+        logged.append((event, fields))
+
+    monkeypatch.setattr("agent_worker.tasks.base._send_dead_letter", fake_send)
+    monkeypatch.setattr(
+        "agent_worker.tasks.base.logger",
+        SimpleNamespace(error=fake_error),
+    )
+    state = {
+        "project_id": "p-1",
+        "raw_document_bytes": secret.encode(),
+        "normalized_spec": {"raw_normalized": secret},
+        "document_text": secret,
+    }
+    task = RecordingTask()
+
+    task.on_failure(ValueError("boom"), "task-123", ("run-77", state), {}, None)
+
+    dead_letter_payload = json.dumps(captured["record"], default=str)
+    assert secret not in dead_letter_payload
+    assert "raw_document_bytes" not in dead_letter_payload
+    assert captured["record"]["inputs"]["run_id"] == "run-77"
+    assert secret not in json.dumps(logged, default=str)
 
 
 def test_on_failure_swallows_publish_errors(monkeypatch):

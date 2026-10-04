@@ -14,7 +14,7 @@ from app.models.codegen import CodeGenerationRun, GeneratedFile
 from app.models.enums import ActorType
 from app.models.project import Project
 from app.models.workflow import WorkflowRun
-from app.rbac.enforce import load_project_for_principal, require_project_permission
+from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.generate import FileContentResponse, FileResponse
 from app.schemas.generate import GenerateRequest as GenerateRequestAlias
@@ -76,20 +76,18 @@ async def trigger_generate(
 
 @router.get("/{id}/files", response_model=list[FileResponse])
 async def list_generated_files(
-    project_id: uuid.UUID,
-    principal: Principal = Depends(require_project_permission(Permission.CODE_READ)),
-    session: AsyncSession = Depends(get_db),
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = Query(default=None),
+    project: Project = Depends(require_project_permission(Permission.CODE_READ)),
+    session: AsyncSession = Depends(get_db),
 ) -> list[FileResponse]:
     """List generated files for a project."""
-    project = await load_project_for_principal(session, principal, project_id)
-
     stmt = (
         select(GeneratedFile)
         .join(CodeGenerationRun, GeneratedFile.code_generation_run_id == CodeGenerationRun.id)
-        .where(CodeGenerationRun.project_id == project.id)
-        .order_by(GeneratedFile.created_at.desc())
+        .join(WorkflowRun, CodeGenerationRun.workflow_run_id == WorkflowRun.id)
+        .where(WorkflowRun.project_id == project.id)
+        .order_by(GeneratedFile.id)
         .limit(limit)
     )
 
@@ -102,7 +100,6 @@ async def list_generated_files(
             language=row.language,
             file_type=row.file_type,
             size_bytes=0,
-            created_at=row.created_at.isoformat() if row.created_at else None,
         )
         for row in rows
     ]
@@ -110,16 +107,21 @@ async def list_generated_files(
 
 @router.get("/{id}/files/{file_id}/content", response_model=FileContentResponse)
 async def get_file_content(
-    project_id: uuid.UUID,
     file_id: uuid.UUID,
-    principal: Principal = Depends(require_project_permission(Permission.CODE_READ)),
+    project: Project = Depends(require_project_permission(Permission.CODE_READ)),
     session: AsyncSession = Depends(get_db),
 ) -> FileContentResponse:
     """Get the content of a generated file."""
-    await load_project_for_principal(session, principal, project_id)
-
-    file_meta = await session.get(GeneratedFile, file_id)
+    file_meta = (
+        await session.execute(
+            select(GeneratedFile)
+            .join(CodeGenerationRun, GeneratedFile.code_generation_run_id == CodeGenerationRun.id)
+            .join(WorkflowRun, CodeGenerationRun.workflow_run_id == WorkflowRun.id)
+            .where(GeneratedFile.id == file_id, WorkflowRun.project_id == project.id)
+        )
+    ).scalar_one_or_none()
     if file_meta is None:
+        # Also covers files owned by another project: 404 does not confirm they exist.
         raise NotFoundError("File not found.")
 
     from app.services.storage_service import storage_service

@@ -207,3 +207,64 @@ async def test_upload_normalizes_postman_v21(client: AsyncClient) -> None:
     assert response.status_code == 202, response.text
     endpoints = await client.get(f"/api/v1/projects/{project_id}/endpoints", headers=headers)
     assert endpoints.json()[0]["path"] == "/payments"
+
+
+def _minimal_pdf(hex_text: str) -> bytes:
+    """A one-page PDF that draws `hex_text`, given as PDF hex-string bytes.
+
+    Hex encoding keeps the plaintext out of the raw bytes, so a decode that silently
+    falls back to UTF-8 can never satisfy the caller's assertion.
+    """
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    stream = f"BT /F1 24 Tf 20 150 Td <{hex_text}> Tj ET".encode()
+    objects.append(
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream"
+    )
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj ".encode() + body + b" endobj\n"
+
+    xref_offset = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode() + b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_offset}\n%%EOF\n"
+    ).encode()
+    return bytes(out)
+
+
+def test_multipart_parser_floor_guard() -> None:
+    """Audit finding H6: python-multipart before 0.0.27 is vulnerable to a
+    multipart/form-data DoS, and this is the parser behind every upload route here."""
+    from importlib.metadata import version
+
+    parsed = tuple(int(part) for part in version("python-multipart").split(".")[:3])
+    assert parsed >= (0, 0, 27)
+
+
+def test_pdf_extraction_survives_pypdf_upgrade() -> None:
+    """Audit finding H5: pypdf 4.x carried PDF-parsing DoS CVEs.
+
+    The parser's PdfReader/pages/extract_text call path is exercised here so a future
+    upgrade cannot pass while silently degrading every PDF upload to a raw byte dump.
+    """
+    import pypdf
+
+    from app.services.document_parser import extract_text
+
+    assert int(pypdf.__version__.split(".")[0]) >= 6
+
+    # Hex for "H5 marker".
+    extracted = extract_text(_minimal_pdf("4835206d61726b6572"), "spec.pdf")
+    assert extracted.strip() == "H5 marker"
