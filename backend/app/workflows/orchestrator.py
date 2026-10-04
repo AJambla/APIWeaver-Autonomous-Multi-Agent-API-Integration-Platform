@@ -475,7 +475,7 @@ class Orchestrator:
                 await _check_token_budget(current_dict)
                 from app.workflows.agents.export_agent import ExportAgent
 
-                export_agent = ExportAgent()
+                export_agent = ExportAgent(session_factory=self.session_factory)
                 tokens_before = current_dict.get("total_tokens_used", 0)
                 export_updates = await export_agent.run(cast(WorkflowState, current_dict))
                 current_dict.update(export_updates)
