@@ -328,6 +328,14 @@ class Orchestrator:
                 )
                 if escalated:
                     final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+            if (
+                current_dict.get("execution_plan")
+                and not current_dict.get("plan_approved")
+                and not current_dict.get("generated_files")
+            ):
+                # Plan produced but never approved, so generation was skipped —
+                # park the run at the human-approval gate instead of completing.
+                final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
 
             current_dict["status"] = final_status
             is_done = final_status == WorkflowStatus.COMPLETED
@@ -480,6 +488,14 @@ class Orchestrator:
                 )
                 if escalated:
                     final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+            if (
+                current_dict.get("execution_plan")
+                and not current_dict.get("plan_approved")
+                and not current_dict.get("generated_files")
+            ):
+                # Plan produced but never approved, so generation was skipped —
+                # park the run at the human-approval gate instead of completing.
+                final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
 
             current_dict["status"] = final_status
             is_done = final_status == WorkflowStatus.COMPLETED
