@@ -168,7 +168,9 @@ class TestCodeGeneratorAPI:
             )).scalars())
             assert foreign == []
 
-    async def _seed_generated_file(self, session, project_id: uuid.UUID, file_path: str) -> uuid.UUID:
+    async def _seed_generated_file(
+        self, session, project_id: uuid.UUID, file_path: str
+    ) -> uuid.UUID:
         run = WorkflowRun(project_id=project_id, status="completed")
         session.add(run)
         await session.flush()
@@ -192,7 +194,13 @@ class TestCodeGeneratorAPI:
     async def test_list_files_ignores_query_project_id(self, client, db):
         """A viewer of one project cannot list another project's files by overriding
         `project_id` on the query string (audit finding H2, IDOR)."""
-        from tests.conftest import add_org_member, add_project_member, make_org, make_project, make_user
+        from tests.conftest import (
+            add_org_member,
+            add_project_member,
+            make_org,
+            make_project,
+            make_user,
+        )
 
         async with db as session:
             org = await make_org(session, name=f"H2 Org {uuid.uuid4().hex[:6]}")
