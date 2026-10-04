@@ -6,7 +6,7 @@ import datetime
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, String
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin, false_
@@ -25,6 +25,14 @@ class User(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     mfa_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false_(), default=False
+    )
+    # Per-account brute-force lockout (audit M2). Kept here rather than in the Redis
+    # limiter, which fails open and is keyed per IP.
+    failed_login_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    locked_until: Mapped[datetime.datetime | None] = mapped_column(
+        TZDateTime(), nullable=True
     )
 
     organization_memberships: Mapped[list[OrganizationMember]] = relationship(
