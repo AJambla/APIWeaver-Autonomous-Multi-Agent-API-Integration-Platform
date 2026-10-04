@@ -31,10 +31,10 @@ src/
     auth.ts                Token storage (access in sessionStorage,
                            refresh in cookie)
     auth-context.tsx       React auth context (useAuth)
-    use-workflow-events.ts EventSource hook for workflow run SSE
+    use-workflow-events.ts EventSource hook for workflow run SSE (kept for
+                           upcoming live-events wiring)
     format.ts              Formatting helpers
     types.ts               Shared API contract types
-    cn.ts                  className combiner
 vite.config.ts             Dev server on :3000; proxies /api/v1 to
                            http://localhost:8000
 ```
