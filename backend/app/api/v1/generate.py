@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_db
+from app.core.deps import get_current_principal, get_db
 from app.core.errors import NotFoundError
 from app.models.codegen import CodeGenerationRun, GeneratedFile
 from app.models.enums import ActorType
@@ -28,17 +28,13 @@ router = APIRouter(prefix="/projects", tags=["generate"])
 
 @router.post("/{id}/generate", response_model=GenerateResponseAlias, status_code=status.HTTP_202_ACCEPTED)
 async def trigger_generate(
-    project_id: uuid.UUID,
     payload: GenerateRequestAlias,
     background_tasks: BackgroundTasks,
-    principal: Principal = Depends(require_project_permission(Permission.CODE_GENERATE)),
+    project: Project = Depends(require_project_permission(Permission.CODE_GENERATE)),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
 ) -> GenerateResponseAlias:
     """Trigger code generation for a project."""
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise NotFoundError("Project not found.")
-
     # Find or create workflow run
     run = WorkflowRun(
         project_id=project.id,
