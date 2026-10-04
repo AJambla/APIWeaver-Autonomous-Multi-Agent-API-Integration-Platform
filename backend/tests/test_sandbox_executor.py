@@ -420,3 +420,85 @@ async def test_create_sandbox_defaults_to_mock(monkeypatch):
     )
 
     assert isinstance(sandbox, MockSandboxClient)
+
+
+# --- C2 regression tests: path traversal + sandbox backend default -----------
+
+
+def test_sandbox_backend_defaults_to_docker(monkeypatch):
+    monkeypatch.delenv("SANDBOX_BACKEND", raising=False)
+    settings = Settings(
+        database_url="sqlite+aiosqlite:///:memory:",
+        redis_url="redis://localhost:6379/0",
+        jwt_private_key_path="test-jwt-key.pem",
+        jwt_public_key_path="test-jwt-key.pub",
+    )
+    assert settings.sandbox_backend == "docker"
+
+
+@pytest.mark.asyncio
+async def test_load_skips_path_traversal(tmp_path, monkeypatch):
+    import tempfile
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda prefix="": str(workspace))
+
+    executor = DockerSandboxExecutor(
+        _make_settings(), docker_client=FakeDockerClient(FakeContainer())
+    )
+    await executor.load(
+        project_id="proj-1",
+        files={
+            "pkg/client.py": "class DemoClient:\n    pass\n",
+            "nested/./ok.py": "ok",
+            "../escape.py": "bad",
+            "/abs/escape.py": "bad",
+            r"..\\win_escape.py": "bad",
+            r"C:\\drive_escape.py": "bad",
+            "a/../../up.py": "bad",
+        },
+    )
+
+    assert (workspace / "pkg" / "client.py").exists()
+    assert (workspace / "nested" / "ok.py").exists()
+    assert not (tmp_path / "escape.py").exists()
+    assert not (tmp_path / "win_escape.py").exists()
+    assert not (tmp_path / "up.py").exists()
+    await executor.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_mock_load_modules_skips_path_traversal(tmp_path, monkeypatch):
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    downloads = {"good-key": b"class Good:\n    pass\n", "evil-key": b"bad"}
+    monkeypatch.setattr(
+        test_agent_module,
+        "storage_service",
+        SimpleNamespace(download=AsyncMock(side_effect=lambda key: downloads[key])),
+    )
+
+    sandbox = MockSandboxClient(
+        [
+            {
+                "language": "python",
+                "file_path": "client.py",
+                "content_s3_key": "good-key",
+                "project_id": "proj1",
+            },
+            {
+                "language": "python",
+                "file_path": "../evil.py",
+                "content_s3_key": "evil-key",
+                "project_id": "proj1",
+            },
+        ],
+        {},
+    )
+    await sandbox._load_modules()
+
+    assert (tmp_path / "apiweaver_sandbox" / "proj1" / "client.py").exists()
+    assert not (tmp_path / "evil.py").exists()
+    await sandbox.cleanup()

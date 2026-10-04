@@ -9,6 +9,7 @@ partitioning carries the `postgres` marker.
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -142,21 +143,34 @@ def repo_root() -> Path:
 
 
 @pytest.fixture(scope="session")
-def test_settings(repo_root: Path) -> Settings:
+def test_settings(repo_root: Path) -> Iterator[Settings]:
     """Settings pointed at an in-memory database and the dev JWT keypair."""
     private_key = repo_root / "secrets" / "jwt_private.pem"
     public_key = repo_root / "secrets" / "jwt_public.pem"
     if not private_key.exists():
         pytest.skip("run scripts/gen_jwt_keys.sh to generate the dev JWT keypair")
 
-    return Settings(
-        database_url="sqlite+aiosqlite:///:memory:",
-        redis_url="redis://localhost:6379/15",
-        jwt_private_key_path=private_key,
-        jwt_public_key_path=public_key,
-        app_env="development",
-        log_level="WARNING",
-    )
+    # Workflow code calls get_settings() directly (outside FastAPI DI), so the
+    # dependency override alone can't pin the sandbox backend — set the env var.
+    # Tests opt into the in-process sandbox explicitly; production defaults to
+    # the Docker backend (audit finding C2).
+    previous = os.environ.get("SANDBOX_BACKEND")
+    os.environ["SANDBOX_BACKEND"] = "mock"
+    try:
+        yield Settings(
+            database_url="sqlite+aiosqlite:///:memory:",
+            redis_url="redis://localhost:6379/15",
+            jwt_private_key_path=private_key,
+            jwt_public_key_path=public_key,
+            app_env="development",
+            log_level="WARNING",
+            sandbox_backend="mock",
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("SANDBOX_BACKEND", None)
+        else:
+            os.environ["SANDBOX_BACKEND"] = previous
 
 
 @pytest.fixture(autouse=True)
