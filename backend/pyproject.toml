@@ -49,7 +49,7 @@ aiosqlite = "^0.20.0"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", ".."]
 markers = [
     "postgres: requires a live PostgreSQL instance (partitioned DDL is Postgres-only)",
 ]

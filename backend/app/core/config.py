@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     embedding_model: str = "text-embedding-3-small"
 
+    # --- LLM resilience (transient failures + provider circuit breaker) -------
+    llm_max_retries: int = 2
+    llm_retry_backoff_seconds: float = 0.5
+    llm_circuit_failure_threshold: int = 5
+    llm_circuit_cooldown_seconds: float = 30.0
+
     # --- JWT (Security.md §4) -------------------------------------------------
     # Paths, never key material: keys are files mounted by the Vault Agent Injector
     # in production (Deployment.md §9).

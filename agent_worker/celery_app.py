@@ -23,10 +23,17 @@ app.conf.update(
     task_track_started=True,
     task_time_limit=300,
     task_soft_time_limit=280,
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    task_routes={
+        "agent_worker.tasks.dead_letter": {"queue": "dlq"},
+    },
+    broker_transport_options={"visibility_timeout": 3600},
 )
 
 from agent_worker.tasks.codegen_tasks import run_code_agent_task
 from agent_worker.tasks.document_tasks import run_document_agent
+from agent_worker.tasks.dlq_tasks import dead_letter_task
 from agent_worker.tasks.export_tasks import run_export_agent
 from agent_worker.tasks.planner_tasks import run_planner_agent_task
 from agent_worker.tasks.testing_tasks import run_testing_agent
@@ -39,6 +46,7 @@ for task in (
     run_testing_agent,
     run_export_agent,
     run_workflow,
+    dead_letter_task,
 ):
     app.register_task(task)
 
