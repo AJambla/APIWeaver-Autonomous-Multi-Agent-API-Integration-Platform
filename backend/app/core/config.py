@@ -84,7 +84,9 @@ class Settings(BaseSettings):
     github_webhook_secret: str | None = None
 
     # --- Sandbox quotas (required by §9; enforced in Phase 4) -----------------
-    sandbox_backend: Literal["mock", "docker"] = "mock"
+    # "docker" isolates generated code in a quota-enforced container; "mock"
+    # execs LLM-generated code inside the API process (test-only opt-in).
+    sandbox_backend: Literal["mock", "docker"] = "docker"
     sandbox_image: str = "python:3.12-slim"
     sandbox_max_cpu: str = "1"
     sandbox_max_memory: str = "1Gi"
