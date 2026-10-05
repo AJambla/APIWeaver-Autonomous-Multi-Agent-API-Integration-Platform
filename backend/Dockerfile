@@ -32,7 +32,13 @@ USER appuser
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')" || exit 1
+# `/healthz` stays the liveness target - it deliberately checks no dependency
+# (app/api/v1/health.py). What was wrong was the shape of the probe (`audit M10`): `urlopen`
+# had no timeout of its own, and 5s was less than the measured floor for a python process to
+# start listening in this image on this machine (5.5s for an empty `python -m http.server`).
+# 127.0.0.1 because getaddrinfo("localhost") returns ::1 first while uvicorn binds the IPv4
+# wildcard only; the request then falls back and wastes a connect each poll.
+HEALTHCHECK --interval=30s --timeout=20s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=10)" || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

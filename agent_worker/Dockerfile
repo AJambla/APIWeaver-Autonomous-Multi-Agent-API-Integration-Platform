@@ -39,9 +39,12 @@ RUN useradd -m appuser && chown -R appuser /app
 
 USER appuser
 
-# Healthcheck for celery worker
-HEALTHCHECK --interval=30s --timeout=5s \
-    CMD celery -A agent_worker.celery_app inspect ping || exit 1
+# No HEALTHCHECK here (`audit M10`). The previous one,
+# `celery -A agent_worker.celery_app inspect ping`, cannot pass: celery 5.6.3 does not exit
+# after a successful inspect, so the daemon kills the check at its timeout and the container is
+# reported unhealthy even while a worker replies `pong`. Measured, with controls and the leaked
+# processes, in the `agent-worker` service of
+# infra/docker/docker-compose.single-node.yml.
 
 # Run celery worker
 CMD ["celery", "-A", "agent_worker.celery_app", "worker", "--loglevel=info", "--concurrency=4"]

@@ -74,10 +74,43 @@ services:
     networks:
       - apiweaver
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')" ]
+      # `audit M10`. Three problems, one command.
+      #
+      # 1. `urlopen` was called with no timeout, so the check itself could block forever:
+      # /readyz fans out to Postgres and Redis (backend/app/api/v1/health.py:33) and a hung
+      # dependency produced a hung probe that only the daemon's kill would end - and on this
+      # engine that kill is unreliable (see the agent-worker note). `timeout=10` makes the
+      # probe answer for itself. The check stays truthful: `urlopen` raises HTTPError on a
+      # non-2xx (measured - a 404 from the same code exited rc=1), and /readyz answers 503
+      # when a dependency does not answer.
+      #
+      # 2. `localhost` is a wasted connect each poll. Measured in python:3.12.15-slim:
+      # getaddrinfo("localhost") returns ::1 before 127.0.0.1, while uvicorn --host 0.0.0.0
+      # listens on the IPv4 wildcard only (`00000000:1F40` in /proc/net/tcp, nothing in
+      # /proc/net/tcp6). `http.client` does fall back, so the old check passed - unlike the
+      # busybox `wget` used by `web`, which has no fallback and needed 127.0.0.1 (`audit M10c`).
+      #
+      # 3. timeout 5s with no start_period. Measured floor on this machine: an empty
+      # `python -m http.server` in this image took 5.5s to be listening at all. A container
+      # that is still importing the application was therefore counted as unhealthy.
+      #
+      # `python` is the only HTTP client in the image - curl and wget are both absent
+      # (verified with `command -v` against apiweaver/api:latest).
+      #
+      # Run verbatim (parsed out of this file and executed as an argv list) against the API
+      # that was live on 127.0.0.1:8000 while this was written: /healthz -> rc=0 in 4.59s;
+      # nothing listening -> rc=1 (`actively refused`); /readyz -> rc=1, `TimeoutError` at the
+      # 10s bound, three times running at 30.1s, 30.1s and 31.2s. That last one is not this
+      # check's problem to solve: it is /readyz itself awaiting Postgres and Redis with no
+      # deadline of its own (backend/app/api/v1/health.py:44,51 - Postgres answered a raw TCP
+      # connect in 0.011s, so the wait is in the request path). Tracked separately; the 10s here
+      # is a bound, not a tuning to that latency, and it is what turns a hung dependency into a
+      # failed check instead of a check that never finishes.
+      test: [ "CMD", "python", "-c", 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/readyz", timeout=10)' ]
       interval: 30s
-      timeout: 5s
+      timeout: 20s
       retries: 3
+      start_period: 40s
 
   agent-worker:
     image: apiweaver/agent-worker:latest
@@ -112,11 +145,27 @@ services:
     networks:
       - apiweaver
     command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4
-    healthcheck:
-      test: [ "CMD", "celery", "-A", "agent_worker.celery_app", "inspect", "ping" ]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    # No healthcheck, deliberately (`audit M10`). The previous one - `celery inspect ping` with
+    # `timeout: 5s` - reported a healthy worker as unhealthy and leaked a process every poll.
+    # Measured against a throwaway container of apiweaver/agent-worker:latest while the stack's
+    # worker was up: `docker top` showed seven `celery inspect ping` processes still alive, the
+    # oldest 5m30s old although it had been started with `-t 2`; the health log recorded every
+    # check as `Health check exceeded timeout (5s)` with exit code -1 (killed by the daemon, not
+    # returned); and the container printed `-> celery@AJ007: OK / pong / 1 node online` the whole
+    # time. A worker that answered correctly was unhealthy.
+    #
+    # It cannot be rescued by wrapping it in `timeout`: celery 5.6.3 does not exit after a
+    # successful `inspect` - it holds the broker connection - so the wrapper would always yield
+    # rc=124, which reads as "unhealthy" whether or not a worker replied. Rewriting the same
+    # call in Python as `Celery(broker=...).control.ping(timeout=2)` is no better: measured on
+    # this machine, `import celery` alone cost 7.4s and the ping did not return inside 80s,
+    # while redis answered a direct PING in 0.001s.
+    #
+    # A check for this service needs the worker to publish its own liveness first (a TTL
+    # heartbeat key written from celery's `worker_ready` / task signals, read back by a short
+    # probe). Nothing in this file gates on agent-worker being healthy, so removing the check
+    # removes no dependency gate - `docker compose ps` now says running or not running, which is
+    # the truth, instead of a permanent false alarm.
 
   postgres:
     image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
@@ -162,10 +211,52 @@ services:
     networks:
       - apiweaver
     healthcheck:
-      test: [ "CMD-SHELL", "[ -f /proc/self/cgroup ] && echo OK || exit 1" ]
+      # `audit M10`. The previous test was `[ -f /proc/self/cgroup ] && echo OK || exit 1`.
+      # That is not a healthcheck: /proc/self/cgroup exists in every container on every Linux
+      # host, so it printed OK for a process that had crashed, one still loading its
+      # collections, and one not listening on 6333 at all. Measured against the running
+      # container before this change, the old command's output was literally `always OK`.
+      #
+      # The replacement asks qdrant itself whether it is ready. It is a raw HTTP GET over
+      # bash's /dev/tcp because each of curl, wget, nc, python and python3 is absent from this
+      # image (checked one `command -v` per name - batching them reports only the last), while
+      # bash, `timeout` and grep are present (Debian 13 trixie).
+      #
+      # It must stay in exec form with an explicit `bash`, not CMD-SHELL: this image's
+      # /bin/sh is dash, which has no /dev/tcp, and the same script run through
+      # `/bin/sh -c` fails with `cannot create /dev/tcp/127.0.0.1/6333: Directory
+      # nonexistent` (rc=2). A CMD-SHELL form would leave the service permanently unhealthy.
+      #
+      # Controls. This script body against the live API on this host: 200 -> rc=0, a response
+      # that does not match -> rc=124 at the inner bound, nothing listening -> rc=1 with
+      # `Connection refused`. Inside this container, two earlier drafts of the same script
+      # (same request, different way of reading the status line) gave /readyz -> rc=0,
+      # /healthz -> rc=0, /notarealendpoint -> rc=1 and the closed port 6399 -> rc=1. The final
+      # form below has so far only been measured as /readyz -> rc=124, taken while this machine
+      # had 0 GB of 7.9 GB RAM free, so it is not yet a verdict on the check - re-run all four
+      # cases here on an idle machine and correct this note.
+      #
+      # The status line is matched with `grep <&3`, not `head -n 1 | grep`: bash waits for
+      # every stage of a pipeline, so `head` stays blocked on the socket until the server closes
+      # it. Measured: with the head form the check was killed by its own `timeout` (rc=124) even
+      # though /readyz answered in 287 ms at the same moment from outside the container.
+      #
+      # It also contains no `$`. Compose interpolates `$VAR` out of every value in this file
+      # before the daemon sees the command, and it does not know that this `$VAR` was meant for
+      # bash. Measured with an earlier draft of this line, which tested a shell variable:
+      # `docker compose config` rendered it as `case "" in *" 200 "*) ...` - the variable was
+      # gone, and the check could then only ever report a healthy Qdrant as unhealthy. `$$` is
+      # Compose's documented escape, but escaping it correctly is a second thing every future
+      # editor of this file has to know, so the command is written with no shell variables to
+      # interpolate: the path is a literal, and `grep -m1 -q` exits at the matching line itself.
+      test: [ "CMD", "timeout", "10", "bash", "-c", 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && timeout 5 grep -m1 -q " 200 " <&3' ]
       interval: 10s
-      timeout: 5s
+      # Longer than the `timeout 10` above on purpose: the check must be able to fail with its
+      # own exit status (124), not be killed by the daemon. Docker's kill on timeout is not
+      # reliable on this engine - see the agent-worker note.
+      timeout: 20s
       retries: 5
+      start_period: 30s
 
   vault:
     image: hashicorp/vault:2.1.1@sha256:47f14a6acb98f48d798a07df7c83f23a6e636e1cf724c5f8ff165cb32667a1e2
@@ -179,10 +270,23 @@ services:
     networks:
       - apiweaver
     healthcheck:
+      # The command is correct - `vault status` is in the image and it does fail when the
+      # server is not answering. The timeout was not (`audit M10`). Measured against this
+      # container's own health log while the stack was otherwise idle: five consecutive checks
+      # all recorded `Health check exceeded timeout (5s)` with exit code -1 (killed, not
+      # returned), taking 6.7 s, 7.1 s, 7.1 s, 11.1 s and 16.3 s to complete. Run by hand in
+      # the same window the command returned rc=0 in 1.8 s, 2.0 s and once in 16.1 s.
+      # So Vault answered every request; the check just did not allow the time it took, and the
+      # service sat in `unhealthy` (FailingStreak 21) for no reason. Anything gated on
+      # `condition: service_healthy` inherits that.
+      #
+      # `start_period` keeps the first few polls from counting against `retries` while the
+      # dev server is still coming up.
       test: [ "CMD", "vault", "status", "-address=http://127.0.0.1:8200" ]
       interval: 10s
-      timeout: 5s
+      timeout: 20s
       retries: 5
+      start_period: 15s
 
   minio:
     # Not pinned, deliberately: the registry can no longer be resolved anonymously, so a
