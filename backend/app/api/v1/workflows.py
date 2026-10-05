@@ -33,6 +33,7 @@ from app.schemas.workflow import (
 )
 from app.services import audit_service
 from app.services.event_publisher import EventPublisher
+from app.workflows.langgraph_pipeline import LangGraphOrchestrator
 from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
 
@@ -95,20 +96,27 @@ async def trigger_workflow(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
     event_publisher = EventPublisher(redis_client)
-    orchestrator = Orchestrator(
-        engine_session_factory,
-        event_publisher=event_publisher,
-        execution_mode=payload.execution_mode,
-    )
-
     settings = get_settings()
+
+    selected_engine = payload.engine or getattr(settings, "default_workflow_engine", "standard")
+    if selected_engine == "langgraph":
+        runner_instance = LangGraphOrchestrator(
+            session_factory=engine_session_factory,
+            event_publisher=event_publisher,
+        )
+    else:
+        runner_instance = Orchestrator(
+            engine_session_factory,
+            event_publisher=event_publisher,
+            execution_mode=payload.execution_mode,
+        )
 
     if payload.execution_mode == "async":
         try:
             from agent_worker.celery_app import app as celery_app
             celery_app.send_task(
                 "agent_worker.tasks.run_workflow",
-                args=[str(run.id), initial_state],
+                args=[str(run.id), initial_state, selected_engine],
                 task_id=f"run_workflow:{run.id}",
             )
         except Exception as exc:
@@ -116,9 +124,9 @@ async def trigger_workflow(
                 raise DependencyUnavailableError(
                     f"Celery worker queue is unavailable for async workflow execution: {exc}"
                 ) from exc
-            background_tasks.add_task(orchestrator.run, run.id, initial_state)
+            background_tasks.add_task(runner_instance.run, run.id, initial_state)
     else:
-        background_tasks.add_task(orchestrator.run, run.id, initial_state)
+        background_tasks.add_task(runner_instance.run, run.id, initial_state)
 
     return TriggerWorkflowResponse(workflow_run_id=run.id, status=WorkflowStatus.QUEUED)
 

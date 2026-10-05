@@ -411,3 +411,52 @@ async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
     assert res.status_code == 503
     assert "Celery worker queue is unavailable" in res.json()["error"]["message"]
 
+
+async def test_trigger_workflow_with_langgraph_engine(client: AsyncClient) -> None:
+    """Trigger workflow with engine='langgraph' routes to LangGraphOrchestrator."""
+    project_id, _, headers = await _setup_project(client)
+
+    res = await client.post(
+        f"/api/v1/projects/{project_id}/workflows",
+        json={
+            "stages": ["plan"],
+            "target_languages": ["python"],
+            "engine": "langgraph",
+            "execution_mode": "sync",
+        },
+        headers=headers,
+    )
+    assert res.status_code == 202
+    data = res.json()
+    assert data["workflow_run_id"]
+    assert data["status"] == "queued"
+
+
+async def test_async_workflow_passes_engine_to_celery(client: AsyncClient, monkeypatch) -> None:
+    """Async workflow dispatches engine parameter to Celery."""
+    project_id, _, headers = await _setup_project(client)
+    dispatched = []
+
+    class _MockCelery:
+        def send_task(self, name, args=None, task_id=None):
+            dispatched.append({"name": name, "args": args, "task_id": task_id})
+
+    from agent_worker import celery_app as celery_module
+    mock_celery = _MockCelery()
+    monkeypatch.setattr(celery_module.app, "send_task", mock_celery.send_task)
+
+    res = await client.post(
+        f"/api/v1/projects/{project_id}/workflows",
+        json={
+            "stages": ["plan"],
+            "target_languages": ["python"],
+            "engine": "langgraph",
+            "execution_mode": "async",
+        },
+        headers=headers,
+    )
+    assert res.status_code == 202
+    assert len(dispatched) == 1
+    assert dispatched[0]["args"][2] == "langgraph"
+
+

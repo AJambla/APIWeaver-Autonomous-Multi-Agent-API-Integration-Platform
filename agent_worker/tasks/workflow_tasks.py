@@ -12,9 +12,10 @@ from agent_worker.tasks.base import AsyncTask
 class RunWorkflow(AsyncTask):
     name = "agent_worker.tasks.run_workflow"
 
-    async def run_async(self, run_id: str, initial_state: dict) -> dict:
+    async def run_async(self, run_id: str, initial_state: dict, engine_type: str = "standard") -> dict:
         from app.core.config import get_settings
         from app.workflows.orchestrator import Orchestrator
+        from app.workflows.langgraph_pipeline import LangGraphOrchestrator
         from app.workflows.state import WorkflowState
         from app.models.workflow import WorkflowRun
         from uuid import UUID
@@ -24,7 +25,13 @@ class RunWorkflow(AsyncTask):
         session_factory = async_sessionmaker(
             bind=engine, class_=AsyncSession, expire_on_commit=False
         )
-        orchestrator = Orchestrator(session_factory, execution_mode="sync")
+
+        selected_engine = engine_type or getattr(settings, "default_workflow_engine", "standard")
+        if selected_engine == "langgraph":
+            orchestrator = LangGraphOrchestrator(session_factory=session_factory)
+        else:
+            orchestrator = Orchestrator(session_factory, execution_mode="sync")
+
         result = await orchestrator.run(UUID(run_id), cast(WorkflowState, initial_state))
         await engine.dispose()
         return dict(result)
