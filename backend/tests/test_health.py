@@ -212,3 +212,39 @@ async def test_docs_and_spec_are_served_in_development(test_settings: Settings) 
         spec = await http.get("/api/v1/openapi.json")
         assert spec.status_code == 200
         assert spec.json()["info"]["title"] == "APIWeaver Platform API"
+
+
+async def test_run_migrations_on_startup_triggers_upgrade(test_settings: Settings, monkeypatch) -> None:
+    """When run_migrations_on_startup=True, lifespan executes alembic upgrade head."""
+    from unittest.mock import AsyncMock, MagicMock
+    from alembic import command
+    from app.main import lifespan
+
+    executed = []
+
+    def _mock_upgrade(cfg, rev):
+        executed.append((cfg, rev))
+
+    monkeypatch.setattr(command, "upgrade", _mock_upgrade)
+    monkeypatch.setattr("redis.asyncio.from_url", lambda *args, **kwargs: AsyncMock())
+    monkeypatch.setattr("app.main.dispose_engine", AsyncMock())
+    monkeypatch.setattr("app.main.instrument_app", MagicMock())
+
+    migration_settings = test_settings.model_copy(update={"run_migrations_on_startup": True})
+    app = create_app(migration_settings)
+
+    async with lifespan(app):
+        pass
+
+    assert len(executed) == 1
+    assert executed[0][1] == "head"
+
+    # When False, no upgrade is run
+    executed.clear()
+    default_app = create_app(test_settings.model_copy(update={"run_migrations_on_startup": False}))
+    async with lifespan(default_app):
+        pass
+
+    assert len(executed) == 0
+
+
