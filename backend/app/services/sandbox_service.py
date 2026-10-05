@@ -468,7 +468,10 @@ class DockerSandboxExecutor:
         if self._docker_client is None:
             import docker
 
-            self._docker_client = docker.from_env()
+            if self._settings.docker_host:
+                self._docker_client = docker.DockerClient(base_url=self._settings.docker_host)
+            else:
+                self._docker_client = docker.from_env()
         return self._docker_client
 
     async def load(
@@ -598,6 +601,8 @@ class DockerSandboxExecutor:
                 cap_drop=["ALL"],
                 user=_DOCKER_USER,
                 network_disabled=not self._settings.sandbox_network_enabled,
+                read_only=self._settings.sandbox_read_only_rootfs,
+                security_opt=["no-new-privileges:true"],
                 detach=True,
             )
             container = await asyncio.to_thread(docker_client.containers.run, **run_kwargs)
