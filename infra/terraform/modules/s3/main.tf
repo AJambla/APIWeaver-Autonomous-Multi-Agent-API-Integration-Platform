@@ -47,17 +47,13 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
   }
 }
 
-resource "aws_s3_bucket_cors_configuration" "uploads" {
-  bucket = aws_s3_bucket.uploads.id
-
-  cors_rule {
-    allowed_headers = ["*"]
-    allowed_methods = ["GET", "PUT", "POST", "DELETE"]
-    allowed_origins = ["*"]
-    expose_headers  = ["ETag"]
-    max_age_seconds = 3000
-  }
-}
+# No CORS configuration on this bucket, deliberately (audit M11c). It used to allow
+# `["*"]` origins with GET/PUT/POST/DELETE, which hands every website in the world a cross-origin
+# write path at the bucket holding user uploads. Objects reach S3 only through the server-side
+# client (`backend/app/services/storage_service.py`) after a multipart POST to the API
+# (`backend/app/api/v1/documents.py`); there is no presigned URL and no browser AWS SDK in this
+# repo, so no browser has ever needed this. If direct-from-browser uploads are ever added, pin
+# `allowed_origins` to the deployed app origins and list only the methods that feature uses.
 
 resource "aws_s3_bucket_lifecycle_configuration" "uploads" {
   bucket = aws_s3_bucket.uploads.id
