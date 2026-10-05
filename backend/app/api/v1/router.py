@@ -30,11 +30,14 @@ from app.core.ratelimit import enforce_org_rate_limit
 
 api_router = APIRouter(prefix="/api/v1")
 
-# The auth router carries no org-tier limiter: `register`, `login`, and `refresh` are
-# unauthenticated by definition, and that dependency resolves a principal. Those routes
-# are covered by the per-IP `RateLimitMiddleware`, which is the layer that actually
-# defends against credential stuffing (`Security.md §8`, A07).
+# Neither of these carries the org-tier limiter: `register`, `login`, and `refresh` are
+# unauthenticated by definition, and so is the GitHub OAuth callback, which is a browser
+# redirect GitHub drives -- no bearer token travels in a top-level navigation. That
+# dependency resolves a principal, so attaching it would reject all of them with a 401.
+# Those routes are covered by the per-IP `RateLimitMiddleware`, which is the layer that
+# actually defends against credential stuffing (`Security.md §8`, A07).
 api_router.include_router(auth.router)
+api_router.include_router(github.public_router)
 
 # Everything below is authenticated, so it gets per-organization tier limiting
 # (`API.md §3`) attached once here rather than repeated per route.
