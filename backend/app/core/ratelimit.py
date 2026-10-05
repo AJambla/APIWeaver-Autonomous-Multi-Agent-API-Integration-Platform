@@ -48,6 +48,12 @@ TIER_REQUESTS_PER_MINUTE: dict[str, int] = {
     "enterprise": 600,
 }
 
+TIER_LIMITS: dict[str, dict[str, int]] = {
+    "free": {"workflow_triggers_hour": 10},
+    "pro": {"workflow_triggers_hour": 100},
+    "enterprise": {"workflow_triggers_hour": 1000},
+}
+
 # Unauthenticated per-IP budget. Deliberately generous relative to the Free tier: one IP
 # can legitimately be a whole office behind NAT, so this is an abuse ceiling, not a
 # fairness quota.
