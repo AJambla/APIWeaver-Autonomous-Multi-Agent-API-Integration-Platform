@@ -14,6 +14,12 @@ from typing import Any
 from app.core.logging import get_logger
 from app.services.storage_service import storage_service
 from app.workflows.llm import LLMClient, fence_untrusted
+from app.workflows.source_safety import (
+    safe_endpoint,
+    to_base_url,
+    to_display_name,
+    to_identifier,
+)
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -167,9 +173,11 @@ async def _render_templates(
 
     env = Environment(loader=FileSystemLoader(TEMPLATE_DIR / language))
 
-    title = spec.get("title", "API Client")
-    base_url = spec.get("base_url", "https://api.example.com")
-    endpoints = endpoint_group.get("endpoints", [])
+    title = to_display_name(spec.get("title"), fallback="API Client")
+    base_url = to_base_url(spec.get("base_url"))
+    endpoints = [
+        safe_endpoint(ep) for ep in endpoint_group.get("endpoints", []) if isinstance(ep, dict)
+    ]
     auth_scheme = _get_auth_scheme(spec)
 
     # Group endpoints by resource for template context
@@ -178,7 +186,7 @@ async def _render_templates(
         # Simple resource extraction from path
         path = ep.get("path", "/")
         parts = [p for p in path.split("/") if p and not p.startswith("{")]
-        resource = parts[0] if parts else "root"
+        resource = to_identifier(parts[0], fallback="root") if parts else "root"
         resources.setdefault(resource, []).append(ep)
 
     context = {
