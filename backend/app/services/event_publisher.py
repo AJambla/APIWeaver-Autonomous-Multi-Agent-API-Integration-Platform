@@ -17,7 +17,7 @@ class EventPublisher:
     """Publishes workflow lifecycle events to Redis Streams.
 
     Events are written to two stream families:
-    - `workflow_events:{run_id}` — per-run stream for WebSocket/SSE subscribers.
+    - `workflow_events:{run_id}` — per-run stream for SSE subscribers.
     - `project_events:{project_id}` — per-project stream for project-level dashboards.
     """
 
