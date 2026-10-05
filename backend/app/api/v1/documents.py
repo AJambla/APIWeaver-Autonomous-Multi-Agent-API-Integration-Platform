@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
-from app.core.deps import get_current_principal, get_db, get_object_storage
+from app.core.deps import client_ip, get_current_principal, get_db, get_object_storage
 from app.core.errors import UnprocessableEntityError
 from app.models.enums import ActorType, HTTPMethod, WorkflowStatus
 from app.models.project import Project
@@ -89,7 +89,7 @@ async def upload_document(
         actor_user_id=principal.user_id,
         resource_type="document",
         resource_id=str(document.id) if document else str(run.id),
-        ip_address=request.client.host if request.client else None,
+        ip_address=client_ip(request, settings),
         user_agent=request.headers.get("user-agent"),
     )
 

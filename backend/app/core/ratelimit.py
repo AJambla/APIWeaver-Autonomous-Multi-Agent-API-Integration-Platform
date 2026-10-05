@@ -28,7 +28,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from app.core.deps import get_current_principal, get_db, get_redis
+from app.core.config import get_settings
+from app.core.deps import get_current_principal, get_db, get_redis, select_client_ip
 from app.core.errors import ErrorCode, build_error_body
 from app.core.logging import get_logger
 from app.models.organization import Organization
@@ -115,17 +116,25 @@ def _client_identity(request: Request) -> str:
     """Pre-auth identity: the API key's hash if present, else the client IP.
 
     The key is hashed so a credential never reaches a Redis key name or a log line.
+
+    The address comes from `select_client_ip`, not from the raw header. Reading the
+    left-most `X-Forwarded-For` entry meant any caller could mint an unlimited number of
+    fresh buckets by inventing an address per request, which is exactly the
+    credential-stuffing defence this middleware exists to provide (`Security.md §8`, A07).
+    `get_settings()` is called directly because middleware gets no dependency injection;
+    the process reads it once, so the cost is an `lru_cache` hit.
     """
     if api_key := request.headers.get("x-api-key"):
         from app.core.security import hash_opaque_token
 
         return f"key:{hash_opaque_token(api_key)[:16]}"
 
-    # X-Forwarded-For because the ALB terminates TLS (`Architecture.md §11`).
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return f"ip:{forwarded.split(',')[0].strip()}"
-    return f"ip:{request.client.host if request.client else 'unknown'}"
+    identity = select_client_ip(
+        request.headers.get("x-forwarded-for"),
+        request.client.host if request.client else None,
+        get_settings().trusted_proxy_hops,
+    )
+    return f"ip:{identity or 'unknown'}"
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
