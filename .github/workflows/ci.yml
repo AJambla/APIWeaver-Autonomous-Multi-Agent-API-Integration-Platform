@@ -23,6 +23,9 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql+asyncpg://apiweaver:test@localhost:5432/apiweaver_test
+      # The audit-log guard can only be proven against real PostgreSQL, and the service
+      # above is a throwaway database created for this job.
+      AUDIT_PG_TEST_URL: postgresql+asyncpg://apiweaver:test@localhost:5432/apiweaver_test
       REDIS_URL: redis://localhost:6379/0
       APP_ENV: testing
     steps:

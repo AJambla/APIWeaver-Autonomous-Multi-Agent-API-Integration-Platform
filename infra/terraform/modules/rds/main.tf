@@ -88,6 +88,10 @@ resource "aws_db_instance" "main" {
   vpc_security_group_ids = [aws_security_group.rds.id]
 
   db_name  = var.db_name
+  # The application must not connect as this owner role: audit-log immutability
+  # (backend/alembic/versions/0009_audit_log_immutability.py) can only be dropped or
+  # disabled by the table owner. RDS grants no superuser, so a non-owner app role cannot
+  # bypass the guard either.
   username = var.master_username
   password = var.master_password
   port     = 5432
@@ -108,28 +112,5 @@ resource "aws_db_instance" "main" {
     Name        = "${local.name_prefix}-postgres"
     Project     = "APIWeaver"
     Environment = var.environment
-  }
-}
-
-resource "null_resource" "audit_logs_grants" {
-  depends_on = [aws_db_instance.main]
-
-  triggers = {
-    db_endpoint    = aws_db_instance.main.endpoint
-    db_name        = var.db_name
-    master_user    = var.master_username
-    db_app_role    = var.db_app_role
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      PGPASSWORD="${var.master_password}" psql \
-        -h "${split(":", aws_db_instance.main.endpoint)[0]}" \
-        -p "${aws_db_instance.main.port}" \
-        -U "${var.master_username}" \
-        -d "${var.db_name}" \
-        -c "DO $$ BEGIN GRANT INSERT, SELECT ON audit_logs TO ${var.db_app_role}; REVOKE UPDATE, DELETE ON audit_logs FROM ${var.db_app_role}; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'audit_logs grants already applied or table does not exist'; END $$;"
-    EOT
-    interpreter = ["bash", "-c"]
   }
 }

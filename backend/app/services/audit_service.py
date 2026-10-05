@@ -2,8 +2,9 @@
 
 This module exposes exactly one operation: `record`. There is intentionally no update or
 delete path, which is the application-layer half of the immutability requirement. The
-other half is a database GRANT withholding `UPDATE`/`DELETE` from the application role,
-which belongs to infrastructure provisioning (Phase 6) since Alembic runs as the owner.
+other half is the row trigger installed by alembic revision 0009, which refuses
+`UPDATE` and `DELETE` on `audit_logs` no matter which role issues them, so a bug or an
+injected statement elsewhere in the application cannot rewrite history.
 """
 
 from __future__ import annotations
