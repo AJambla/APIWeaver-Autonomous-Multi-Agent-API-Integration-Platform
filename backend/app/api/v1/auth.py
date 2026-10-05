@@ -29,9 +29,9 @@ from app.services.auth_service import RequestContext
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def _context(request: Request) -> RequestContext:
+def _context(request: Request, settings: Settings) -> RequestContext:
     return RequestContext(
-        ip_address=client_ip(request),
+        ip_address=client_ip(request, settings),
         user_agent=request.headers.get("user-agent"),
     )
 
@@ -55,7 +55,7 @@ async def register(
         full_name=payload.full_name,
         organization_name=payload.organization_name,
         settings=settings,
-        context=_context(request),
+        context=_context(request, settings),
     )
     return TokenResponse(
         access_token=tokens.access_token,
@@ -76,7 +76,7 @@ async def login(
         email=payload.email,
         password=payload.password,
         settings=settings,
-        context=_context(request),
+        context=_context(request, settings),
     )
     return TokenResponse(
         access_token=tokens.access_token,
@@ -96,7 +96,7 @@ async def refresh(
         session,
         refresh_token=payload.refresh_token,
         settings=settings,
-        context=_context(request),
+        context=_context(request, settings),
     )
     return TokenResponse(
         access_token=tokens.access_token,
@@ -131,7 +131,7 @@ async def logout(
         jti=principal.jti,
         refresh_token=payload.refresh_token,
         settings=settings,
-        context=_context(request),
+        context=_context(request, settings),
     )
 
 

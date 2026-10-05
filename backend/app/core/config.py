@@ -114,6 +114,16 @@ class Settings(BaseSettings):
     # --- Uploads (Security.md §10) --------------------------------------------
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, description="50MB default")
 
+    # --- Proxy topology (audit L1) --------------------------------------------
+    # How many reverse proxies sit between the internet and this process, each of which
+    # appends the peer it saw to `X-Forwarded-For`. Both documented shapes are one hop:
+    # the ALB in front of EKS (`Architecture.md §11`) and nginx's
+    # `proxy_set_header X-Forwarded-For` (`frontend/nginx.conf`). Anything the client sent
+    # first is to the LEFT of those appends, so `trusted_proxy_hops` is how far from the
+    # right we may read. 0 means nothing in front is trusted: `X-Forwarded-For` is then
+    # ignored and the transport peer is used even though it names a load balancer.
+    trusted_proxy_hops: int = Field(default=1, ge=0, le=4)
+
     # --- Workflow execution (Task 7.5) ----------------------------------------
     # Enable parallel agent execution within a workflow run. Default off for
     # incremental rollout; turn on after smoke testing.
