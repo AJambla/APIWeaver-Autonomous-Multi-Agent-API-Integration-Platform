@@ -20,6 +20,27 @@ variable "allowed_ips" {
   default     = []
 }
 
+# Deliberately required: `aws_eks_cluster` documents that public access with no CIDR list means
+# 0.0.0.0/0, so the way to make "forgot to set it" safe is to refuse to plan at all. Supply your
+# admin networks (host routes, e.g. "203.0.113.7/32") in a tfvars file. To drop the public
+# endpoint entirely instead, set endpoint_public_access = false in modules/eks/main.tf - that
+# requires in-VPC access (bastion or VPN) for kubectl.
+variable "eks_public_access_cidrs" {
+  description = "CIDR blocks allowed to reach the public EKS API server endpoint"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = length(var.eks_public_access_cidrs) > 0
+    error_message = "eks_public_access_cidrs must list at least one admin CIDR; leaving it empty would fall back to 0.0.0.0/0."
+  }
+
+  validation {
+    condition     = alltrue([for c in var.eks_public_access_cidrs : c != "0.0.0.0/0" && c != "::/0"])
+    error_message = "eks_public_access_cidrs may not contain 0.0.0.0/0 or ::/0."
+  }
+}
+
 variable "vpc_cidr" {
   description = "VPC CIDR block"
   type        = string

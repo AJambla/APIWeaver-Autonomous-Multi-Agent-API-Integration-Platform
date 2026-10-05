@@ -172,6 +172,13 @@ resource "aws_eks_cluster" "main" {
     security_group_ids      = [aws_security_group.cluster.id]
     endpoint_private_access = true
     endpoint_public_access  = true
+
+    # M11a: EKS documents that with public access enabled and no `publicAccessCidrs`, the list
+    # defaults to 0.0.0.0/0 - i.e. the API server answered from any IP on the internet. The
+    # endpoint stays public (operators kubectl from outside the VPC) but is now pinned to the
+    # caller-supplied admin CIDRs; the module input has no default, so a plan that omits it
+    # fails instead of silently re-opening 0.0.0.0/0.
+    public_access_cidrs = var.public_access_cidrs
   }
 
   enabled_cluster_log_types = ["api", "audit", "app", "controllerManager"]

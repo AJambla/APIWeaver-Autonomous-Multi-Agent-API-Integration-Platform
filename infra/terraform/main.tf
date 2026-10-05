@@ -121,6 +121,8 @@ module "eks" {
   vpc_id          = module.vpc.vpc_id
   private_subnets = module.vpc.private_subnets
 
+  public_access_cidrs = var.eks_public_access_cidrs
+
   s3_buckets = {
     uploads    = module.s3.uploads_bucket
     artifacts  = module.s3.artifacts_bucket
