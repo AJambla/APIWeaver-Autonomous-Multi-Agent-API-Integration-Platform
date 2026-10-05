@@ -98,8 +98,9 @@ class Settings(BaseSettings):
     # execs LLM-generated code inside the API process (test-only opt-in).
     sandbox_backend: Literal["mock", "docker"] = "docker"
     sandbox_image: str = "python:3.12-slim"
+    sandbox_node_image: str = "node:22-alpine"
     sandbox_max_cpu: str = "1"
-    sandbox_max_memory: str = "1Gi"
+    sandbox_max_memory: str = "256Mi"
     sandbox_timeout_seconds: int = 300
     sandbox_pids_limit: int = 64
     sandbox_network_enabled: bool = False
