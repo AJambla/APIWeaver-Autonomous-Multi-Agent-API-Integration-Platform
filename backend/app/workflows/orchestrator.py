@@ -353,6 +353,7 @@ class Orchestrator:
                     )
                 else:
                     for phase in phases:
+                        await _check_token_budget(current_dict)
                         phase_number = phase.get("phase_number")
                         logger.info("code_generation_phase", phase=phase_number)
                         tokens_before = current_dict.get("total_tokens_used", 0)
@@ -397,6 +398,7 @@ class Orchestrator:
                         )
 
                 # Cross-chunk consistency pass
+                await _check_token_budget(current_dict)
                 logger.info("code_generation_consistency")
                 tokens_before = current_dict.get("total_tokens_used", 0)
                 files_before = list(current_dict.get("generated_files", []))
@@ -627,6 +629,7 @@ class Orchestrator:
             )
 
             if not current_dict.get("normalized_spec"):
+                await _check_token_budget(current_dict)
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_document_agent",
                     args=[run_id_str, current_dict],
@@ -653,6 +656,7 @@ class Orchestrator:
                 )
 
             if "plan" in stages and current_dict.get("normalized_spec"):
+                await _check_token_budget(current_dict)
                 tokens_before = current_dict.get("total_tokens_used", 0)
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_planner_agent",
@@ -691,6 +695,7 @@ class Orchestrator:
                 plan = current_dict.get("execution_plan", {})
                 phases = plan.get("phases", [])
                 for phase in phases:
+                    await _check_token_budget(current_dict)
                     phase_number = phase.get("phase_number")
                     tokens_before = current_dict.get("total_tokens_used", 0)
                     files_before = list(current_dict.get("generated_files", []))
@@ -726,6 +731,7 @@ class Orchestrator:
                         ),
                     )
 
+                await _check_token_budget(current_dict)
                 tokens_before = current_dict.get("total_tokens_used", 0)
                 files_before = list(current_dict.get("generated_files", []))
                 result = celery_app.send_task(
@@ -756,6 +762,7 @@ class Orchestrator:
                 )
 
             if "test" in stages and current_dict.get("generated_files"):
+                await _check_token_budget(current_dict)
                 tokens_before = current_dict.get("total_tokens_used", 0)
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_testing_agent",
@@ -784,6 +791,7 @@ class Orchestrator:
                 )
 
             if "export" in stages and current_dict.get("test_suite"):
+                await _check_token_budget(current_dict)
                 tokens_before = current_dict.get("total_tokens_used", 0)
                 result = celery_app.send_task(
                     "agent_worker.tasks.run_export_agent",

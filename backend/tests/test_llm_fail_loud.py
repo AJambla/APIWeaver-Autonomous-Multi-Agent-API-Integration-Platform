@@ -15,6 +15,9 @@ def _make_settings(**overrides) -> Settings:
         redis_url="redis://localhost:6379/0",
         jwt_private_key_path="test-jwt-key.pem",
         jwt_public_key_path="test-jwt-key.pub",
+        # Production Settings refuse the in-process sandbox (audit M1), which conftest
+        # exports into the environment; these tests only vary app_env and provider keys.
+        sandbox_backend="docker",
     )
     values.update(overrides)
     return Settings(**values)

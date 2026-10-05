@@ -226,7 +226,13 @@ async def login(
             "Email or password is incorrect.", code=ErrorCode.INVALID_CREDENTIALS
         )
 
-    if not verify_password(password, user.password_hash):
+    password_ok = verify_password(password, user.password_hash)
+    now = _utc_now()
+
+    if user.locked_until is not None and user.locked_until > now:
+        # Answered exactly like a wrong password, so a lock reveals nothing about the
+        # account. The counter is not touched here: attempts in flight cannot extend the
+        # lock, or an attacker could use lockout to keep a real user out indefinitely.
         await audit_service.record(
             session,
             action=AuditAction.USER_LOGIN_FAILED,
@@ -236,12 +242,41 @@ async def login(
             resource_id=str(user.id),
             ip_address=context.ip_address,
             user_agent=context.user_agent,
-            metadata={"reason": "bad_password"},
+            metadata={"reason": "account_locked", "locked_until": user.locked_until.isoformat()},
         )
         await _commit_before_raising(session)
         raise UnauthenticatedError(
             "Email or password is incorrect.", code=ErrorCode.INVALID_CREDENTIALS
         )
+
+    if not password_ok:
+        attempts = (user.failed_login_count or 0) + 1
+        locking = attempts >= settings.login_max_failed_attempts
+        user.failed_login_count = 0 if locking else attempts
+        if locking:
+            user.locked_until = now + datetime.timedelta(minutes=settings.login_lockout_minutes)
+        await audit_service.record(
+            session,
+            action=AuditAction.USER_LOGIN_FAILED,
+            actor_type=ActorType.USER,
+            actor_user_id=user.id,
+            resource_type="user",
+            resource_id=str(user.id),
+            ip_address=context.ip_address,
+            user_agent=context.user_agent,
+            metadata={
+                "reason": "account_locked" if locking else "bad_password",
+                "failed_attempts": attempts,
+            },
+        )
+        await _commit_before_raising(session)
+        raise UnauthenticatedError(
+            "Email or password is incorrect.", code=ErrorCode.INVALID_CREDENTIALS
+        )
+
+    # A correct password clears the ledger.
+    user.failed_login_count = 0
+    user.locked_until = None
 
     # Transparently upgrade the stored hash when the work factor has been raised.
     if user.password_hash and password_needs_rehash(user.password_hash):

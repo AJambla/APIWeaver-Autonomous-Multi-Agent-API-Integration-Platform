@@ -1,0 +1,83 @@
+# Measured against this engine (Docker 29.7.2, BuildKit) while closing audit M10f: a pattern
+# here matches from the context root and `*` does not cross `/`, so `.env`, `*.pem` and
+# `secrets/` exclude only the top level - a nested `sub/.env` or `sub/secrets/jwt_private.pem`
+# was copied into the image regardless. Every secret- and cache-bearing pattern is therefore
+# written twice, once bare and once with `**/`. Do not delete the `**/` lines as duplicates.
+#
+# Version control
+.git
+.gitignore
+
+# Environment files
+.env
+.env.*
+.env.local
+.env.*.local
+**/.env
+**/.env.*
+
+# Secrets and keys
+secrets/
+*.pem
+*.key
+**/secrets/
+**/*.pem
+**/*.key
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+.next/
+dist/
+build/
+**/dist/
+**/build/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info
+**/__pycache__/
+**/*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+**/.venv/
+**/venv/
+
+# Test and cache directories
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Logs
+*.log
+**/*.log
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*~
+
+# Documentation and non-essential files
+Project-docs/
+monitoring/
+infra/terraform/
+**/README.md
+**/README.txt
+**/*.md

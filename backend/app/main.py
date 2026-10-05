@@ -6,11 +6,12 @@ project CRUD, with every error rendered in the `API.md §5` envelope.
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -143,6 +144,40 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
 
+def _mount_metrics(app: FastAPI, settings: Settings) -> None:
+    """Collect request metrics, and serve the scrape endpoint only when it is protected.
+
+    An unauthenticated `/metrics` publishes internal traffic shape and tenant counters to
+    anything that can reach the port (`audit M4`). So: token configured -> endpoint served,
+    token required; production with no token -> endpoint not mounted. Non-production keeps
+    the open local-dev scrape path.
+    """
+    try:
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+        from prometheus_fastapi_instrumentator import Instrumentator
+    except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
+        return
+
+    Instrumentator(registry=metrics_registry).instrument(app)
+
+    if settings.metrics_token is None and settings.is_production:
+        return
+
+    @app.get("/metrics", include_in_schema=False)
+    async def scrape_metrics(request: Request) -> Response:
+        if settings.metrics_token is not None:
+            provided = request.headers.get("X-Metrics-Token", "")
+            if not hmac.compare_digest(provided, settings.metrics_token):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="A valid metrics token is required.",
+                )
+        return Response(
+            content=generate_latest(metrics_registry),
+            media_type=CONTENT_TYPE_LATEST,
+        )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -152,6 +187,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         json_output=settings.app_env != "development",
     )
 
+    # API.md §7 — the spec is served under the version prefix it documents. In production
+    # the spec and the Swagger page disclose the whole API surface to anyone who finds the
+    # port, so neither is mounted (audit M1).
+    expose_spec = None if settings.is_production else "/api/v1/openapi.json"
     app = FastAPI(
         title="APIWeaver Platform API",
         version="1.0.0",
@@ -160,9 +199,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "This spec is generated from the same normalization format the product "
             "produces for user-uploaded APIs."
         ),
-        # API.md §7 — the spec is served under the version prefix it documents.
-        openapi_url="/api/v1/openapi.json",
-        docs_url="/api/v1/docs",
+        openapi_url=expose_spec,
+        docs_url=None if settings.is_production else "/api/v1/docs",
         redoc_url=None,
         lifespan=lifespan,
     )
@@ -187,11 +225,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     register_exception_handlers(app)
 
-    try:
-        from prometheus_fastapi_instrumentator import Instrumentator
-        Instrumentator(registry=metrics_registry).instrument(app).expose(app, include_in_schema=False)
-    except (ImportError, ModuleNotFoundError):
-        pass
+    _mount_metrics(app, settings)
 
     # Probes sit outside /api/v1: they are infrastructure contracts, not part of the
     # versioned product API, and must not move when v2 ships (`Architecture.md §11`).

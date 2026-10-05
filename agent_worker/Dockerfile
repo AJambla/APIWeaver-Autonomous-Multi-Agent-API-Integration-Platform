@@ -1,7 +1,7 @@
 # Dockerfile for the agent-worker service.
 # The repository root remains the build context so this image can copy backend and agent_worker.
 
-FROM python:3.12-slim AS builder
+FROM python:3.12.15-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d AS builder
 
 WORKDIR /app
 
@@ -15,18 +15,18 @@ COPY agent_worker ./agent_worker
 
 # Install poetry and export requirements
 RUN pip install --no-cache-dir poetry poetry-plugin-export && \
-    cd backend && poetry export -f requirements.txt --output ../requirements.txt --only main --without-hashes
+    cd backend && poetry export -f requirements.txt --output ../requirements.txt --only main
 
 
-FROM python:3.12-slim
+FROM python:3.12.15-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
 
 WORKDIR /app
 
 # Copy requirements from builder
 COPY --from=builder /app/requirements.txt .
 
-# Install all dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Hashes come from poetry.lock; a substituted wheel fails this build.
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 # Copy backend application code
 COPY backend ./backend
@@ -39,9 +39,12 @@ RUN useradd -m appuser && chown -R appuser /app
 
 USER appuser
 
-# Healthcheck for celery worker
-HEALTHCHECK --interval=30s --timeout=5s \
-    CMD celery -A agent_worker.celery_app inspect ping || exit 1
+# No HEALTHCHECK here (`audit M10`). The previous one,
+# `celery -A agent_worker.celery_app inspect ping`, cannot pass: celery 5.6.3 does not exit
+# after a successful inspect, so the daemon kills the check at its timeout and the container is
+# reported unhealthy even while a worker replies `pong`. Measured, with controls and the leaked
+# processes, in the `agent-worker` service of
+# infra/docker/docker-compose.single-node.yml.
 
 # Run celery worker
 CMD ["celery", "-A", "agent_worker.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
