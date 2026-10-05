@@ -10,8 +10,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import get_settings
 from app.core.deps import get_current_principal, get_db, get_redis
-from app.core.errors import NotFoundError, UnprocessableEntityError
+from app.core.errors import DependencyUnavailableError, NotFoundError, UnprocessableEntityError
 from app.models.enums import ActorType, WorkflowStatus
 from app.models.project import Project
 from app.models.spec import APISpec
@@ -100,6 +101,8 @@ async def trigger_workflow(
         execution_mode=payload.execution_mode,
     )
 
+    settings = get_settings()
+
     if payload.execution_mode == "async":
         try:
             from agent_worker.celery_app import app as celery_app
@@ -108,7 +111,11 @@ async def trigger_workflow(
                 args=[str(run.id), initial_state],
                 task_id=f"run_workflow:{run.id}",
             )
-        except Exception:
+        except Exception as exc:
+            if settings.is_production or settings.require_celery_worker:
+                raise DependencyUnavailableError(
+                    f"Celery worker queue is unavailable for async workflow execution: {exc}"
+                ) from exc
             background_tasks.add_task(orchestrator.run, run.id, initial_state)
     else:
         background_tasks.add_task(orchestrator.run, run.id, initial_state)
