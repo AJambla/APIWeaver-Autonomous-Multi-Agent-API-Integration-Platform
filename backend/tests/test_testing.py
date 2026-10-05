@@ -187,7 +187,7 @@ class TestTestingAPI:
         return headers, proj.json()["id"]
 
     @pytest.mark.asyncio
-    async def test_trigger_test_ignores_query_project_id(self, client, db):
+    async def test_trigger_test_ignores_query_project_id(self, client, session_factory):
         """The test run must target the authorized path {id}, never a caller-supplied
         `project_id` query param (audit finding H3, IDOR)."""
         from app.models.testing import TestRun
@@ -203,7 +203,7 @@ class TestTestingAPI:
         )
         assert res.status_code == 202, res.text
 
-        async with db as session:
+        async with session_factory() as session:
             run = await session.get(TestRun, uuid.UUID(res.json()["test_run_id"]))
             assert run is not None
             assert str(run.project_id) == project_a

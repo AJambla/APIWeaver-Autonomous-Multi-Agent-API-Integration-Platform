@@ -60,6 +60,7 @@ async def trigger_test(
         resource_id=str(test_run.id),
         metadata={"environment": env, "endpoint_ids": [str(eid) for eid in (payload.endpoint_ids or [])]},
     )
+    await session.commit()
 
     # Execute tests in background
     engine_session_factory = __import__("sqlalchemy.ext.asyncio", fromlist=["async_sessionmaker"]).async_sessionmaker(

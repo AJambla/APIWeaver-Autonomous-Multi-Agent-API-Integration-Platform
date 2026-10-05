@@ -84,10 +84,10 @@ async def patch_endpoint(
         for param in parameters:
             new_param = EndpointParameter(
                 endpoint_id=endpoint.id,
-                name=param.name,
-                location=param.location,
-                type=param.type,
-                required=param.required,
+                name=param["name"] if isinstance(param, dict) else param.name,
+                location=param["location"] if isinstance(param, dict) else param.location,
+                type=param["type"] if isinstance(param, dict) else param.type,
+                required=param["required"] if isinstance(param, dict) else param.required,
             )
             session.add(new_param)
 
