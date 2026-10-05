@@ -5,12 +5,12 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db
-from app.core.errors import ConflictError, NotFoundError
+from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.models.github import GitHubConnection, GitHubOAuthState
 from app.rbac.enforce import require_own_org_permission
 from app.rbac.policy import Permission, Principal
@@ -29,36 +29,47 @@ from app.services.vault_service import VaultClient, create_vault_client
 
 router = APIRouter(prefix="/github", tags=["github"])
 
+# `/github/callback` is a browser redirect from GitHub's authorization server, so it
+# arrives with no `Authorization` header and no API key -- nothing a GitHub user could
+# carry in a top-level navigation. The org-tier limiter `router.py` attaches to every
+# authenticated router resolves a principal and would answer 401 before the route body
+# ran, which is the same reason `auth.router` is excluded there. This router rides that
+# reasoning and is covered by the per-IP anonymous limiter instead (`Security.md §8`).
+public_router = APIRouter(prefix="/github", tags=["github"])
+
+# `GitHubOAuthState` documents a state that "expires after 10 minutes"; the route used to
+# read a `github_oauth_state_ttl_seconds` setting that exists in no `Settings` class.
+OAUTH_STATE_TTL_SECONDS = 600
+
 
 @router.post("/connect", response_model=GitHubAuthUrlResponse)
 async def github_connect(
-    request: Request,
     principal: Principal = Depends(require_own_org_permission(Permission.GITHUB_CONNECT)),
+    session: AsyncSession = Depends(get_db),
     oauth_client: GitHubOAuthClient = Depends(create_github_oauth_client),
 ) -> GitHubAuthUrlResponse:
     """Initiate GitHub OAuth flow."""
+    if principal.user_id is None:
+        # An API key has no user behind it (`deps.py`), and the state -- and the
+        # connection it becomes -- belongs to a user. Consent is an interactive action.
+        raise ForbiddenError("GitHub connections require an interactive session.")
+
     # Generate secure state parameter
     state = uuid.uuid4().hex
-    expires_at = request.app.state.settings.github_oauth_state_ttl_seconds or 600  # 10 minutes default
-
-    # Store state in database
-    async with request.app.state.db_session_factory() as session:
-        oauth_state = GitHubOAuthState(
-            user_id=principal.user_id,
-            state=state,
-        )
-        # Manually set expires_at since we're not using the default
-        oauth_state.expires_at = datetime.now(UTC) + timedelta(seconds=expires_at)
-        session.add(oauth_state)
-        await session.commit()
+    oauth_state = GitHubOAuthState(
+        user_id=principal.user_id,
+        state=state,
+        expires_at=datetime.now(UTC) + timedelta(seconds=OAUTH_STATE_TTL_SECONDS),
+    )
+    session.add(oauth_state)
+    await session.commit()
 
     auth_url = oauth_client.get_authorization_url(state)
     return GitHubAuthUrlResponse(auth_url=auth_url, state=state)
 
 
-@router.get("/callback", response_model=GitHubStatusResponse)
+@public_router.get("/callback", response_model=GitHubStatusResponse)
 async def github_callback(
-    request: Request,
     code: str = Query(...),
     state: str = Query(...),
     oauth_client: GitHubOAuthClient = Depends(create_github_oauth_client),
@@ -66,7 +77,13 @@ async def github_callback(
     vault: VaultClient = Depends(create_vault_client),
     session: AsyncSession = Depends(get_db),
 ) -> GitHubStatusResponse:
-    """Handle GitHub OAuth callback."""
+    """Handle GitHub OAuth callback.
+
+    Unauthenticated by necessity -- GitHub drives this navigation, and no bearer token
+    travels with it. The `state` row created by `/connect` is the authenticator: a
+    `uuid4().hex` (122 bits), unique in the database, ten minutes old at most, and deleted
+    on the way out whether the exchange succeeds or the state has expired.
+    """
     # Validate state
     result = await session.execute(
         select(GitHubOAuthState).where(GitHubOAuthState.state == state)
