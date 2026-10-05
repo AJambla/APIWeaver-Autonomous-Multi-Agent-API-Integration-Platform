@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import JSONB, Base, TZDateTime, UUIDPrimaryKeyMixin
+from app.db.base import JSONB, Base, TZDateTime, UUIDPrimaryKeyMixin, utcnow
 from app.models.enums import RepairOutcome, TestEnvironment, TestResultStatus, check_in
 
 
@@ -29,7 +29,10 @@ class TestRun(UUIDPrimaryKeyMixin, Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     environment: Mapped[str] = mapped_column(String(20), nullable=False)
     started_at: Mapped[datetime.datetime | None] = mapped_column(
-        TZDateTime(), nullable=True
+        TZDateTime(),
+        nullable=True,
+        default=lambda: datetime.datetime.now(datetime.UTC),
+        server_default=utcnow(),
     )
     completed_at: Mapped[datetime.datetime | None] = mapped_column(
         TZDateTime(), nullable=True

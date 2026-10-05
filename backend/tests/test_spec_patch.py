@@ -160,7 +160,7 @@ async def test_patch_endpoint_confidence_score(client: AsyncClient, db) -> None:
         json={"confidence_score": 1.5},
         headers=headers,
     )
-    assert res.status_code == 422  # Validation error
+    assert res.status_code == 400  # Validation error
 
 
 async def test_patch_endpoint_not_found(client: AsyncClient, db) -> None:

@@ -2,28 +2,33 @@
 
 from __future__ import annotations
 
+import uuid
 import pytest
 
+from app.api.v1.github import create_github_oauth_client
 from app.models.github import GitHubConnection
-from app.models.user import User
+
+
+class _StubOAuth:
+    def get_authorization_url(self, state: str, scopes: list[str] | None = None) -> str:
+        return f"https://github.com/login/oauth/authorize?state={state}"
 
 
 class TestGitHubOAuth:
     """Tests for GitHub OAuth endpoints."""
 
     @pytest.mark.asyncio
-    async def test_connect_creates_oauth_state(self, client, auth_headers, session_factory):
+    async def test_connect_creates_oauth_state(self, client, auth_headers, app):
         """POST /github/connect creates an OAuth state token."""
-        async with session_factory() as session:
-            user = User(email="github_test@example.com", password_hash="fake")
-            session.add(user)
-            await session.flush()
+        app.dependency_overrides[create_github_oauth_client] = lambda: _StubOAuth()
 
         response = await client.post(
             "/api/v1/github/connect",
             headers=auth_headers,
         )
         assert response.status_code in (200, 302)
+        assert "auth_url" in response.json()
+        assert "state" in response.json()
 
     @pytest.mark.asyncio
     async def test_connect_requires_auth(self, client):
@@ -34,12 +39,12 @@ class TestGitHubOAuth:
     @pytest.mark.asyncio
     async def test_status_returns_connection_info(self, client, auth_headers, session_factory):
         """GET /github/status returns connection state."""
+        me = await client.get("/api/v1/auth/me", headers=auth_headers)
+        user_id = uuid.UUID(me.json()["user"]["id"])
+
         async with session_factory() as session:
-            user = User(email="github_status@example.com", password_hash="fake")
-            session.add(user)
-            await session.flush()
             conn = GitHubConnection(
-                user_id=user.id,
+                user_id=user_id,
                 github_user_id="12345",
                 github_username="testuser",
             )
@@ -48,36 +53,37 @@ class TestGitHubOAuth:
 
         response = await client.get("/api/v1/github/status", headers=auth_headers)
         assert response.status_code == 200
+        data = response.json()
+        assert data["connected"] is True
+        assert data["github_username"] == "testuser"
 
     @pytest.mark.asyncio
     async def test_disconnect_revokes_connection(self, client, auth_headers, session_factory):
-        """POST /github/disconnect revokes an active connection."""
+        """DELETE /github/disconnect revokes an active connection."""
+        me = await client.get("/api/v1/auth/me", headers=auth_headers)
+        user_id = uuid.UUID(me.json()["user"]["id"])
+
         async with session_factory() as session:
-            user = User(email="github_disc@example.com", password_hash="fake")
-            session.add(user)
-            await session.flush()
             conn = GitHubConnection(
-                user_id=user.id,
+                user_id=user_id,
                 github_user_id="12345",
                 github_username="testuser",
             )
             session.add(conn)
             await session.commit()
 
-        response = await client.post(
+        response = await client.delete(
             "/api/v1/github/disconnect",
             headers=auth_headers,
         )
-        assert response.status_code == 200
+        assert response.status_code == 204
+
+        status_res = await client.get("/api/v1/github/status", headers=auth_headers)
+        assert status_res.status_code == 200
+        assert status_res.json()["connected"] is False
 
     @pytest.mark.asyncio
     async def test_repos_requires_connection(self, client, auth_headers):
-        """GET /github/repos requires an active GitHub connection.
-
-        409 is the route's own "connect first" answer. Measured: this request used to be
-        refused with 400 because `/repos` took its organization from a required `?org_id=`
-        query parameter (audit L2); with the scope resolved from the principal the call now
-        reaches the body.
-        """
+        """GET /github/repos requires an active GitHub connection."""
         response = await client.get("/api/v1/github/repos", headers=auth_headers)
         assert response.status_code == 409
