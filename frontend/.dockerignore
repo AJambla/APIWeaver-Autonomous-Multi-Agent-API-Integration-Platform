@@ -1,0 +1,43 @@
+# Measured against this engine (Docker 29.7.2, BuildKit) while closing audit M10f: a pattern
+# here matches from the context root and `*` does not cross `/`, so `.env` excludes only the
+# top-level file - a nested `src/.env` was copied into the image regardless. Secret- and
+# build-bearing patterns are therefore written twice, once bare and once with `**/`. Do not
+# delete the `**/` lines as duplicates.
+#
+# `public/` must stay in the context: nginx serves the self-hosted Monaco tree from
+# `public/monaco/vs` (`audit M7`), and the CSP in nginx.conf only holds because Monaco is
+# same-origin.
+node_modules
+dist
+build
+coverage
+.git
+npm-debug.log*
+*.log
+**/node_modules/
+**/dist/
+**/build/
+**/coverage/
+**/npm-debug.log*
+**/*.log
+
+# Environment files and keys
+.env
+.env.*
+.env.*.local
+**/.env
+**/.env.*
+secrets/
+*.pem
+*.key
+**/secrets/
+**/*.pem
+**/*.key
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~

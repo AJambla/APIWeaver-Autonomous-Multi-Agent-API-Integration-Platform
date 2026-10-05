@@ -1,11 +1,14 @@
+# Measured against this engine (Docker 29.7.2, BuildKit) while closing audit M10f: a pattern
+# here matches from the context root and `*` does not cross `/`, so `.env`, `*.pem` and
+# `secrets/` exclude only the top level - a nested `sub/.env` or `sub/secrets/jwt_private.pem`
+# was copied into the image regardless. Every secret- and cache-bearing pattern is therefore
+# written twice, once bare and once with `**/`. Do not delete the `**/` lines as duplicates.
+#
 # Version control
 .git
 .gitignore
 
 # Environment files
-# Bare patterns match only from the context root and `*` does not cross `/` (measured on BuildKit,
-# Docker 29.7.2), so the `**/` lines are not duplicates: they are what keeps a nested
-# `backend/.env` out of the agent-worker image, which does `COPY backend ./backend`.
 .env
 .env.*
 .env.local
@@ -23,18 +26,22 @@ secrets/
 
 # Dependencies
 node_modules/
+**/node_modules/
 
 # Build outputs
 .next/
 dist/
 build/
+**/dist/
+**/build/
 
 # Python artifacts
 __pycache__/
 *.py[cod]
-*.egg-info
 *.pyo
+*.egg-info
 **/__pycache__/
+**/*.py[cod]
 
 # Virtual environments
 .venv/
@@ -42,7 +49,6 @@ venv/
 env/
 **/.venv/
 **/venv/
-**/env/
 
 # Test and cache directories
 .pytest_cache/
@@ -56,6 +62,7 @@ htmlcov/
 
 # Logs
 *.log
+**/*.log
 
 # OS-generated files
 .DS_Store
@@ -74,21 +81,3 @@ infra/terraform/
 **/README.md
 **/README.txt
 **/*.md
-
-# Frontend (not needed for backend/agent-worker builds)
-frontend/
-frontend-*/
-
-# Scripts and CI/CD
-scripts/
-.github/
-
-# Kilo config
-.kilo/
-
-# Database migrations (alembic) - not needed for agent-worker
-backend/alembic/
-
-# Local development
-*.local
-*.dev
