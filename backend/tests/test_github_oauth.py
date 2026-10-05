@@ -72,6 +72,12 @@ class TestGitHubOAuth:
 
     @pytest.mark.asyncio
     async def test_repos_requires_connection(self, client, auth_headers):
-        """GET /github/repos requires an active GitHub connection."""
+        """GET /github/repos requires an active GitHub connection.
+
+        409 is the route's own "connect first" answer. Measured: this request used to be
+        refused with 400 because `/repos` took its organization from a required `?org_id=`
+        query parameter (audit L2); with the scope resolved from the principal the call now
+        reaches the body.
+        """
         response = await client.get("/api/v1/github/repos", headers=auth_headers)
-        assert response.status_code in (200, 404, 500)
+        assert response.status_code == 409

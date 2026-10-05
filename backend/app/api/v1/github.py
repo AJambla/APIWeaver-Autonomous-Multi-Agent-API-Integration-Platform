@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_principal, get_db
 from app.core.errors import ConflictError, NotFoundError
 from app.models.github import GitHubConnection, GitHubOAuthState
-from app.rbac.enforce import require_org_permission
+from app.rbac.enforce import require_own_org_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.github import (
     GitHubAuthUrlResponse,
@@ -33,7 +33,7 @@ router = APIRouter(prefix="/github", tags=["github"])
 @router.post("/connect", response_model=GitHubAuthUrlResponse)
 async def github_connect(
     request: Request,
-    principal: Principal = Depends(require_org_permission(Permission.GITHUB_CONNECT)),
+    principal: Principal = Depends(require_own_org_permission(Permission.GITHUB_CONNECT)),
     oauth_client: GitHubOAuthClient = Depends(create_github_oauth_client),
 ) -> GitHubAuthUrlResponse:
     """Initiate GitHub OAuth flow."""
@@ -210,7 +210,7 @@ async def github_disconnect(
 
 @router.get("/repos", response_model=GitHubReposResponse)
 async def github_repos(
-    principal: Principal = Depends(require_org_permission(Permission.GITHUB_CONNECT)),
+    principal: Principal = Depends(require_own_org_permission(Permission.GITHUB_CONNECT)),
     session: AsyncSession = Depends(get_db),
     app_client: GitHubAppClient = Depends(create_github_app_client),
 ) -> GitHubReposResponse:

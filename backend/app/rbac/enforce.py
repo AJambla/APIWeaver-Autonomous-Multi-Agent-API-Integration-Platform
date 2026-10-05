@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -138,11 +139,25 @@ async def load_project_for_principal(
 def require_org_permission(
     permission: Permission,
 ) -> Callable[..., Awaitable[Principal]]:
-    """Dependency factory for org-scoped routes with an `org_id` path parameter."""
+    """Dependency factory for org-scoped routes with an `org_id` path parameter.
+
+    `org_id` is declared as a path parameter, not merely annotated. A bare
+    `org_id: uuid.UUID` resolves from the path when the route contains `{org_id}` and from
+    the **query string** when it does not, so any route reusing this factory without that
+    segment would silently let the caller name the organization the permission is checked
+    against — the gate then passes on an org the caller belongs to while the route body
+    acts for the org in the token. Declaring it moves that mistake from invisible to
+    obvious: the route can never receive its scope, so every request answers
+    `400 VALIDATION_ERROR` `[{"field": "org_id", "issue": "Field required"}]` (the app's
+    shaped form of FastAPI's 422) even when the caller supplies `?org_id=`, and the route is
+    unusable in development instead of quietly authorizing on caller-chosen input. (Measured
+    on fastapi 0.125.3 — no error is raised at definition or schema time; that 400 is the
+    whole signal, which is why `tests/test_org_scope.py` asserts it.)
+    """
     requirement = PERMISSIONS[permission]
 
     async def dependency(
-        org_id: uuid.UUID,
+        org_id: Annotated[uuid.UUID, Path()],
         principal: Principal = Depends(get_current_principal),
         session: AsyncSession = Depends(get_db),
     ) -> Principal:
@@ -164,6 +179,32 @@ def require_org_permission(
             if actual is None:
                 raise NotFoundError()
             raise ForbiddenError()
+        return principal
+
+    return dependency
+
+
+def require_own_org_permission(
+    permission: Permission,
+) -> Callable[..., Awaitable[Principal]]:
+    """Dependency factory for org-scoped routes whose path carries no `org_id` segment.
+
+    The organization is the principal's own — from the token or the API key — because a
+    route like `/github/connect` has nothing in its URL to identify one. Taking an
+    `org_id` from the caller here would be the scope confusion `require_org_permission`
+    above exists to prevent, and a stricter one: the body of such a route acts on
+    `principal` regardless, so the supplied org would only ever decide whether the gate
+    opens, never what the request touches.
+    """
+
+    async def dependency(
+        principal: Principal = Depends(get_current_principal),
+        session: AsyncSession = Depends(get_db),
+    ) -> Principal:
+        if principal.organization_id is None:
+            # A token with no organization claim authorizes nothing org-scoped.
+            raise ForbiddenError()
+        await assert_org_permission(session, principal, permission, principal.organization_id)
         return principal
 
     return dependency
