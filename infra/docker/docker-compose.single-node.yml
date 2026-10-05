@@ -21,17 +21,21 @@ services:
     # Use `--profile docker-ui` when a containerized frontend is required.
     profiles: ["docker-ui"]
     build:
-      context: ../../Frontend
+      # Lowercase, exactly as the git index records it (`audit M10`). The working tree on this
+      # machine is `Frontend`, and Windows does not care, but a Linux checkout materialises the
+      # directory as `frontend` and this context would not exist. `git ls-files` shows 40 files
+      # under `frontend/` and none under `Frontend/`.
+      context: ../../frontend
       dockerfile: Dockerfile
     ports:
-      - "3000:80"
+      - "3000:8080"
     depends_on:
       api:
         condition: service_healthy
     networks:
       - apiweaver
     healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/" ]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/" ]
       interval: 30s
       timeout: 5s
       retries: 3
