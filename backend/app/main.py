@@ -53,7 +53,7 @@ def _request_id(request: Request) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Open shared clients on startup, close them on shutdown."""
-    settings = get_settings()
+    settings = getattr(app.state, "settings", None) or get_settings()
 
     load_keys(settings)
 
@@ -67,6 +67,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = get_engine(settings)
 
     instrument_app(app, engine)
+
+    if settings.run_migrations_on_startup:
+        import asyncio
+        from alembic import command
+        from alembic.config import Config
+        from pathlib import Path
+
+        def _run_upgrade() -> None:
+            backend_dir = Path(__file__).resolve().parent.parent
+            alembic_cfg = Config(str(backend_dir / "alembic.ini"))
+            alembic_cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+            alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
+            command.upgrade(alembic_cfg, "head")
+
+        logger.info("running_database_migrations_on_startup")
+        await asyncio.to_thread(_run_upgrade)
+        logger.info("database_migrations_completed")
 
     logger.info("application_started", app_env=settings.app_env)
     try:
@@ -204,6 +221,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redoc_url=None,
         lifespan=lifespan,
     )
+    app.state.settings = settings
 
     # Middleware is applied bottom-up, so the request-id middleware is added last to run
     # first — the rate limiter's error body needs a request_id already assigned.
