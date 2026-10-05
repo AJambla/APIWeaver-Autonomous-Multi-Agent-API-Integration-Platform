@@ -359,3 +359,55 @@ async def test_async_dispatch_enforces_the_token_budget(
     assert dispatched_phases == [1, 2]
     assert result["status"] == WorkflowStatus.FAILED
     assert any("token_budget_exceeded" in error for error in result["errors"])
+
+
+async def test_async_workflow_triggers_celery_task(client: AsyncClient, monkeypatch) -> None:
+    """Async workflow execution dispatches to agent_worker.tasks.run_workflow."""
+    project_id, _, headers = await _setup_project(client)
+    dispatched = []
+
+    class _MockCelery:
+        def send_task(self, name, args=None, task_id=None):
+            dispatched.append({"name": name, "args": args, "task_id": task_id})
+
+    from agent_worker import celery_app as celery_module
+    monkeypatch.setattr(celery_module, "app", _MockCelery())
+
+    res = await client.post(
+        f"/api/v1/projects/{project_id}/workflows",
+        json={"stages": ["plan"], "target_languages": ["python"], "execution_mode": "async"},
+        headers=headers,
+    )
+    assert res.status_code == 202
+    assert len(dispatched) == 1
+    assert dispatched[0]["name"] == "agent_worker.tasks.run_workflow"
+    assert dispatched[0]["task_id"].startswith("run_workflow:")
+
+
+async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """In production, failure to enqueue to Celery must fail loud with 503 rather than silently falling back."""
+    project_id, _, headers = await _setup_project(client)
+
+    from agent_worker import celery_app as celery_module
+    def _failing_send_task(*args, **kwargs):
+        raise ConnectionError("Redis broker is offline")
+
+    monkeypatch.setattr(celery_module.app, "send_task", _failing_send_task)
+
+    from app.core import config as config_module
+    from app.api.v1 import workflows as workflows_module
+    orig_settings = config_module.get_settings()
+    prod_settings = orig_settings.model_copy(update={"app_env": "production"})
+    monkeypatch.setattr(config_module, "get_settings", lambda: prod_settings)
+    monkeypatch.setattr(workflows_module, "get_settings", lambda: prod_settings)
+
+    res = await client.post(
+        f"/api/v1/projects/{project_id}/workflows",
+        json={"stages": ["plan"], "target_languages": ["python"], "execution_mode": "async"},
+        headers=headers,
+    )
+    assert res.status_code == 503
+    assert "Celery worker queue is unavailable" in res.json()["error"]["message"]
+
