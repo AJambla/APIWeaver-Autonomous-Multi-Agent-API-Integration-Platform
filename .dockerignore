@@ -3,15 +3,23 @@
 .gitignore
 
 # Environment files
+# Bare patterns match only from the context root and `*` does not cross `/` (measured on BuildKit,
+# Docker 29.7.2), so the `**/` lines are not duplicates: they are what keeps a nested
+# `backend/.env` out of the agent-worker image, which does `COPY backend ./backend`.
 .env
 .env.*
 .env.local
 .env.*.local
+**/.env
+**/.env.*
 
 # Secrets and keys
 secrets/
 *.pem
 *.key
+**/secrets/
+**/*.pem
+**/*.key
 
 # Dependencies
 node_modules/
