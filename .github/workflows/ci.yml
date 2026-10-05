@@ -5,6 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+# Nothing in this workflow writes repository contents, so the token defaults to read-only
+# (`audit M9`). This repository was created 2026-08-08, after GitHub's 2023-10-03 change, so its
+# account-level default is *already* read-only — but that default is a repository setting any
+# admin can flip back to `write-all` without a reviewable change, whereas this block travels with
+# the code. Without it, a workflow with no `permissions:` inherits whatever that setting says, and
+# one compromised dependency in a build job could then rewrite the workflow itself. The jobs that
+# need more say so below, and a job-level `permissions:` replaces rather than merges, so each one
+# repeats `contents: read`.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -29,8 +40,13 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       APP_ENV: testing
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # Every `uses:` below is a commit SHA with its release name as a comment: a mutable tag
+      # (`@v4`) can be retagged by the action's authors to run different code with this job's
+      # credentials, and nothing in the repository would change to show it (`audit M9`). Nothing
+      # else enforces this either — `sha_pinning_required` is false for this repository (verified
+      # via the Actions permissions endpoint), so a revert to `@v4` in a future PR would pass.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install poetry
@@ -43,15 +59,20 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    # `packages: write` is for the ghcr push below; `contents: read` is repeated because a
+    # job-level `permissions:` replaces the workflow-level block instead of adding to it.
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v5
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: ./backend
           file: ./backend/Dockerfile
@@ -64,15 +85,18 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v5
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: ./frontend
           file: ./frontend/Dockerfile
@@ -85,12 +109,36 @@ jobs:
     needs: [build, build-frontend]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    # `id-token: write` lets this job mint the OIDC token AWS verifies; it is scoped to this job
+    # alone, because a job that can write the OIDC token can assume the deployment role.
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # `audit M9`: this job has never been runnable. `./infra/charts/apiweaver` is not in the
+      # repository — no Chart.yaml is tracked anywhere, and `infra/` holds only README.md,
+      # docker/ and terraform/ (verified with git ls-files) — so `helm upgrade` below would fail
+      # after the AWS credential had already been requested. Check the chart first so the error
+      # names the missing artifact instead of arriving two steps later. (Helm itself is not the
+      # problem: `ubuntu-latest` is Ubuntu 24.04, whose runner image ships Helm 3.22.0.)
+      - name: Refuse to deploy without a chart
+        run: |
+          if [ ! -f infra/charts/apiweaver/Chart.yaml ]; then
+            echo "::error::infra/charts/apiweaver/Chart.yaml is not in the repository, so there is nothing to deploy. Add the chart or delete this job."
+            exit 1
+          fi
+      # Short-lived credentials from an OIDC trust, instead of `AWS_ACCESS_KEY_ID` /
+      # `AWS_SECRET_ACCESS_KEY` stored as repository secrets: a static pair is valid forever,
+      # is the same on every run, and is the thing an attacker keeps if they read it, while this
+      # token expires with the job and the role's trust policy pins it to this repository.
+      # Requires one repository secret, `AWS_DEPLOY_ROLE_ARN`, and the matching IAM role +
+      # OIDC provider (`token.actions.githubusercontent.com`, condition on
+      # `repository:AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform`
+      # and `ref:refs/heads/main`).
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
       - run: aws eks update-kubeconfig --name apiweaver-prod --region us-east-1
       - run: helm upgrade --install apiweaver ./infra/charts/apiweaver \
