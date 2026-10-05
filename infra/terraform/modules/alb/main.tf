@@ -99,6 +99,14 @@ resource "aws_lb_listener" "https" {
   protocol          = "HTTPS"
   certificate_arn   = var.certificate_arn
 
+  # M11d: a listener created outside the console (Terraform uses the API) falls back to
+  # `ELBSecurityPolicy-2016-08`, which still negotiates TLS 1.0 and TLS 1.1. The `-Res-`
+  # policy drops both and keeps only AEAD suites. It cannot be a TLS 1.3-only policy: the
+  # CloudFront origins (`modules/cloudfront/main.tf`, `origin_ssl_protocols = ["TLSv1.2"]`)
+  # negotiate TLS 1.2 to this ALB, and this policy still offers all four of the AEAD suites
+  # CloudFront brings to an origin handshake (ECDHE-{ECDSA,RSA}-{AES128,AES256}-GCM).
+  ssl_policy = "ELBSecurityPolicy-TLS13-1-2-Res-2021-06"
+
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.web.arn
