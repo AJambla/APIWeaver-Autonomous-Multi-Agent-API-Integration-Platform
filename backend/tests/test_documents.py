@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
+import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.api.v1 import documents
+from app.core.errors import UnprocessableEntityError
+from app.models.audit import AuditLog
+from app.models.workflow import WorkflowRun
 
 OPENAPI = b'''openapi: 3.0.3
 info:
@@ -161,15 +171,24 @@ async def test_upload_freeform_html_accepted(client: AsyncClient) -> None:
 
 
 async def test_upload_freeform_text_accepted(client: AsyncClient) -> None:
-    """Freeform text documents should be accepted (202) - was 422 before fix."""
+    """Freeform text documents should be accepted (202) - was 422 before fix.
+
+    The assertions below still demanded that old 422 after the fix landed, so this test has
+    been failing on every run since; 202 is what the route returns, what its Markdown and
+    HTML siblings assert, and what `API.md §6.2` documents (`freeform` is a valid
+    `format_hint`, and 202 means the async workflow started).
+    """
     project_id, headers = await _project_headers(client)
     response = await client.post(
         f"/api/v1/projects/{project_id}/upload",
         headers=headers,
         files={"file": ("notes.txt", b"API docs: GET /items lists items", "text/plain")},
     )
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "UNPROCESSABLE_ENTITY"
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "processing"
+    assert response.json()["workflow_run_id"] is not None
+    assert response.json()["endpoints_discovered"] == 0
+    assert response.json()["api_spec_id"] is None
 
 
 async def test_upload_rejects_duplicate_document_content(client: AsyncClient) -> None:
@@ -183,6 +202,47 @@ async def test_upload_rejects_duplicate_document_content(client: AsyncClient) ->
         f"/api/v1/projects/{project_id}/upload", headers=headers, files=files
     )
     assert duplicate.status_code == 409
+
+
+async def test_a_refused_document_is_never_reported_as_processing(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audit finding L5: a refusal had to reach the client as a refusal.
+
+    `documents.py` wrapped `ingest_document` in `except UnprocessableEntityError: pass`,
+    which left `document` unset and then filled `document_id` with the *workflow run's* id
+    -- so the response presented a `WorkflowRun` UUID as a document, the audit row recorded
+    a `resource_id` of the wrong type, and an orchestrator was started in the background
+    over bytes no parser accepted, with `status: "processing"` as the answer.
+    """
+    project_id, headers = await _project_headers(client)
+
+    async def refuse(*args: object, **kwargs: object) -> NoReturn:
+        raise UnprocessableEntityError("The uploaded document has no readable API.")
+
+    monkeypatch.setattr(documents, "ingest_document", refuse)
+
+    response = await client.post(
+        f"/api/v1/projects/{project_id}/upload",
+        headers=headers,
+        files={"file": ("mystery.bin", b"not a spec at all", "application/octet-stream")},
+    )
+
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["code"] == "UNPROCESSABLE_ENTITY"
+    assert error["message"] == "The uploaded document has no readable API."
+
+    async with session_factory() as session:
+        # A refused request persists nothing: no run to poll, no audit row to explain it.
+        assert (
+            await session.scalars(select(WorkflowRun).where(WorkflowRun.project_id == project_id))
+        ).all() == []
+        assert (
+            await session.scalars(select(AuditLog).where(AuditLog.action == "document.uploaded"))
+        ).all() == []
 
 
 async def test_upload_normalizes_swagger_2(client: AsyncClient) -> None:
