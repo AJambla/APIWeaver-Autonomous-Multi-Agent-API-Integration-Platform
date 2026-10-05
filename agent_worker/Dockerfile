@@ -1,7 +1,7 @@
 # Dockerfile for the agent-worker service.
 # The repository root remains the build context so this image can copy backend and agent_worker.
 
-FROM python:3.12-slim AS builder
+FROM python:3.12.15-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d AS builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir poetry poetry-plugin-export && \
     cd backend && poetry export -f requirements.txt --output ../requirements.txt --only main
 
 
-FROM python:3.12-slim
+FROM python:3.12.15-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
 
 WORKDIR /app
 
