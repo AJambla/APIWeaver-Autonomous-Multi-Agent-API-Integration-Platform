@@ -112,3 +112,6 @@ alembic.db
 # Skill
 ui-ux-pro-max-skill/
 ui-ux-pro-max-skill/
+
+# Vendored Monaco runtime, copied into Vite's static dir by frontend/scripts/copy-monaco.mjs
+frontend/public/monaco/
