@@ -16,7 +16,11 @@ from app.models.enums import ActorType, WorkflowStatus
 from app.models.project import Project
 from app.models.spec import APISpec
 from app.models.workflow import ToolCall, WorkflowCheckpoint, WorkflowRun
-from app.rbac.enforce import load_project_for_principal, require_project_permission
+from app.rbac.enforce import (
+    assert_project_permission,
+    load_project_for_principal,
+    require_project_permission,
+)
 from app.rbac.policy import Permission, Principal
 from app.schemas.workflow import (
     ApproveWorkflowRequest,
@@ -120,7 +124,7 @@ async def list_workflows(
     limit: int = Query(default=20, ge=1, le=100),
 ) -> list[WorkflowRunResponse]:
     """List workflow runs for a project."""
-    await load_project_for_principal(session, principal, project_id)
+    await assert_project_permission(session, principal, Permission.WORKFLOW_READ, project_id)
     stmt = (
         select(WorkflowRun)
         .where(WorkflowRun.project_id == project_id)
@@ -253,7 +257,9 @@ async def cancel_workflow_run(
     if run is None:
         raise NotFoundError("Workflow run not found.")
 
-    project = await load_project_for_principal(session, principal, run.project_id)
+    project = await assert_project_permission(
+        session, principal, Permission.WORKFLOW_CANCEL, run.project_id
+    )
 
     if run.status in (WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED):
         return {"status": run.status, "message": "Workflow already terminated."}

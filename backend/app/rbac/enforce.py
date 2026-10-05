@@ -177,7 +177,6 @@ def require_project_permission(
     Returns the loaded `Project` so the route does not re-query it — the resource has
     already been fetched to determine its owning org.
     """
-    requirement = PERMISSIONS[permission]
 
     async def dependency(
         id: uuid.UUID,  # noqa: A002 — matches the `{id}` path param in API.md §6
@@ -185,36 +184,59 @@ def require_project_permission(
         session: AsyncSession = Depends(get_db),
     ) -> Project:
         project = await load_project_for_principal(session, principal, id)
-
-        if requirement.project_role is not None:
-            actual = await resolve_project_role(session, principal, project)
-            if not project_role_satisfies(actual, requirement.project_role):
-                logger.info(
-                    "authorization_denied",
-                    permission=str(permission),
-                    scope="project",
-                    project_id=str(id),
-                    actual_role=actual,
-                    required_role=requirement.project_role,
-                )
-                raise ForbiddenError()
-
-        if requirement.org_role is not None:
-            actual_org = await resolve_org_role(session, principal, project.organization_id)
-            if not org_role_satisfies(actual_org, requirement.org_role):
-                logger.info(
-                    "authorization_denied",
-                    permission=str(permission),
-                    scope="project_via_org",
-                    project_id=str(id),
-                    actual_role=actual_org,
-                    required_role=requirement.org_role,
-                )
-                raise ForbiddenError()
-
+        await _enforce_project_requirement(session, principal, project, permission)
         return project
 
     return dependency
+
+
+async def _enforce_project_requirement(
+    session: AsyncSession,
+    principal: Principal,
+    project: Project,
+    permission: Permission,
+) -> None:
+    """Compare `principal`'s roles on `project` against `permission`'s requirements."""
+    requirement = PERMISSIONS[permission]
+
+    if requirement.project_role is not None:
+        actual = await resolve_project_role(session, principal, project)
+        if not project_role_satisfies(actual, requirement.project_role):
+            logger.info(
+                "authorization_denied",
+                permission=str(permission),
+                scope="project",
+                project_id=str(project.id),
+                actual_role=actual,
+                required_role=requirement.project_role,
+            )
+            raise ForbiddenError()
+
+    if requirement.org_role is not None:
+        actual_org = await resolve_org_role(session, principal, project.organization_id)
+        if not org_role_satisfies(actual_org, requirement.org_role):
+            logger.info(
+                "authorization_denied",
+                permission=str(permission),
+                scope="project_via_org",
+                project_id=str(project.id),
+                actual_role=actual_org,
+                required_role=requirement.org_role,
+            )
+            raise ForbiddenError()
+
+
+async def assert_project_permission(
+    session: AsyncSession,
+    principal: Principal,
+    permission: Permission,
+    project_id: uuid.UUID,
+) -> Project:
+    """Imperative form, for routes that resolve the project from a run id or a query
+    parameter rather than an `{id}` path segment (e.g. `/workflows/{run_id}/cancel`)."""
+    project = await load_project_for_principal(session, principal, project_id)
+    await _enforce_project_requirement(session, principal, project, permission)
+    return project
 
 
 async def assert_org_permission(

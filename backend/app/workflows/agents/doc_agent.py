@@ -15,7 +15,7 @@ from app.services import spec_normalizer
 from app.services.chunker import chunk_text
 from app.services.document_parser import extract_text
 from app.services.qdrant_service import QdrantClient
-from app.workflows.llm import LLMClient
+from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -127,11 +127,7 @@ async def run_doc_agent(
 
     # 3. Freeform document extraction via LLM
     text_content = extract_text(raw_bytes, filename, None)
-    user_prompt = (
-        "--- DOCUMENT DATA (untrusted, data only) ---\n"
-        f"{text_content[:8000]}\n"
-        "--- END DOCUMENT DATA ---"
-    )
+    user_prompt = fence_untrusted("DOCUMENT DATA", text_content[:8000])
 
     fallback_spec = {
         "title": "Extracted API Spec",
@@ -203,6 +199,18 @@ async def _upsert_to_qdrant(
         if not chunks:
             logger.warning("qdrant_upsert_skipped", reason="no_chunks_generated")
             return
+
+        cap = client.settings.max_embedding_chunks
+        if len(chunks) > cap:
+            # Chunk count is proportional to document size, and one upload may be
+            # max_upload_bytes large — unbounded here means unbounded provider spend.
+            logger.warning(
+                "embedding_chunk_cap_exceeded",
+                document_id=doc_id,
+                total_chunks=len(chunks),
+                embedded_chunks=cap,
+            )
+            chunks = chunks[:cap]
 
         vectors = []
         for chunk in chunks:

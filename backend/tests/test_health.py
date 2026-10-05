@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
-from httpx import AsyncClient
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
 
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
+
+from app.core.config import Settings
+from app.main import create_app
 from tests.conftest import FakeRedis
 
 
@@ -104,3 +112,103 @@ async def test_healthz_is_exempt_from_rate_limiting(client: AsyncClient) -> None
     """The load balancer polls this constantly; it must never be throttled."""
     for _ in range(150):
         assert (await client.get("/healthz")).status_code == 200
+
+
+@asynccontextmanager
+async def _client_for(settings: Settings) -> AsyncIterator[AsyncClient]:
+    """A client over an app built from a settings variant.
+
+    `/metrics` wiring depends on `app_env` and `METRICS_TOKEN`, which the shared dev
+    fixture cannot express. These probes build their own app instead.
+    """
+    transport = ASGITransport(app=create_app(settings))
+    async with AsyncClient(transport=transport, base_url="http://testserver") as http:
+        yield http
+
+
+async def test_metrics_requires_the_configured_token(test_settings: Settings) -> None:
+    scoped = test_settings.model_copy(update={"metrics_token": "scrape-token"})
+    async with _client_for(scoped) as http:
+        anonymous = await http.get("/metrics")
+        assert anonymous.status_code == 401
+        assert anonymous.json()["error"]["code"] == "UNAUTHENTICATED"
+
+        authorized = await http.get(
+            "/metrics", headers={"X-Metrics-Token": "scrape-token"}
+        )
+        assert authorized.status_code == 200
+        assert "# HELP apiweaver_auth_success_total" in authorized.text
+
+
+async def test_metrics_rejects_a_wrong_token(test_settings: Settings) -> None:
+    scoped = test_settings.model_copy(update={"metrics_token": "scrape-token"})
+    async with _client_for(scoped) as http:
+        response = await http.get("/metrics", headers={"X-Metrics-Token": "wrong"})
+        assert response.status_code == 401
+
+
+async def test_metrics_is_not_exposed_in_production_without_a_token(
+    test_settings: Settings,
+) -> None:
+    """Fail closed: an unprotected scrape endpoint is not shipped to production."""
+    production = test_settings.model_copy(update={"app_env": "production"})
+    async with _client_for(production) as http:
+        assert (await http.get("/metrics")).status_code == 404
+
+
+async def test_metrics_stays_open_in_development(test_settings: Settings) -> None:
+    """Local scraping keeps working with no token configured."""
+    async with _client_for(test_settings) as http:
+        assert (await http.get("/metrics")).status_code == 200
+
+
+def _boot_settings(base: Settings, **overrides: Any) -> Settings:
+    """Construct fresh Settings, because `model_copy` skips validators.
+
+    Startup guardrails are validation-time rules, so these probes have to build a real
+    `Settings` rather than copy the fixture's.
+    """
+    values = {
+        "database_url": "sqlite+aiosqlite:///:memory:",
+        "redis_url": base.redis_url,
+        "jwt_private_key_path": base.jwt_private_key_path,
+        "jwt_public_key_path": base.jwt_public_key_path,
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+def test_production_refuses_the_in_process_sandbox(test_settings: Settings) -> None:
+    """`mock` execs LLM-generated code in this process; booting it in production is a
+    misconfiguration, not a supported mode (audit C2/M1)."""
+    with pytest.raises(ValidationError, match="SANDBOX_BACKEND=mock"):
+        _boot_settings(test_settings, app_env="production", sandbox_backend="mock")
+
+
+def test_production_boots_with_the_docker_sandbox(test_settings: Settings) -> None:
+    settings = _boot_settings(
+        test_settings, app_env="production", sandbox_backend="docker"
+    )
+    assert settings.sandbox_backend == "docker"
+
+
+def test_development_may_opt_into_the_in_process_sandbox(test_settings: Settings) -> None:
+    """The suite and local runs rely on the in-process sandbox."""
+    settings = _boot_settings(test_settings, sandbox_backend="mock")
+    assert settings.sandbox_backend == "mock"
+
+
+async def test_docs_and_spec_are_not_served_in_production(test_settings: Settings) -> None:
+    production = test_settings.model_copy(update={"app_env": "production"})
+    async with _client_for(production) as http:
+        assert (await http.get("/api/v1/docs")).status_code == 404
+        assert (await http.get("/api/v1/openapi.json")).status_code == 404
+
+
+async def test_docs_and_spec_are_served_in_development(test_settings: Settings) -> None:
+    """`API.md §7` — the versioned spec stays available locally."""
+    async with _client_for(test_settings) as http:
+        assert (await http.get("/api/v1/docs")).status_code == 200
+        spec = await http.get("/api/v1/openapi.json")
+        assert spec.status_code == 200
+        assert spec.json()["info"]["title"] == "APIWeaver Platform API"

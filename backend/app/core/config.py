@@ -11,7 +11,7 @@ import functools
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AppEnv = Literal["development", "staging", "production"]
@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     embedding_model: str = "text-embedding-3-small"
+    # Chunks of a single document that get embedded and indexed. Without a ceiling, one
+    # 50MB upload is ~100k provider calls (audit M8); the remainder is skipped loudly.
+    max_embedding_chunks: int = 2000
 
     # --- LLM resilience (transient failures + provider circuit breaker) -------
     llm_max_retries: int = 2
@@ -74,6 +77,13 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = 7
     jwt_algorithm: Literal["RS256"] = "RS256"
     jwt_issuer: str = "apiweaver"
+
+    # --- Per-account lockout (Security.md §1, audit M2) -----------------------
+    # Counted in the `users` row, not the Redis limiter, because the Redis limiter
+    # fails open and is keyed per IP; a distributed attack or an outage must not
+    # turn into an unlocked front door.
+    login_max_failed_attempts: int = 5
+    login_lockout_minutes: int = 15
 
     # --- GitHub Export (Phase 4) -------------------------------------------------
     github_app_id: str | None = None
@@ -97,6 +107,9 @@ class Settings(BaseSettings):
     # --- Observability (recommended) ------------------------------------------
     langsmith_api_key: str | None = None
     otel_exporter_otlp_endpoint: str | None = None
+    # Shared secret the scraper sends as X-Metrics-Token. Production will not expose
+    # /metrics at all without it (audit M4).
+    metrics_token: str | None = None
 
     # --- Uploads (Security.md §10) --------------------------------------------
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, description="50MB default")
@@ -116,6 +129,21 @@ class Settings(BaseSettings):
                 "(postgresql+asyncpg:// or sqlite+aiosqlite:// for tests)"
             )
         return value
+
+    @model_validator(mode="after")
+    def _refuse_unsandboxed_production(self) -> Settings:
+        """Fail boot rather than run generated code inside the API process (audit C2/M1).
+
+        `sandbox_backend="mock"` imports and executes LLM-authored modules in-process, so
+        it is a test-only opt-in; a production deployment that asks for it is a
+        misconfiguration, not a supported mode.
+        """
+        if self.app_env == "production" and self.sandbox_backend == "mock":
+            raise ValueError(
+                "SANDBOX_BACKEND=mock runs LLM-generated code in this process and is "
+                "test-only; production must use SANDBOX_BACKEND=docker."
+            )
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

@@ -6,7 +6,7 @@ and `Project-docs/API.md` for design and API contracts.
 ## Stack
 
 - Vite 5 + React 18 + TypeScript (strict)
-- react-router-dom 6 (client-side routing)
+- react-router-dom 7 (client-side routing)
 - Tailwind CSS (dark theme via design tokens from `UIUX.md §1.2`)
 - ESLint + Prettier
 
