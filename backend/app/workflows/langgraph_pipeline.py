@@ -1,0 +1,505 @@
+"""LangGraph-native state machine and orchestration pipeline for APIWeaver.
+
+Defines the multi-agent execution graph with conditional routing, self-healing cycles,
+approval gates, and state persistence.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime
+import uuid
+from typing import Any, Callable, Literal, cast
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+
+from app.core.config import get_settings
+from app.core.logging import get_logger
+from app.models.enums import WorkflowStatus
+from app.models.workflow import WorkflowCheckpoint, WorkflowRun
+from app.services.event_publisher import EventPublisher
+from app.services.ingestion_service import persist_endpoint_dependencies, persist_normalized_spec
+from app.services.qdrant_service import QdrantClient
+from app.workflows.agents.code_agent import run_code_agent
+from app.workflows.agents.doc_agent import run_doc_agent
+from app.workflows.agents.export_agent import ExportAgent
+from app.workflows.agents.planner_agent import run_planner_agent
+from app.workflows.agents.test_agent import run_test_agent
+from app.workflows.event_recorder import record_agent_event
+from app.workflows.state import WorkflowState
+
+logger = get_logger(__name__)
+
+DEFAULT_TOKEN_BUDGET = 1_000_000
+
+
+def check_budget(state: WorkflowState) -> None:
+    """Check whether token budget has been exceeded."""
+    budget = state.get("token_budget") or DEFAULT_TOKEN_BUDGET
+    used = state.get("total_tokens_used", 0)
+    if used >= budget:
+        raise RuntimeError(f"token_budget_exceeded: {used}/{budget}")
+
+
+# --- Routing Conditions -------------------------------------------------------------
+
+
+def route_after_planner(state: WorkflowState) -> str:
+    """Determine whether to proceed to code generation, pause for approval, or finish."""
+    stages = state.get("stages", ["plan"])
+    if "generate" not in stages:
+        return "finalize"
+
+    # If the plan is already approved, proceed directly to code gen
+    if state.get("plan_approved"):
+        return "code_agent"
+
+    # Otherwise route to human approval gate
+    return "approval_gate"
+
+
+def route_after_testing(state: WorkflowState) -> str:
+    """Evaluate test results: export if passed, loop to repair if failing, or escalate."""
+    stages = state.get("stages", ["plan", "generate", "test", "export"])
+    test_summary = state.get("test_run_summary") or {}
+    failed_count = test_summary.get("failed", 0)
+
+    # If all tests passed (or no test failure recorded)
+    if failed_count == 0:
+        if "export" in stages:
+            return "export_agent"
+        return "finalize"
+
+    # Check repair attempts
+    repair_attempts = state.get("repair_attempts", [])
+    if len(repair_attempts) < 3:
+        return "repair_agent"
+
+    # Exhausted repair attempts: escalate to human
+    return "approval_gate"
+
+
+# --- Graph Factory ------------------------------------------------------------------
+
+
+def create_apiweaver_graph(
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    event_publisher: EventPublisher | None = None,
+    qdrant_client: QdrantClient | None = None,
+) -> StateGraph:
+    """Build and wire the StateGraph for APIWeaver."""
+    builder = StateGraph(WorkflowState)
+
+    # 1. Document Ingestion Node
+    async def doc_agent_node(state: WorkflowState) -> dict[str, Any]:
+        check_budget(state)
+        run_id = state.get("workflow_run_id", "")
+        logger.info("langgraph_doc_node_started", run_id=run_id)
+
+        tokens_before = state.get("total_tokens_used", 0)
+        doc_updates = await run_doc_agent(state, qdrant_client=qdrant_client)
+
+        updates: dict[str, Any] = {
+            **doc_updates,
+            "progress_percent": 15,
+            "current_node": "doc_agent",
+        }
+
+        # Persist normalized spec if freeform docs generated one
+        normalized_spec = doc_updates.get("normalized_spec") or state.get("normalized_spec")
+        if (
+            session_factory
+            and normalized_spec
+            and not state.get("spec_persisted")
+            and state.get("project_id")
+            and state.get("document_id")
+        ):
+            try:
+                async with session_factory() as session:
+                    await persist_normalized_spec(
+                        session,
+                        uuid.UUID(state["project_id"]),
+                        uuid.UUID(state["document_id"]),
+                        normalized_spec,
+                    )
+                    await session.commit()
+                updates["spec_persisted"] = True
+            except Exception as e:
+                logger.warning("langgraph_spec_persist_failed", error=str(e))
+
+        if event_publisher and run_id:
+            await event_publisher.publish_workflow_progress(
+                run_id=run_id,
+                project_id=state.get("project_id"),
+                current_node="doc_agent",
+                progress_percent=15,
+            )
+
+        return updates
+
+    # 2. Planner Agent Node
+    async def planner_agent_node(state: WorkflowState) -> dict[str, Any]:
+        check_budget(state)
+        run_id = state.get("workflow_run_id", "")
+        logger.info("langgraph_planner_node_started", run_id=run_id)
+
+        planner_updates = await run_planner_agent(state)
+        updates: dict[str, Any] = {
+            **planner_updates,
+            "progress_percent": 30,
+            "current_node": "planner_agent",
+        }
+
+        # Persist dependency graph if session_factory is available
+        if session_factory and state.get("project_id"):
+            try:
+                async with session_factory() as session:
+                    await persist_endpoint_dependencies(
+                        session,
+                        project_id=uuid.UUID(state["project_id"]),
+                        execution_plan=planner_updates.get("execution_plan")
+                        or state.get("execution_plan")
+                        or {},
+                        normalized_spec=state.get("normalized_spec") or {},
+                    )
+                    await session.commit()
+            except Exception as e:
+                logger.warning("langgraph_dependency_persist_failed", error=str(e))
+
+        if event_publisher and run_id:
+            await event_publisher.publish_workflow_progress(
+                run_id=run_id,
+                project_id=state.get("project_id"),
+                current_node="planner_agent",
+                progress_percent=30,
+            )
+
+        return updates
+
+    # 3. Human Approval Gate Node (holds execution until human sign-off)
+    async def approval_gate_node(state: WorkflowState) -> dict[str, Any]:
+        run_id = state.get("workflow_run_id", "")
+        logger.info("langgraph_approval_gate_reached", run_id=run_id)
+
+        updates: dict[str, Any] = {
+            "status": WorkflowStatus.PAUSED_FOR_APPROVAL,
+            "current_node": "approval_gate",
+            "progress_percent": state.get("progress_percent", 30),
+        }
+
+        if event_publisher and run_id:
+            await event_publisher.publish(
+                run_id=run_id,
+                project_id=state.get("project_id"),
+                event_type="workflow.paused",
+                payload={"reason": "human_approval_required"},
+            )
+
+        return updates
+
+    # 4. Code Generation Node (supports multi-phase and cross-chunk consistency)
+    async def code_agent_node(state: WorkflowState) -> dict[str, Any]:
+        check_budget(state)
+        run_id = state.get("workflow_run_id", "")
+        logger.info("langgraph_code_node_started", run_id=run_id)
+
+        plan = state.get("execution_plan", {})
+        phases = plan.get("phases", [])
+        settings = get_settings()
+
+        generated_files = list(state.get("generated_files", []))
+        total_tokens = state.get("total_tokens_used", 0)
+
+        # Run phases
+        for phase in phases:
+            phase_num = phase.get("phase_number")
+            phase_result = await run_code_agent(state, phase_number=phase_num)
+            generated_files.extend(phase_result.get("generated_files", []))
+            total_tokens += phase_result.get("total_tokens_used", 0)
+
+        # Consistency pass
+        consistency_result = await run_code_agent(
+            {**state, "generated_files": generated_files},  # type: ignore[misc]
+            phase_number=None,
+        )
+        if consistency_result.get("generated_files"):
+            generated_files = consistency_result["generated_files"]
+
+        updates: dict[str, Any] = {
+            "generated_files": generated_files,
+            "total_tokens_used": total_tokens,
+            "progress_percent": 60,
+            "current_node": "code_agent",
+        }
+
+        if event_publisher and run_id:
+            await event_publisher.publish_workflow_progress(
+                run_id=run_id,
+                project_id=state.get("project_id"),
+                current_node="code_agent",
+                progress_percent=60,
+            )
+
+        return updates
+
+    # 5. Testing Node
+    async def test_agent_node(state: WorkflowState) -> dict[str, Any]:
+        check_budget(state)
+        run_id = state.get("workflow_run_id", "")
+        logger.info("langgraph_test_node_started", run_id=run_id)
+
+        test_updates = await run_test_agent(state, session_factory=session_factory)
+        updates: dict[str, Any] = {
+            **test_updates,
+            "progress_percent": 75,
+            "current_node": "test_agent",
+        }
+
+        if event_publisher and run_id:
+            await event_publisher.publish_workflow_progress(
+                run_id=run_id,
+                project_id=state.get("project_id"),
+                current_node="test_agent",
+                progress_percent=75,
+            )
+
+        return updates
+
+    # 6. Self-Healing Repair Node
+    async def repair_agent_node(state: WorkflowState) -> dict[str, Any]:
+        check_budget(state)
+        run_id = state.get("workflow_run_id", "")
+        logger.info("langgraph_repair_node_started", run_id=run_id)
+
+        attempts = list(state.get("repair_attempts", []))
+        attempt_number = len(attempts) + 1
+
+        # Track attempt
+        attempts.append({
+            "attempt_number": attempt_number,
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+            "outcome": "in_progress",
+        })
+
+        # Re-run consistency/repair pass on generated code
+        repaired = await run_code_agent(state, phase_number=None)
+
+        updates: dict[str, Any] = {
+            "generated_files": repaired.get("generated_files", state.get("generated_files", [])),
+            "repair_attempts": attempts,
+            "current_node": "repair_agent",
+        }
+
+        if event_publisher and run_id:
+            await event_publisher.publish(
+                run_id=run_id,
+                project_id=state.get("project_id"),
+                event_type="workflow.repair_attempt",
+                payload={"attempt_number": attempt_number},
+            )
+
+        return updates
+
+    # 7. Export Node
+    async def export_agent_node(state: WorkflowState) -> dict[str, Any]:
+        check_budget(state)
+        run_id = state.get("workflow_run_id", "")
+        logger.info("langgraph_export_node_started", run_id=run_id)
+
+        export_agent = ExportAgent(session_factory=session_factory)
+        export_updates = await export_agent.run(state)
+
+        updates: dict[str, Any] = {
+            **export_updates,
+            "progress_percent": 95,
+            "current_node": "export_agent",
+        }
+
+        if event_publisher and run_id:
+            await event_publisher.publish_workflow_progress(
+                run_id=run_id,
+                project_id=state.get("project_id"),
+                current_node="export_agent",
+                progress_percent=95,
+            )
+
+        return updates
+
+    # 8. Finalize Node
+    async def finalize_node(state: WorkflowState) -> dict[str, Any]:
+        run_id = state.get("workflow_run_id", "")
+        current_status = state.get("status")
+
+        final_status = (
+            WorkflowStatus.PAUSED_FOR_APPROVAL
+            if current_status == WorkflowStatus.PAUSED_FOR_APPROVAL
+            else WorkflowStatus.COMPLETED
+        )
+
+        updates: dict[str, Any] = {
+            "status": final_status,
+            "progress_percent": 100 if final_status == WorkflowStatus.COMPLETED else 90,
+            "current_node": "completed",
+        }
+
+        if event_publisher and run_id:
+            await event_publisher.publish_workflow_completed(
+                run_id=run_id,
+                project_id=state.get("project_id"),
+                status=final_status.value,
+            )
+
+        return updates
+
+    # --- Wire Nodes into Builder ---
+    builder.add_node("doc_agent", doc_agent_node)
+    builder.add_node("planner_agent", planner_agent_node)
+    builder.add_node("approval_gate", approval_gate_node)
+    builder.add_node("code_agent", code_agent_node)
+    builder.add_node("test_agent", test_agent_node)
+    builder.add_node("repair_agent", repair_agent_node)
+    builder.add_node("export_agent", export_agent_node)
+    builder.add_node("finalize", finalize_node)
+
+    # --- Wire Edges ---
+    builder.add_edge(START, "doc_agent")
+    builder.add_edge("doc_agent", "planner_agent")
+
+    builder.add_conditional_edges(
+        "planner_agent",
+        route_after_planner,
+        {
+            "code_agent": "code_agent",
+            "approval_gate": "approval_gate",
+            "finalize": "finalize",
+        },
+    )
+
+    builder.add_edge("approval_gate", "finalize")
+    builder.add_edge("code_agent", "test_agent")
+
+    builder.add_conditional_edges(
+        "test_agent",
+        route_after_testing,
+        {
+            "export_agent": "export_agent",
+            "repair_agent": "repair_agent",
+            "approval_gate": "approval_gate",
+            "finalize": "finalize",
+        },
+    )
+
+    builder.add_edge("repair_agent", "test_agent")
+    builder.add_edge("export_agent", "finalize")
+    builder.add_edge("finalize", END)
+
+    return builder
+
+
+class LangGraphOrchestrator:
+    """Orchestrator that executes workflows using compiled LangGraph state machines."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        event_publisher: EventPublisher | None = None,
+        qdrant_client: QdrantClient | None = None,
+        checkpointer: Any | None = None,
+    ) -> None:
+        self.session_factory = session_factory
+        self.event_publisher = event_publisher
+        self.qdrant_client = qdrant_client
+        self.checkpointer = checkpointer or MemorySaver()
+
+        self._builder = create_apiweaver_graph(
+            session_factory=self.session_factory,
+            event_publisher=self.event_publisher,
+            qdrant_client=self.qdrant_client,
+        )
+        self.graph = self._builder.compile(checkpointer=self.checkpointer)
+
+    async def run(
+        self,
+        workflow_run_id: uuid.UUID,
+        initial_state: WorkflowState,
+    ) -> WorkflowState:
+        """Executes the workflow graph for the specified run."""
+        run_id_str = str(workflow_run_id)
+        current: dict[str, Any] = dict(initial_state)
+        current["workflow_run_id"] = run_id_str
+        current["status"] = WorkflowStatus.RUNNING
+        current.setdefault("total_tokens_used", 0)
+
+        # Update DB run status to RUNNING
+        if self.session_factory:
+            async with self.session_factory() as session:
+                run_obj = await session.get(WorkflowRun, workflow_run_id)
+                if run_obj:
+                    run_obj.status = WorkflowStatus.RUNNING
+                    run_obj.started_at = datetime.datetime.now(datetime.UTC)
+                    await session.commit()
+
+        if self.event_publisher:
+            await self.event_publisher.publish_workflow_started(
+                run_id=run_id_str,
+                project_id=current.get("project_id"),
+                stages=current.get("stages", ["plan"]),
+            )
+
+        config = {"configurable": {"thread_id": run_id_str}}
+
+        try:
+            # Stream or invoke LangGraph
+            final_output = await self.graph.ainvoke(current, config=config)
+            result_state = cast(WorkflowState, final_output)
+
+            final_status = result_state.get("status", WorkflowStatus.COMPLETED)
+
+            # Persist checkpoint and final run status
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    serializable = {
+                        k: v for k, v in result_state.items() if k != "raw_document_bytes"
+                    }
+                    checkpoint = WorkflowCheckpoint(
+                        workflow_run_id=workflow_run_id,
+                        node_name=result_state.get("current_node", "completed"),
+                        state_snapshot=serializable,
+                    )
+                    session.add(checkpoint)
+
+                    run_obj = await session.get(WorkflowRun, workflow_run_id)
+                    if run_obj:
+                        run_obj.status = final_status
+                        run_obj.total_tokens_used = result_state.get("total_tokens_used", 0)
+                        if final_status == WorkflowStatus.COMPLETED:
+                            run_obj.completed_at = datetime.datetime.now(datetime.UTC)
+                    await session.commit()
+
+            return result_state
+
+        except Exception as exc:
+            logger.error("langgraph_execution_failed", run_id=run_id_str, error=str(exc))
+            current["status"] = WorkflowStatus.FAILED
+            current.setdefault("errors", []).append(str(exc))
+
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    run_obj = await session.get(WorkflowRun, workflow_run_id)
+                    if run_obj:
+                        run_obj.status = WorkflowStatus.FAILED
+                        run_obj.completed_at = datetime.datetime.now(datetime.UTC)
+                        await session.commit()
+
+            if self.event_publisher:
+                await self.event_publisher.publish_workflow_completed(
+                    run_id=run_id_str,
+                    project_id=current.get("project_id"),
+                    status=WorkflowStatus.FAILED.value,
+                )
+
+            return cast(WorkflowState, current)
