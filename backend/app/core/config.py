@@ -39,6 +39,8 @@ class Settings(BaseSettings):
 
     # --- Redis (required) ------------------------------------------------------
     redis_url: str
+    celery_broker_url: str = "redis://localhost:6379/1"
+    celery_result_backend: str = "redis://localhost:6379/2"
 
     # --- Qdrant (required by §9; unused until Phase 2) ------------------------
     qdrant_url: str = "http://localhost:6333"
@@ -132,6 +134,9 @@ class Settings(BaseSettings):
     # Enable parallel agent execution within a workflow run. Default off for
     # incremental rollout; turn on after smoke testing.
     enable_parallel_agents: bool = False
+    # In production, require Celery workers for async workflows rather than
+    # silently running on API process BackgroundTasks (fail-loud queueing).
+    require_celery_worker: bool = False
 
     @field_validator("database_url")
     @classmethod
