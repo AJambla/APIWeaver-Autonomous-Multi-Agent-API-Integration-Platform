@@ -8,6 +8,7 @@ know which mode was used.
 from __future__ import annotations
 
 import datetime
+import ipaddress
 import uuid
 from collections.abc import AsyncIterator
 from typing import Annotated
@@ -166,18 +167,66 @@ async def get_current_principal(
 PrincipalDep = Annotated[Principal, Depends(get_current_principal)]
 
 
-def client_ip(request: Request) -> str | None:
+def _as_ip(value: str | None) -> str | None:
+    """`value` canonicalised, or None unless it really is an IP address.
+
+    `audit_logs.ip_address` is a Postgres `INET` column, so anything else aborts the whole
+    transaction with `invalid input syntax for type inet` — measured on the dev database —
+    and the audited action fails while leaving no audit row behind.
+    """
+    if not value:
+        return None
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    # A link-local IPv6 can carry a scope id (`fe80::1%eth0`). `ipaddress` parses it and
+    # hands it back verbatim; Postgres `INET` rejects it (`invalid input syntax for type
+    # inet` — measured), which is the abort this function exists to prevent. The scope
+    # names an interface on whatever appended it, not a routable client, so recording
+    # nothing is the honest answer.
+    if getattr(address, "scope_id", None):
+        return None
+    return str(address)
+
+
+def select_client_ip(
+    forwarded_for: str | None, peer: str | None, trusted_proxy_hops: int
+) -> str | None:
+    """The address the client connected from, given a chain of `trusted_proxy_hops` proxies.
+
+    Each proxy appends the peer it saw, so the entries our own proxies appended are the
+    right-most `trusted_proxy_hops` ones — and everything a caller typed sits to their left.
+    The left-most entry, which is what this function used to return, is free text: it made
+    the pre-auth per-IP limiter trivially bypassable (one fresh bucket per forged value) and
+    let a forged string reach the `INET` column.
+
+    Two honest limitations, both stated rather than papered over: if the real chain is
+    shorter than `trusted_proxy_hops`, the index clamps to the left-most entry, so an
+    over-counted setting is again the client's text; and a hop whose append is not an IP
+    falls through to the transport peer rather than being reported.
+    """
+    entries = [entry.strip() for entry in forwarded_for.split(",")] if forwarded_for else []
+    if entries and trusted_proxy_hops > 0:
+        candidate = _as_ip(entries[max(len(entries) - trusted_proxy_hops, 0)])
+        if candidate is not None:
+            return candidate
+    return _as_ip(peer)
+
+
+def client_ip(request: Request, settings: Settings) -> str | None:
     """Best-effort client IP for audit logging (`Security.md §17`).
 
-    Reads `X-Forwarded-For` because the ALB terminates TLS and proxies
-    (`Architecture.md §11`), so `request.client.host` would be the load balancer. Only
-    the left-most entry is used, and it is treated as advisory — a client can forge it,
-    so it is recorded for investigation, never used for an authorization decision.
+    `X-Forwarded-For` is read at the depth named by `settings.trusted_proxy_hops` because
+    the ALB terminates TLS and proxies (`Architecture.md §11`), so `request.client.host`
+    alone would be the load balancer. The result is still advisory — it is recorded for
+    investigation and is never an authorization input.
     """
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip() or None
-    return request.client.host if request.client else None
+    return select_client_ip(
+        request.headers.get("x-forwarded-for"),
+        request.client.host if request.client else None,
+        settings.trusted_proxy_hops,
+    )
 
 
 def utc_now() -> datetime.datetime:
