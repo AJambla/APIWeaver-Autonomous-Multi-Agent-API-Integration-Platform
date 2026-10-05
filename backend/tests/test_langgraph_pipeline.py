@@ -1,0 +1,119 @@
+"""Unit and integration tests for LangGraph-native APIWeaver pipeline."""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+import pytest
+
+from app.models.enums import WorkflowStatus
+from app.workflows.langgraph_pipeline import (
+    LangGraphOrchestrator,
+    create_apiweaver_graph,
+    route_after_planner,
+    route_after_testing,
+)
+from app.workflows.state import WorkflowState
+
+
+def test_graph_compilation():
+    """Verify that the LangGraph StateGraph builds and compiles cleanly."""
+    builder = create_apiweaver_graph()
+    graph = builder.compile()
+
+    # Verify key nodes are registered in the graph
+    node_names = set(graph.nodes.keys())
+    assert "doc_agent" in node_names
+    assert "planner_agent" in node_names
+    assert "approval_gate" in node_names
+    assert "code_agent" in node_names
+    assert "test_agent" in node_names
+    assert "repair_agent" in node_names
+    assert "export_agent" in node_names
+    assert "finalize" in node_names
+
+
+def test_route_after_planner():
+    """Test routing decisions after the planning stage."""
+    # 1. Plan only -> finalize
+    assert route_after_planner({"stages": ["plan"]}) == "finalize"
+
+    # 2. Plan + Generate, but not yet approved -> approval gate
+    assert route_after_planner({"stages": ["plan", "generate"], "plan_approved": False}) == "approval_gate"
+    assert route_after_planner({"stages": ["plan", "generate"]}) == "approval_gate"
+
+    # 3. Plan + Generate, already approved -> code generation
+    assert route_after_planner({"stages": ["plan", "generate"], "plan_approved": True}) == "code_agent"
+
+
+def test_route_after_testing():
+    """Test routing decisions after the testing stage."""
+    # 1. All tests passed -> export
+    passed_state: WorkflowState = {
+        "stages": ["plan", "generate", "test", "export"],
+        "test_run_summary": {"passed": 5, "failed": 0},
+    }
+    assert route_after_testing(passed_state) == "export_agent"
+
+    # 2. Tests failed, attempts < 3 -> repair cycle
+    failing_state_1: WorkflowState = {
+        "stages": ["plan", "generate", "test", "export"],
+        "test_run_summary": {"passed": 4, "failed": 1},
+        "repair_attempts": [],
+    }
+    assert route_after_testing(failing_state_1) == "repair_agent"
+
+    # 3. Tests failed, attempts >= 3 -> escalate to human gate
+    failing_state_3: WorkflowState = {
+        "stages": ["plan", "generate", "test", "export"],
+        "test_run_summary": {"passed": 4, "failed": 1},
+        "repair_attempts": [{}, {}, {}],
+    }
+    assert route_after_testing(failing_state_3) == "approval_gate"
+
+
+@pytest.mark.asyncio
+async def test_langgraph_orchestrator_plan_only():
+    """Test running LangGraphOrchestrator for doc + plan stages."""
+    orchestrator = LangGraphOrchestrator()
+    run_id = uuid.uuid4()
+
+    sample_doc = b"# Users API\nGET /users - List users\nPOST /users - Create user"
+    initial_state: WorkflowState = {
+        "project_id": str(uuid.uuid4()),
+        "organization_id": str(uuid.uuid4()),
+        "document_filename": "users.md",
+        "raw_document_bytes": sample_doc,
+        "stages": ["plan"],
+    }
+
+    result = await orchestrator.run(run_id, initial_state)
+
+    assert result["status"] == WorkflowStatus.COMPLETED
+    assert result.get("normalized_spec") is not None
+    assert result.get("execution_plan") is not None
+    assert result.get("progress_percent") == 100
+
+
+@pytest.mark.asyncio
+async def test_langgraph_orchestrator_pauses_for_approval():
+    """Test that LangGraph pauses at the approval gate when plan is unapproved."""
+    orchestrator = LangGraphOrchestrator()
+    run_id = uuid.uuid4()
+
+    sample_doc = b"# Users API\nGET /users - List users"
+    initial_state: WorkflowState = {
+        "project_id": str(uuid.uuid4()),
+        "organization_id": str(uuid.uuid4()),
+        "document_filename": "users.md",
+        "raw_document_bytes": sample_doc,
+        "stages": ["plan", "generate"],
+        "plan_approved": False,
+    }
+
+    result = await orchestrator.run(run_id, initial_state)
+
+    assert result["status"] == WorkflowStatus.PAUSED_FOR_APPROVAL
+    assert result.get("current_node") == "completed"
+    assert result.get("execution_plan") is not None
+    assert not result.get("generated_files")
