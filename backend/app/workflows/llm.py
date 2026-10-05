@@ -161,7 +161,10 @@ class LLMClient:
         """Calls the LLM with JSON mode, returns (parsed_json, token_count)."""
         full_system_prompt = f"{SHARED_SAFETY_PREAMBLE}\n\n{system_prompt}"
 
-        if self.settings.openai_api_key:
+        if self.settings.openai_api_key or (
+            self.settings.openai_api_base_url
+            and self.settings.openai_api_base_url.rstrip("/") != "https://api.openai.com/v1"
+        ):
             return _as_json_object(
                 await self._call_openai(full_system_prompt, user_prompt), "openai"
             )
@@ -173,7 +176,7 @@ class LLMClient:
 
         if self.settings.is_production:
             raise DependencyUnavailableError(
-                "No LLM provider configured; set OPENAI_API_KEY or ANTHROPIC_API_KEY."
+                "No LLM provider configured; set OPENAI_API_KEY, OPENAI_API_BASE_URL, or ANTHROPIC_API_KEY."
             )
 
         logger.info("llm_mock_invocation", reason="no_api_key_configured")
@@ -374,13 +377,15 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
         )
 
     async def _call_openai(self, system: str, user: str) -> tuple[dict[str, Any], int]:
-        url = "https://api.openai.com/v1/chat/completions"
+        base_url = (self.settings.openai_api_base_url or "https://api.openai.com/v1").rstrip("/")
+        url = f"{base_url}/chat/completions"
+        api_key = self.settings.openai_api_key or "local"
         headers = {
-            "Authorization": f"Bearer {self.settings.openai_api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         payload = {
-            "model": "gpt-4o-mini",
+            "model": self.settings.llm_model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -407,28 +412,51 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             data = res.json()
             content = data["choices"][0]["message"]["content"]
             tokens = int(data.get("usage", {}).get("total_tokens", 0))
-            return json.loads(content), tokens
+            cleaned = content.strip()
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:]
+            if cleaned.startswith("```"):
+                cleaned = cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            return json.loads(cleaned.strip()), tokens
 
         return await self._call_provider("openai", send)
 
     async def generate_embedding(self, text: str) -> list[float]:
         """Generate embedding vector for the given text.
 
-        Uses OpenAI text-embedding-3-small (1536 dimensions) matching Qdrant config.
-        Returns a zero vector when no API key is configured (development only;
-        production raises rather than silently embedding into an unusable index).
+        Uses configured embedding model and endpoint (default text-embedding-3-small,
+        1536 dimensions) matching Qdrant config. Supports OpenAI or any compatible
+        embedding provider (e.g., Ollama /v1/embeddings, LocalAI, vLLM).
+        Returns a zero vector when no API key or custom endpoint is configured
+        (development only; production raises rather than silently embedding into
+        an unusable index).
         """
-        if not self.settings.openai_api_key:
+        has_custom_endpoint = bool(
+            self.settings.embedding_base_url
+            or (
+                self.settings.openai_api_base_url
+                and self.settings.openai_api_base_url.rstrip("/") != "https://api.openai.com/v1"
+            )
+        )
+        if not self.settings.openai_api_key and not has_custom_endpoint:
             if self.settings.is_production:
                 raise DependencyUnavailableError(
-                    "No embedding provider configured; set OPENAI_API_KEY."
+                    "No embedding provider configured; set OPENAI_API_KEY or EMBEDDING_BASE_URL."
                 )
             logger.info("embedding_mock_invocation", reason="no_openai_api_key")
             return [0.0] * 1536
 
-        url = "https://api.openai.com/v1/embeddings"
+        base_url = (
+            self.settings.embedding_base_url
+            or self.settings.openai_api_base_url
+            or "https://api.openai.com/v1"
+        ).rstrip("/")
+        url = f"{base_url}/embeddings"
+        api_key = self.settings.openai_api_key or "local"
         headers = {
-            "Authorization": f"Bearer {self.settings.openai_api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         payload = {

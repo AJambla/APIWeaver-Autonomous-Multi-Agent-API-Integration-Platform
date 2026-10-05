@@ -273,3 +273,132 @@ async def test_anthropic_wired_through_resilience(monkeypatch):
     assert parsed == {"ok": True}
     assert tokens == 15
     assert calls["count"] == 2
+
+
+async def test_openai_compatible_custom_base_url_and_model(monkeypatch):
+    """Test custom OpenAI-compatible endpoint (Ollama, vLLM, Groq, LM Studio)."""
+    captured_requests = []
+
+    class _CaptureClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _CaptureClient:
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> bool:
+            return False
+
+        async def post(self, url: str, json: Any = None, headers: Any = None) -> Any:
+            captured_requests.append({"url": url, "json": json, "headers": headers})
+            return FakeResponse(
+                200,
+                payload={
+                    "choices": [{"message": {"content": "```json\n{\"generated\": \"local_success\"}\n```"}}],
+                    "usage": {"total_tokens": 42},
+                },
+            )
+
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", _CaptureClient)
+
+    client = LLMClient(
+        _make_settings(
+            openai_api_key=None,
+            openai_api_base_url="http://localhost:11434/v1",
+            llm_model="qwen2.5-coder:7b",
+        )
+    )
+
+    parsed, tokens = await client.generate_json(system_prompt="sys", user_prompt="usr")
+
+    assert parsed == {"generated": "local_success"}
+    assert tokens == 42
+    assert len(captured_requests) == 1
+    assert captured_requests[0]["url"] == "http://localhost:11434/v1/chat/completions"
+    assert captured_requests[0]["json"]["model"] == "qwen2.5-coder:7b"
+    assert captured_requests[0]["headers"]["Authorization"] == "Bearer local"
+
+
+async def test_openai_compatible_custom_embedding_endpoint(monkeypatch):
+    """Test custom embedding endpoint (Ollama, vLLM, LocalAI)."""
+    captured_requests = []
+
+    class _CaptureClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _CaptureClient:
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> bool:
+            return False
+
+        async def post(self, url: str, json: Any = None, headers: Any = None) -> Any:
+            captured_requests.append({"url": url, "json": json})
+            return FakeResponse(
+                200,
+                payload={"data": [{"embedding": [0.5, 0.6, 0.7]}]},
+            )
+
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", _CaptureClient)
+
+    client = LLMClient(
+        _make_settings(
+            openai_api_key=None,
+            embedding_base_url="http://localhost:11434/v1",
+            embedding_model="nomic-embed-text",
+        )
+    )
+
+    vector = await client.generate_embedding("hello local embedding")
+
+    assert vector == [0.5, 0.6, 0.7]
+    assert len(captured_requests) == 1
+    assert captured_requests[0]["url"] == "http://localhost:11434/v1/embeddings"
+    assert captured_requests[0]["json"]["model"] == "nomic-embed-text"
+
+
+async def test_gemini_via_openai_compatible_endpoint(monkeypatch):
+    """Test Google Gemini using its official OpenAI-compatible endpoint."""
+    captured_requests = []
+
+    class _CaptureClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _CaptureClient:
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> bool:
+            return False
+
+        async def post(self, url: str, json: Any = None, headers: Any = None) -> Any:
+            captured_requests.append({"url": url, "json": json, "headers": headers})
+            return FakeResponse(
+                200,
+                payload={
+                    "choices": [{"message": {"content": '{"gemini": "openai_compatible"}'}}],
+                    "usage": {"total_tokens": 30},
+                },
+            )
+
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", _CaptureClient)
+
+    client = LLMClient(
+        _make_settings(
+            openai_api_key="AIzaSyTestKey",
+            openai_api_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            llm_model="gemini-2.0-flash",
+        )
+    )
+
+    parsed, tokens = await client.generate_json(system_prompt="s", user_prompt="u")
+
+    assert parsed == {"gemini": "openai_compatible"}
+    assert tokens == 30
+    assert len(captured_requests) == 1
+    assert captured_requests[0]["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    assert captured_requests[0]["json"]["model"] == "gemini-2.0-flash"
+    assert captured_requests[0]["headers"]["Authorization"] == "Bearer AIzaSyTestKey"
+
+
