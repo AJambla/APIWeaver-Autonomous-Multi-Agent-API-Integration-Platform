@@ -56,8 +56,11 @@ class Settings(BaseSettings):
 
     # --- LLM providers (conditional) ------------------------------------------
     openai_api_key: str | None = None
+    openai_api_base_url: str = "https://api.openai.com/v1"
     anthropic_api_key: str | None = None
+    llm_model: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
+    embedding_base_url: str | None = None
     # Chunks of a single document that get embedded and indexed. Without a ceiling, one
     # 50MB upload is ~100k provider calls (audit M8); the remainder is skipped loudly.
     max_embedding_chunks: int = 2000
