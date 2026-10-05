@@ -502,3 +502,55 @@ async def test_mock_load_modules_skips_path_traversal(tmp_path, monkeypatch):
     assert (tmp_path / "apiweaver_sandbox" / "proj1" / "client.py").exists()
     assert not (tmp_path / "evil.py").exists()
     await sandbox.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_execute_node_test_selects_node_image_and_runner():
+    """Verify that staged Node.js/TS files select node:22-alpine and runner.mjs."""
+    sentinel = _RESULT_PREFIX + json.dumps(
+        {
+            "status": "passed",
+            "status_code": 200,
+            "latency_ms": 12,
+            "response_snapshot": {"users": []},
+            "error": None,
+            "stack_trace": None,
+        }
+    )
+    container = FakeContainer(exit_code=0, output=sentinel)
+    client = FakeDockerClient(container)
+    settings = _make_settings(sandbox_node_image="node:22-alpine")
+    executor = DockerSandboxExecutor(settings, docker_client=client)
+
+    await executor.load(
+        project_id="node-proj",
+        files={
+            "client.ts": "export class PetClient { async getPets() { return { status: 200, data: [] }; } }",
+            "types.ts": "export interface Pet { id: string; }",
+        },
+        base_url="http://api.node.test",
+    )
+
+    assert executor._language == "node"
+    assert executor._client_file == "client.ts"
+    assert (executor._workspace / "runner.mjs").exists()
+
+    result = await executor.execute_test(
+        {"id": "ep_1", "method": "GET", "path": "/pets", "operationId": "getPets"},
+        {"request": {}, "expected_status": 200},
+    )
+
+    assert result["status"] == "passed"
+    assert result["status_code"] == 200
+    assert result["latency_ms"] == 12
+
+    kwargs = client.run_kwargs
+    assert kwargs["image"] == "node:22-alpine"
+    assert kwargs["command"] == ["node", "--experimental-strip-types", "/sandbox/runner.mjs"]
+    assert kwargs["mem_limit"] == 256 * 1024**2
+    assert kwargs["user"] == "65534:65534"
+
+    payload = json.loads((executor._workspace / "payload.json").read_text(encoding="utf-8"))
+    assert payload["client_file"] == "client.ts"
+    assert payload["language"] == "node"
+    assert payload["op_id"] == "getPets"

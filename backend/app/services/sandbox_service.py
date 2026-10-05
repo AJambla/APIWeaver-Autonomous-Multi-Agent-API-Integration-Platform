@@ -287,6 +287,114 @@ if __name__ == "__main__":
     sys.exit(_run())
 '''
 
+NODE_RUNNER_SOURCE = '''// Sandbox runner: executes one generated Node.js/TS client call.
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+const RESULT_PREFIX = "APIWEAVER_RESULT:";
+
+async function main() {
+    const payloadPath = process.env.APIWEAVER_PAYLOAD_PATH || "/sandbox/payload.json";
+    const payload = JSON.parse(fs.readFileSync(payloadPath, "utf-8"));
+
+    const relPath = payload.client_file || "client.ts";
+    const fullPath = path.resolve("/sandbox", relPath);
+    const fileUrl = pathToFileURL(fullPath).href;
+
+    const module = await import(fileUrl);
+
+    let ClientClass = null;
+    for (const [key, val] of Object.entries(module)) {
+        if (typeof val === "function" && (key.endsWith("Client") || key.toLowerCase().includes("client"))) {
+            ClientClass = val;
+            break;
+        }
+    }
+    if (!ClientClass && module.default && typeof module.default === "function") {
+        ClientClass = module.default;
+    }
+    if (!ClientClass) {
+        throw new Error(`no client class found in module ${relPath}`);
+    }
+
+    const apiKey = process.env.APIWEAVER_API_KEY || payload.api_key;
+    const client = new ClientClass({
+        baseUrl: payload.base_url,
+        apiKey: apiKey,
+    });
+
+    const opId = payload.op_id;
+    let operation = client[opId];
+    if (typeof operation !== "function") {
+        const camel = opId.replace(/_([a-z0-9])/gi, (_, c) => c.toUpperCase());
+        if (typeof client[camel] === "function") {
+            operation = client[camel];
+        }
+    }
+    if (typeof operation !== "function") {
+        throw new Error(`method ${opId} not found on client`);
+    }
+
+    const request = payload.request || {};
+    const params = request.params || {};
+    const body = request.body;
+
+    const started = performance.now();
+    let response;
+    try {
+        response = await operation.call(client, { ...params, body });
+    } catch {
+        response = await operation.call(client, params, body);
+    }
+    const latencyMs = Math.round(performance.now() - started);
+
+    const result = {
+        status: "passed",
+        status_code: response?.status ?? 200,
+        latency_ms: latencyMs,
+        response_snapshot: null,
+        error: null,
+        stack_trace: null,
+    };
+
+    if (response) {
+        if (typeof response.json === "function") {
+            try { result.response_snapshot = await response.json(); } catch {}
+        } else if (response.data !== undefined) {
+            result.response_snapshot = response.data;
+        } else {
+            result.response_snapshot = response;
+        }
+    }
+
+    const expectedStatus = payload.expected_status;
+    if (expectedStatus && result.status_code !== expectedStatus) {
+        result.status = "failed";
+        result.error = `Expected status ${expectedStatus}, got ${result.status_code}`;
+    }
+
+    if (typeof client.close === "function") {
+        await client.close();
+    }
+
+    console.log(RESULT_PREFIX + JSON.stringify(result));
+    return 0;
+}
+
+main().catch((err) => {
+    console.log(RESULT_PREFIX + JSON.stringify({
+        status: "failed",
+        status_code: null,
+        latency_ms: 0,
+        response_snapshot: null,
+        error: String(err?.message || err),
+        stack_trace: String(err?.stack || ""),
+    }));
+    process.exit(1);
+});
+'''
+
 
 def _safe_workspace_target(workspace: Path, rel_path: str) -> Path | None:
     """Join rel_path under workspace, or None if it would escape.
@@ -351,6 +459,8 @@ class DockerSandboxExecutor:
         self._docker_client = docker_client
         self._workspace: Path | None = None
         self._client_module: str | None = None
+        self._client_file: str | None = None
+        self._language: str = "python"
         self._base_url: str | None = None
         self._api_key: str | None = None
 
@@ -368,6 +478,7 @@ class DockerSandboxExecutor:
         files: dict[str, str],
         base_url: str | None = None,
         api_key: str | None = None,
+        language: str | None = None,
     ) -> None:
         """Stage generated files into a host workspace the container will bind."""
         self._base_url = base_url
@@ -381,18 +492,39 @@ class DockerSandboxExecutor:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
 
+        # Determine target language: explicit parameter or inferred from extensions
+        has_node_files = any(
+            rel_path.endswith((".ts", ".js", ".mjs")) for rel_path in files
+        )
+        if language == "node" or (language is None and has_node_files and not any(r.endswith(".py") for r in files)):
+            self._language = "node"
+        else:
+            self._language = "python"
+
         client_module = None
+        client_file = None
         for rel_path in files:
             normalized = rel_path.replace("\\", "/").lower()
-            if normalized.endswith(".py") and "client" in normalized:
+            if self._language == "python" and normalized.endswith(".py") and "client" in normalized:
                 client_module = (
                     rel_path.replace("\\", "/").removesuffix(".py").replace("/", ".")
                 )
                 break
+            elif self._language == "node" and normalized.endswith((".ts", ".js", ".mjs")) and "client" in normalized:
+                client_file = rel_path.replace("\\", "/")
+                break
+
+        if self._language == "node" and not client_file:
+            for rel_path in files:
+                if rel_path.endswith((".ts", ".js", ".mjs")):
+                    client_file = rel_path.replace("\\", "/")
+                    break
 
         (workspace / "runner.py").write_text(RUNNER_SOURCE, encoding="utf-8")
+        (workspace / "runner.mjs").write_text(NODE_RUNNER_SOURCE, encoding="utf-8")
         self._workspace = workspace
         self._client_module = client_module
+        self._client_file = client_file
 
     async def execute_test(self, endpoint: dict[str, Any], fixture: dict[str, Any]) -> dict[str, Any]:
         """Run one endpoint test in a fresh container; returns the mock result shape."""
@@ -411,7 +543,7 @@ class DockerSandboxExecutor:
             "stack_trace": None,
         }
 
-        if self._workspace is None or self._client_module is None:
+        if self._workspace is None or (self._client_module is None and self._client_file is None):
             result["error"] = "Sandbox workspace not prepared"
             return result
 
@@ -422,6 +554,8 @@ class DockerSandboxExecutor:
         request_data = fixture.get("request", {}) or {}
         payload = {
             "module_name": self._client_module,
+            "client_file": self._client_file,
+            "language": self._language,
             "op_id": op_id,
             "request": {
                 "params": request_data.get("params", {}) or {},
@@ -444,9 +578,17 @@ class DockerSandboxExecutor:
                 # Runtime secret injection (Security.md §7): the credential travels
                 # in the container environment, never inside a file.
                 environment["APIWEAVER_API_KEY"] = self._api_key
+
+            if self._language == "node":
+                sandbox_img = self._settings.sandbox_node_image
+                sandbox_cmd = ["node", "--experimental-strip-types", "/sandbox/runner.mjs"]
+            else:
+                sandbox_img = self._settings.sandbox_image
+                sandbox_cmd = ["python", "/sandbox/runner.py"]
+
             run_kwargs = dict(
-                image=self._settings.sandbox_image,
-                command=["python", "/sandbox/runner.py"],
+                image=sandbox_img,
+                command=sandbox_cmd,
                 environment=environment,
                 binds={str(self._workspace): {"bind": "/sandbox", "mode": "ro"}},
                 tmpfs={"/tmp": "size=64m"},
