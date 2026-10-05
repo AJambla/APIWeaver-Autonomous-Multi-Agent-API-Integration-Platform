@@ -52,6 +52,17 @@ CREATE TABLE agent_events (
 )
 """
 
+USAGE_METRICS_SQLITE_DDL = """
+CREATE TABLE usage_metrics (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    organization_id CHAR(32) NOT NULL,
+    metric_name VARCHAR(100) NOT NULL,
+    value NUMERIC(18, 4) NOT NULL,
+    FOREIGN KEY (organization_id) REFERENCES organizations (id) ON DELETE CASCADE
+)
+"""
+
 
 class FakeRedis:
     """In-memory stand-in covering only what the app uses: the jti denylist and the
@@ -207,6 +218,7 @@ async def session_factory(
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tables))
         await conn.execute(text(AGENT_EVENTS_SQLITE_DDL))
+        await conn.execute(text(USAGE_METRICS_SQLITE_DDL))
 
     yield async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 

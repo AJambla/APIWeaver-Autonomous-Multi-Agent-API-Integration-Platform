@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import uuid
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
@@ -10,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
+from app.core.errors import NotFoundError
 from app.models.export import Export
 from app.models.metrics import UsageMetric
 from app.models.organization import Organization
@@ -17,7 +19,7 @@ from app.models.project import Project
 from app.models.testing import TestRun
 from app.models.workflow import WorkflowRun
 from app.rbac.enforce import require_org_permission, require_project_permission
-from app.rbac.policy import Permission
+from app.rbac.policy import Permission, Principal
 from app.schemas.monitoring import OrgMetricsResponse, ProjectMetricsResponse
 
 router = APIRouter(tags=["monitoring"])
@@ -71,7 +73,7 @@ async def get_project_metrics(
         select(TestRun.summary).where(
             TestRun.project_id == project.id,
             TestRun.status == "completed",
-            TestRun.created_at >= since,
+            (TestRun.started_at >= since) | (TestRun.completed_at >= since) | TestRun.started_at.is_(None),
         )
     )
     total_passed = 0
@@ -102,11 +104,16 @@ async def get_project_metrics(
 
 @router.get("/org/{org_id}/metrics", response_model=OrgMetricsResponse)
 async def get_org_metrics(
-    org: Organization = Depends(require_org_permission(Permission.ORG_VIEW_BILLING)),
+    org_id: uuid.UUID,
+    principal: Principal = Depends(require_org_permission(Permission.ORG_VIEW_BILLING)),
     session: AsyncSession = Depends(get_db),
     days: int = Query(default=30, ge=1, le=365),
 ) -> OrgMetricsResponse:
     """Get aggregated metrics for an organization."""
+    org = await session.get(Organization, org_id)
+    if org is None:
+        raise NotFoundError("Organization not found.")
+
     since = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
 
     # Projects count
@@ -134,7 +141,7 @@ async def get_org_metrics(
         .where(
             Project.organization_id == org.id,
             TestRun.status == "completed",
-            TestRun.created_at >= since,
+            (TestRun.started_at >= since) | (TestRun.completed_at >= since) | TestRun.started_at.is_(None),
         )
     )
     total_passed = 0
