@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     # "docker" isolates generated code in a quota-enforced container; "mock"
     # execs LLM-generated code inside the API process (test-only opt-in).
     sandbox_backend: Literal["mock", "docker"] = "docker"
+    # Explicit Docker daemon URL (e.g. "unix:///var/run/docker.sock" or "tcp://docker-dind:2375").
+    # If None, docker.from_env() resolves from DOCKER_HOST or local default.
+    docker_host: str | None = None
     sandbox_image: str = "python:3.12-slim"
     sandbox_node_image: str = "node:22-alpine"
     sandbox_max_cpu: str = "1"
@@ -109,6 +112,7 @@ class Settings(BaseSettings):
     sandbox_timeout_seconds: int = 300
     sandbox_pids_limit: int = 64
     sandbox_network_enabled: bool = False
+    sandbox_read_only_rootfs: bool = True
 
     # --- Observability (recommended) ------------------------------------------
     langsmith_api_key: str | None = None

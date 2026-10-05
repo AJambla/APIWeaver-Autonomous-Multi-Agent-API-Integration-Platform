@@ -120,6 +120,8 @@ services:
     volumes:
       # Keep the worker's JWT path consistent with the API service in local Compose.
       - ../../secrets:/app/secrets:ro
+      # Docker socket mount for isolated sandbox container execution.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     env_file:
       - ../../.env
     environment:
@@ -131,6 +133,7 @@ services:
       S3_ENDPOINT_URL: http://minio:9000
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN_ID:-root}
+      DOCKER_HOST: unix:///var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy

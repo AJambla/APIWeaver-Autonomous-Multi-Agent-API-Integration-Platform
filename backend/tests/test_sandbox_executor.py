@@ -549,8 +549,32 @@ async def test_execute_node_test_selects_node_image_and_runner():
     assert kwargs["command"] == ["node", "--experimental-strip-types", "/sandbox/runner.mjs"]
     assert kwargs["mem_limit"] == 256 * 1024**2
     assert kwargs["user"] == "65534:65534"
+    assert kwargs["read_only"] is True
+    assert kwargs["security_opt"] == ["no-new-privileges:true"]
 
     payload = json.loads((executor._workspace / "payload.json").read_text(encoding="utf-8"))
     assert payload["client_file"] == "client.ts"
     assert payload["language"] == "node"
     assert payload["op_id"] == "getPets"
+
+
+def test_docker_sandbox_custom_docker_host(monkeypatch):
+    """Verify DockerSandboxExecutor connects to custom docker_host when configured."""
+    captured_hosts = []
+
+    class _MockDockerModule:
+        @staticmethod
+        def DockerClient(base_url):
+            captured_hosts.append(base_url)
+            return "custom_client_instance"
+
+    import sys
+    monkeypatch.setitem(sys.modules, "docker", _MockDockerModule)
+
+    settings = _make_settings(docker_host="tcp://docker-dind:2375")
+    executor = DockerSandboxExecutor(settings)
+    client = executor._get_docker_client()
+
+    assert client == "custom_client_instance"
+    assert captured_hosts == ["tcp://docker-dind:2375"]
+
