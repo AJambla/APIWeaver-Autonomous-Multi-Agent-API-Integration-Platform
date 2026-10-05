@@ -17,6 +17,44 @@ const processQueue = (error: unknown, token: string | null = null) => {
   failedQueue = [];
 };
 
+/** Rotate the refresh token into a fresh pair, coordinating concurrent callers
+ * through the module-level queue so the single-use token is never redeemed twice.
+ * On failure the session is cleared and the browser is sent to /login. */
+export async function refreshAccessToken(): Promise<string> {
+  isRefreshing = true;
+
+  try {
+    const refreshToken = sessionStorage.getItem('refresh_token');
+    if (!refreshToken) {
+      throw new Error('Your session has expired. Please sign in again.');
+    }
+
+    const refreshResponse = await fetch(`${API_PREFIX}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+
+    if (!refreshResponse.ok) {
+      throw new Error('Your session has expired. Please sign in again.');
+    }
+
+    const data = await refreshResponse.json() as { access_token: string; refresh_token: string };
+    sessionStorage.setItem('access_token', data.access_token);
+    sessionStorage.setItem('refresh_token', data.refresh_token);
+    isRefreshing = false;
+    processQueue(null, data.access_token);
+    return data.access_token;
+  } catch (error) {
+    isRefreshing = false;
+    processQueue(error);
+    sessionStorage.removeItem('access_token');
+    sessionStorage.removeItem('refresh_token');
+    window.location.href = '/login';
+    throw error;
+  }
+}
+
 /** The request `endpoint` resolves to, and whether this origin owns it.
  *
  * An endpoint is either a path under `API_PREFIX` or, for a caller that really does mean
@@ -24,7 +62,7 @@ const processQueue = (error: unknown, token: string | null = null) => {
  * `startsWith` test keeps both meanings honest: that test is also true of a path like
  * `http-fault/list` and false of a protocol-relative `//host/path`.
  */
-function resolveEndpoint(endpoint: string): { url: string; sameOrigin: boolean } {
+export function resolveEndpoint(endpoint: string): { url: string; sameOrigin: boolean } {
   const candidate = endpoint.startsWith('http') ? endpoint : `${API_PREFIX}${endpoint}`;
   try {
     const url = new URL(candidate, window.location.origin);
@@ -68,44 +106,16 @@ export async function apiFetch<T = unknown>(
       });
     }
 
-    isRefreshing = true;
-
-    try {
-      const refreshToken = sessionStorage.getItem('refresh_token');
-      if (!refreshToken) {
-        throw new Error('Your session has expired. Please sign in again.');
-      }
-
-      const refreshResponse = await fetch(`${API_PREFIX}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      });
-
-      if (!refreshResponse.ok) {
-        throw new Error('Your session has expired. Please sign in again.');
-      }
-
-      const data = await refreshResponse.json() as { access_token: string; refresh_token: string };
-      sessionStorage.setItem('access_token', data.access_token);
-      sessionStorage.setItem('refresh_token', data.refresh_token);
-      isRefreshing = false;
-      processQueue(null, data.access_token);
-
-      authorize(data.access_token);
-      const retryResponse = await fetch(url, { ...options, headers });
-      if (!retryResponse.ok) {
-        throw new Error(await retryResponse.text());
-      }
-      return retryResponse.json() as Promise<T>;
-    } catch (error) {
-      isRefreshing = false;
-      processQueue(error);
+    const newToken = await refreshAccessToken();
+    authorize(newToken);
+    const retryResponse = await fetch(url, { ...options, headers });
+    if (!retryResponse.ok) {
       sessionStorage.removeItem('access_token');
       sessionStorage.removeItem('refresh_token');
       window.location.href = '/login';
-      throw error;
+      throw new Error(await retryResponse.text());
     }
+    return retryResponse.json() as Promise<T>;
   }
 
   if (!response.ok) {

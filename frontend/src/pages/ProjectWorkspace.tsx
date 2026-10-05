@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import { apiFetch } from '../lib/api';
+import { useWorkflowEvents, isWorkflowTerminal } from '../lib/use-workflow-events';
 import {
   AgentEventLog,
   ApiSpec,
@@ -426,34 +427,82 @@ export const ProjectWorkspace: React.FC = () => {
     loadProjectData();
   }, [id, loadProjectData]);
 
-  /* Follow an in-flight workflow run: poll status + refresh logs while running. */
+  /* Follow an in-flight workflow run: SSE is the transport; REST only for the
+     initial snapshot, the logs list, and the final reconciliation. */
+  const { events: runEvents } = useWorkflowEvents(activeRunId);
+
+  useEffect(() => {
+    if (!activeRunId) return;
+    let cancelled = false;
+    apiFetch<WorkflowRunInfo>(`/workflows/${activeRunId}`)
+      .then(info => { if (!cancelled) setActiveRun(info); })
+      .catch(() => { /* live events still drive the panel */ });
+    return () => { cancelled = true; };
+  }, [activeRunId]);
+
+  /* Stream events repaint the run panel while it is in flight. */
+  useEffect(() => {
+    const latest = runEvents[runEvents.length - 1];
+    if (!latest || !activeRunId) return;
+    const payload = (latest.payload ?? {}) as Record<string, unknown>;
+    setActiveRun(prev => {
+      if (!prev) return prev;
+      if (latest.event_type === 'workflow.started') {
+        return {
+          ...prev,
+          status: 'running',
+          progress_percent: typeof payload.progress_percent === 'number' ? payload.progress_percent : prev.progress_percent,
+        };
+      }
+      if (latest.event_type === 'workflow.progress') {
+        return {
+          ...prev,
+          current_node: typeof payload.current_node === 'string' ? payload.current_node : prev.current_node,
+          progress_percent: typeof payload.progress_percent === 'number' ? payload.progress_percent : prev.progress_percent,
+        };
+      }
+      if (latest.event_type === 'workflow.completed' && payload.status === 'paused_for_approval') {
+        return {
+          ...prev,
+          status: 'paused_for_approval',
+          progress_percent: typeof payload.progress_percent === 'number' ? payload.progress_percent : prev.progress_percent,
+        };
+      }
+      return prev;
+    });
+  }, [runEvents, activeRunId]);
+
+  /* A terminal stream event ends the watch: reconcile from REST, then detach. */
   useEffect(() => {
     if (!activeRunId || !id) return;
+    const terminal = [...runEvents].reverse().find(
+      ev => isWorkflowTerminal(ev.event_type, ev.payload),
+    );
+    if (!terminal) return;
     let cancelled = false;
-    const tick = async () => {
+    (async () => {
       try {
-        const [info, logsRes] = await Promise.all([
-          apiFetch<WorkflowRunInfo>(`/workflows/${activeRunId}`),
-          apiFetch<Page<AgentEventLog>>(`/projects/${id}/logs?limit=100`).catch(() => null),
-        ]);
-        if (cancelled) return;
-        setActiveRun(info);
-        if (logsRes) setLogs(logsRes.data ?? []);
-        if (['completed', 'failed', 'cancelled'].includes(info.status)) {
-          setActiveRunId(null);
-          loadProjectData();
-        }
+        const info = await apiFetch<WorkflowRunInfo>(`/workflows/${activeRunId}`);
+        if (!cancelled) setActiveRun(info);
       } catch {
-        /* transient poll failure — retry on next tick */
+        /* the event payload already carries the final status */
       }
-    };
-    tick();
-    const timer = setInterval(tick, 3000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [activeRunId, id, loadProjectData]);
+      await loadProjectData();
+      if (!cancelled) setActiveRunId(null);
+    })();
+    return () => { cancelled = true; };
+  }, [runEvents, activeRunId, id, loadProjectData]);
+
+  /* Pull fresh logs shortly after events land; the trailing debounce collapses bursts. */
+  useEffect(() => {
+    if (!activeRunId || !id || runEvents.length === 0) return;
+    const timer = setTimeout(() => {
+      apiFetch<Page<AgentEventLog>>(`/projects/${id}/logs?limit=100`)
+        .then(res => setLogs(res.data ?? []))
+        .catch(() => { /* the next event retries */ });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [runEvents, activeRunId, id]);
 
   /* Resume watching a run that is still in flight when the build tab opens. */
   useEffect(() => {
