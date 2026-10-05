@@ -33,7 +33,7 @@ import {
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import { apiFetch } from '../lib/api';
-import { useWorkflowEvents } from '../lib/use-workflow-events';
+import { useWorkflowEvents, isWorkflowTerminal } from '../lib/use-workflow-events';
 import {
   AgentEventLog,
   ApiSpec,
@@ -461,6 +461,13 @@ export const ProjectWorkspace: React.FC = () => {
           progress_percent: typeof payload.progress_percent === 'number' ? payload.progress_percent : prev.progress_percent,
         };
       }
+      if (latest.event_type === 'workflow.completed' && payload.status === 'paused_for_approval') {
+        return {
+          ...prev,
+          status: 'paused_for_approval',
+          progress_percent: typeof payload.progress_percent === 'number' ? payload.progress_percent : prev.progress_percent,
+        };
+      }
       return prev;
     });
   }, [runEvents, activeRunId]);
@@ -469,7 +476,7 @@ export const ProjectWorkspace: React.FC = () => {
   useEffect(() => {
     if (!activeRunId || !id) return;
     const terminal = [...runEvents].reverse().find(
-      ev => ev.event_type === 'workflow.completed' || ev.event_type === 'workflow.failed',
+      ev => isWorkflowTerminal(ev.event_type, ev.payload),
     );
     if (!terminal) return;
     let cancelled = false;

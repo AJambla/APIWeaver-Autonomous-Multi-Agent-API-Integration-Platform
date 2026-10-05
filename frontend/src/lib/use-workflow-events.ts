@@ -15,6 +15,16 @@ const STALL_TIMEOUT_MS = 30000;
 // Lifecycle events after which the run is over and the stream is left.
 const TERMINAL_EVENT_TYPES = new Set(["workflow.completed", "workflow.failed"]);
 
+// The plan gate pauses by publishing workflow.completed with a paused status;
+// that is a hold, not an end — the same stream carries the resume.
+const PAUSED_STATUS = "paused_for_approval";
+
+export function isWorkflowTerminal(eventType: string, payload: unknown): boolean {
+  if (!TERMINAL_EVENT_TYPES.has(eventType)) return false;
+  const status = (payload as { status?: unknown } | null)?.status;
+  return status !== PAUSED_STATUS;
+}
+
 type SseFrame = { event: string; data: string; id: string | null };
 
 function parseFrame(block: string): SseFrame | null {
@@ -118,7 +128,7 @@ export function useWorkflowEvents(runId: string | null) {
               // A malformed body still leaves the event type and id usable.
             }
             setEvents((prev) => [...prev, { event_type: frame.event, payload, id: frame.id ?? "" }]);
-            if (TERMINAL_EVENT_TYPES.has(frame.event)) finished = true;
+            if (isWorkflowTerminal(frame.event, payload)) finished = true;
           }
           if (finished) break;
         }
