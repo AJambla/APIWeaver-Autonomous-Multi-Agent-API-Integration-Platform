@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
-from app.core.deps import get_current_principal, get_db, get_object_storage
+from app.core.deps import client_ip, get_current_principal, get_db, get_object_storage
 from app.core.errors import UnprocessableEntityError
 from app.models.enums import ActorType, HTTPMethod, WorkflowStatus
 from app.models.project import Project
@@ -55,22 +55,20 @@ async def upload_document(
     if not content:
         raise UnprocessableEntityError("The uploaded file is empty.")
 
-    document = None
-    api_spec = None
-    normalized = None
-    try:
-        document, api_spec, normalized = await ingest_document(
-            session,
-            storage,
-            project_id=project.id,
-            uploaded_by=principal.user_id,
-            filename=file.filename,
-            content=content,
-            content_type=file.content_type,
-            format_hint=format_hint,
-        )
-    except UnprocessableEntityError:
-        pass
+    # A refusal raised here propagates as 422, like the input checks above: `status: 202`
+    # means an async workflow started (`API.md §5`), and there is nothing to process if no
+    # document was accepted. Deciding that freeform input is *not* a refusal belongs to
+    # `ingest_document`, which normalizes defensively and returns the document alone.
+    document, api_spec, normalized = await ingest_document(
+        session,
+        storage,
+        project_id=project.id,
+        uploaded_by=principal.user_id,
+        filename=file.filename,
+        content=content,
+        content_type=file.content_type,
+        format_hint=format_hint,
+    )
 
     # Create associated workflow run for parsing & planning pipeline
     run = WorkflowRun(
@@ -88,8 +86,8 @@ async def upload_document(
         organization_id=project.organization_id,
         actor_user_id=principal.user_id,
         resource_type="document",
-        resource_id=str(document.id) if document else str(run.id),
-        ip_address=request.client.host if request.client else None,
+        resource_id=str(document.id),
+        ip_address=client_ip(request, settings),
         user_agent=request.headers.get("user-agent"),
     )
 
@@ -98,7 +96,7 @@ async def upload_document(
         "project_id": str(project.id),
         "organization_id": str(project.organization_id),
         "workflow_run_id": str(run.id),
-        "document_id": str(document.id) if document else None,
+        "document_id": str(document.id),
         "raw_document_bytes": content,
         "document_filename": file.filename,
         "format_hint": format_hint,
@@ -117,7 +115,7 @@ async def upload_document(
     background_tasks.add_task(orchestrator.run, run.id, initial_state)
 
     return UploadResponse(
-        document_id=document.id if document else run.id,
+        document_id=document.id,
         status="processing",
         workflow_run_id=run.id,
         api_spec_id=api_spec.id if api_spec else None,

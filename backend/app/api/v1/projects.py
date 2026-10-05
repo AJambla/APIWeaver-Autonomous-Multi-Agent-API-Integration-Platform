@@ -10,6 +10,7 @@ from sqlalchemy import Select, func, select, tuple_
 from sqlalchemy import false as sa_false
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings, get_settings
 from app.core.deps import client_ip, get_current_principal, get_db, utc_now
 from app.core.errors import ConflictError
 from app.models.audit import AuditAction
@@ -43,6 +44,7 @@ async def create_project(
     request: Request,
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> ProjectResponse:
     """The org id comes from the body here (per `API.md §6.1`), so it is checked against
     the principal's actual membership rather than trusted."""
@@ -84,7 +86,7 @@ async def create_project(
         actor_user_id=principal.user_id,
         resource_type="project",
         resource_id=str(project.id),
-        ip_address=client_ip(request),
+        ip_address=client_ip(request, settings),
         user_agent=request.headers.get("user-agent"),
     )
     return ProjectResponse.model_validate(project)
@@ -228,6 +230,7 @@ async def archive_project(
     project: Project = Depends(require_project_permission(Permission.PROJECT_ARCHIVE)),
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> ProjectResponse:
     """Soft-deletes per `API.md §6.1`. Idempotent: archiving an archived project returns
     it unchanged rather than erroring, so a retried request is harmless."""
@@ -243,7 +246,7 @@ async def archive_project(
             actor_user_id=principal.user_id,
             resource_type="project",
             resource_id=str(project.id),
-            ip_address=client_ip(request),
+            ip_address=client_ip(request, settings),
             user_agent=request.headers.get("user-agent"),
         )
 
