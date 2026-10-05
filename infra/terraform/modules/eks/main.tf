@@ -251,66 +251,13 @@ resource "aws_iam_role_policy_attachment" "s3_access_attach" {
   policy_arn = aws_iam_policy.s3_access.arn
 }
 
-# IRSA for ECR access
-resource "aws_iam_policy" "ecr_access" {
-  name        = "${local.cluster_name}-ecr-access"
-  description = "IRSA policy for ECR access from EKS pods"
-  policy      = data.aws_iam_policy_document.ecr_access.json
-
-  tags = {
-    Name        = "${local.cluster_name}-ecr-access"
-    Project     = "APIWeaver"
-    Environment = var.environment
-  }
-}
-
-data "aws_iam_policy_document" "ecr_access" {
-  statement {
-    actions = [
-      "ecr:GetDownloadUrlForLayer",
-      "ecr:BatchGetImage",
-      "ecr:GetImage",
-      "ecr:GetAuthorizationToken"
-    ]
-    resources = ["*"]
-  }
-}
-
-resource "aws_iam_role_policy_attachment" "ecr_access_attach" {
-  role       = module.iam_assumable_role_admin.iam_role_name
-  policy_arn = aws_iam_policy.ecr_access.arn
-}
-
-# IRSA for EBS access
-data "aws_iam_policy_document" "ebs_access" {
-  statement {
-    actions = [
-      "ec2:CreateVolume",
-      "ec2:AttachVolume",
-      "ec2:DetachVolume",
-      "ec2:DeleteVolume",
-      "ec2:DescribeVolumes"
-    ]
-    resources = ["*"]
-  }
-}
-
-resource "aws_iam_policy" "ebs_access" {
-  name        = "${local.cluster_name}-ebs-access"
-  description = "IRSA policy for EBS access from EKS pods"
-  policy      = data.aws_iam_policy_document.ebs_access.json
-
-  tags = {
-    Name        = "${local.cluster_name}-ebs-access"
-    Project     = "APIWeaver"
-    Environment = var.environment
-  }
-}
-
-resource "aws_iam_role_policy_attachment" "ebs_access_attach" {
-  role       = module.iam_assumable_role_admin.iam_role_name
-  policy_arn = aws_iam_policy.ebs_access.arn
-}
+# S3 is the whole of what the application service account may touch (audit M11b). Its only AWS
+# client is S3 (backend/app/services/storage_service.py:41); image pulls are authorised by the
+# node roles' AmazonEC2ContainerRegistryReadOnly attachments above, not by IRSA; and EBS volume
+# lifecycle belongs to the CSI driver's own role further down, which carries
+# AmazonEBSCSIDriverPolicy and is wired to the addon through `service_account_role_arn`. So an
+# `ec2:*Volume` or `ecr:*` grant on this role is privilege a compromised pod could abuse and the
+# application could never use.
 
 # EKS Managed Node Group: General
 resource "aws_eks_node_group" "general" {
