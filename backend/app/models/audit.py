@@ -15,11 +15,12 @@ from app.models.enums import ActorType, check_in
 class AuditLog(CreatedAtMixin, Base):
     """Immutable record of a privileged action (`Security.md §17`).
 
-    Append-only is a *database permission* concern: the application role gets
-    `INSERT`/`SELECT` but not `UPDATE`/`DELETE` on this table. That GRANT belongs to
-    infrastructure provisioning (Phase 6), since Alembic itself runs as the owning role.
-    Phase 1 enforces it at the application layer — `audit_service` exposes no mutation
-    path — and the GRANT is tracked as a Phase 6 deliverable.
+    Append-only is enforced twice: `audit_service` exposes no mutation path, and
+    alembic revision 0009 installs a row trigger on this table that refuses `UPDATE` and
+    `DELETE` from any role while it is enabled, the owner included. The trigger exempts
+    referential actions, so `ON DELETE CASCADE` from `organizations` and `ON DELETE SET
+    NULL` from `users` keep working. Removing the trigger takes ownership of the table,
+    which is why the application must not connect as the role that owns it.
     """
 
     __tablename__ = "audit_logs"
