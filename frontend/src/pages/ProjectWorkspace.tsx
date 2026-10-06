@@ -589,7 +589,7 @@ export const ProjectWorkspace: React.FC = () => {
     setPlanBusy(true);
     setPlanError('');
     try {
-      if (latestRun) {
+      if (latestRun && latestRun.status === 'paused_for_approval') {
         await apiFetch(`/workflows/${latestRun.workflow_run_id}/approve`, {
           method: 'POST',
           body: JSON.stringify({ approved: true }),
@@ -1163,14 +1163,21 @@ export const ProjectWorkspace: React.FC = () => {
               </div>
             )}
 
-            <div className={`${cardCls} p-5`}>
-              <h3 className="mb-2 text-sm font-medium">Execution schedule</h3>
-              <p className="mb-3 text-xs text-neutral-500">
-                Review or edit the generated plan document before approving. Agents execute it in the Build step.
-              </p>
-              <button onClick={() => setPlanDocOpen(true)} className={btnGhost}>
-                <FileCode2 className="h-4 w-4" /> Open plan document
-              </button>
+            <div className={`${cardCls} p-5 flex flex-wrap items-center justify-between gap-3`}>
+              <div>
+                <h3 className="mb-1 text-sm font-medium">Execution schedule</h3>
+                <p className="text-xs text-neutral-500">
+                  Review or edit the generated plan document. Agents execute it in the Build step.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setPlanDocOpen(true)} className={btnGhost}>
+                  <FileCode2 className="h-4 w-4" /> Open plan document
+                </button>
+                <button onClick={() => setActiveTab('build')} className={btnPrimary}>
+                  Continue to Build & Agents <ArrowRight className="h-4 w-4" />
+                </button>
+              </div>
             </div>
           </div>
         )}
