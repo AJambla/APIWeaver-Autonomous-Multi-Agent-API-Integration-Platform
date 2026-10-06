@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import uuid
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_principal, get_db
+from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError
 from app.models.codegen import CodeGenerationRun, GeneratedFile
 from app.models.enums import ActorType
@@ -20,6 +21,7 @@ from app.schemas.generate import FileContentResponse, FileResponse
 from app.schemas.generate import GenerateRequest as GenerateRequestAlias
 from app.schemas.generate import GenerateResponse as GenerateResponseAlias
 from app.services import audit_service
+from app.services.event_publisher import EventPublisher
 from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
 
@@ -33,6 +35,7 @@ async def trigger_generate(
     project: Project = Depends(require_project_permission(Permission.CODE_GENERATE)),
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ) -> GenerateResponseAlias:
     """Trigger code generation for a project."""
     # Find or create workflow run
@@ -68,7 +71,10 @@ async def trigger_generate(
     engine_session_factory = __import__("sqlalchemy.ext.asyncio", fromlist=["async_sessionmaker"]).async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = Orchestrator(engine_session_factory)
+    orchestrator = Orchestrator(
+        engine_session_factory,
+        event_publisher=EventPublisher(redis_client),
+    )
     background_tasks.add_task(orchestrator.run, run.id, initial_state)
 
     return GenerateResponseAlias(workflow_run_id=run.id, status="queued")

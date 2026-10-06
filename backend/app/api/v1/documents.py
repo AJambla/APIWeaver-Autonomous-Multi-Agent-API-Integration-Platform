@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import redis.asyncio as aioredis
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -17,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
-from app.core.deps import client_ip, get_current_principal, get_db, get_object_storage
+from app.core.deps import client_ip, get_current_principal, get_db, get_object_storage, get_redis
 from app.core.errors import UnprocessableEntityError
 from app.models.enums import ActorType, HTTPMethod, WorkflowStatus
 from app.models.project import Project
@@ -27,6 +28,7 @@ from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.document import EndpointResponse, SpecResponse, UploadResponse
 from app.services import audit_service
+from app.services.event_publisher import EventPublisher
 from app.services.ingestion_service import ingest_document
 from app.services.storage_service import ObjectStorage
 from app.workflows.orchestrator import Orchestrator
@@ -45,6 +47,7 @@ async def upload_document(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     storage: ObjectStorage = Depends(get_object_storage),
+    redis_client: aioredis.Redis = Depends(get_redis),
     settings: Settings = Depends(get_settings),
 ) -> UploadResponse:
     if not file.filename:
@@ -111,7 +114,10 @@ async def upload_document(
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = Orchestrator(engine_session_factory)
+    orchestrator = Orchestrator(
+        engine_session_factory,
+        event_publisher=EventPublisher(redis_client),
+    )
     background_tasks.add_task(orchestrator.run, run.id, initial_state)
 
     return UploadResponse(
