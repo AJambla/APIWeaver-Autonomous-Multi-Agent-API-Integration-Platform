@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -457,6 +458,7 @@ async def run_test_agent(
     sandbox = await _create_sandbox(state, generated_files, spec, auth=auth)
     classifier = FailureClassifier(client)
 
+    test_start_time = time.perf_counter()
     try:
         # Run tests for each endpoint
         test_results = []
@@ -508,6 +510,10 @@ async def run_test_agent(
         passed = sum(1 for r in test_results if r["status"] == "passed")
         failed = sum(1 for r in test_results if r["status"] == "failed")
         skipped = sum(1 for r in test_results if r["status"] == "skipped")
+        total_duration_ms = max(
+            int((time.perf_counter() - test_start_time) * 1000),
+            sum(r.get("latency_ms") or 0 for r in test_results),
+        )
 
         test_run_summary = {
             "total": len(test_results),
@@ -516,6 +522,7 @@ async def run_test_agent(
             "skipped": skipped,
             "pass_rate": passed / len(test_results) if test_results else 0,
             "repair_attempts": len(repair_attempts),
+            "duration_ms": total_duration_ms,
         }
 
         if session_factory is not None:
