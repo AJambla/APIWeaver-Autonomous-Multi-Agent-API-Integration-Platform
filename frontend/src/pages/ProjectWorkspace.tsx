@@ -376,6 +376,7 @@ export const ProjectWorkspace: React.FC = () => {
   /* --- build tab --- */
   const [activeRun, setActiveRun] = useState<WorkflowRunInfo | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const [buildError, setBuildError] = useState('');
 
   /* --- test tab --- */
@@ -634,6 +635,21 @@ export const ProjectWorkspace: React.FC = () => {
       setPlanError(errorMessage(err));
     } finally {
       setPlanBusy(false);
+    }
+  };
+
+  const cancelWorkflow = async () => {
+    const runId = activeRunId || latestRun?.workflow_run_id;
+    if (!runId) return;
+    setCancelBusy(true);
+    try {
+      await apiFetch(`/workflows/${runId}/cancel`, { method: 'POST' });
+      setActiveRun(prev => (prev ? { ...prev, status: 'cancelled' } : null));
+      await loadProjectData();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setCancelBusy(false);
     }
   };
 
@@ -923,6 +939,18 @@ export const ProjectWorkspace: React.FC = () => {
                       : (latestRun?.status || project.last_run_status!)
                   }
                 />
+                {activeRun && ['queued', 'running', 'paused_for_approval'].includes(activeRun.status) && (
+                  <button
+                    type="button"
+                    onClick={cancelWorkflow}
+                    disabled={cancelBusy}
+                    className="ml-2 inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-400 hover:bg-red-500/20 disabled:opacity-50 transition-colors"
+                    title="Cancel active workflow immediately"
+                  >
+                    <XCircle className="h-3.5 w-3.5" />
+                    {cancelBusy ? 'Cancelling...' : 'Cancel Run'}
+                  </button>
+                )}
               </div>
             )}
           </div>
