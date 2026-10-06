@@ -178,6 +178,9 @@ async def get_test_run(
     failed = sum(1 for r in results if r.status == "failed")
     skipped = sum(1 for r in results if r.status == "skipped")
 
+    stored_summary = test_run.summary or {}
+    errors = [str(error) for error in (stored_summary.get("errors") or [])]
+
     return TestRunSummaryResponse(
         test_run_id=test_run.id,
         status=test_run.status,
@@ -188,6 +191,7 @@ async def get_test_run(
             "skipped": skipped,
         },
         results=result_responses,
+        errors=errors,
     )
 
 
