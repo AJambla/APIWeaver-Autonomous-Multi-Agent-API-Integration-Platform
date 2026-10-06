@@ -38,6 +38,11 @@ terminal_logger = LangGraphAgentLogger()
 DEFAULT_TOKEN_BUDGET = 1_000_000
 
 
+class WorkflowCancelledError(Exception):
+    """Raised when an in-flight workflow run has been cancelled by the user or admin."""
+    pass
+
+
 def check_budget(state: WorkflowState) -> None:
     """Check whether token budget has been exceeded."""
     budget = state.get("token_budget") or DEFAULT_TOKEN_BUDGET
@@ -193,8 +198,23 @@ def create_apiweaver_graph(
         except Exception as exc:
             logger.warning("langgraph_checkpoint_save_failed", error=str(exc))
 
+    async def _assert_not_cancelled(state: WorkflowState) -> None:
+        run_id = state.get("workflow_run_id")
+        if not run_id or not session_factory:
+            return
+        try:
+            async with session_factory() as session:
+                run_obj = await session.get(WorkflowRun, uuid.UUID(str(run_id)))
+                if run_obj and run_obj.status == WorkflowStatus.CANCELLED:
+                    raise WorkflowCancelledError(f"Workflow {run_id} cancelled by user.")
+        except WorkflowCancelledError:
+            raise
+        except Exception:
+            pass
+
     # 1. Document Ingestion Node
     async def doc_agent_node(state: WorkflowState) -> dict[str, Any]:
+        await _assert_not_cancelled(state)
         check_budget(state)
         # If normalized_spec is already present (e.g. parsed directly from OpenAPI upload),
         # skip re-normalizing.
@@ -293,6 +313,7 @@ def create_apiweaver_graph(
 
     # 2. Planner Agent Node
     async def planner_agent_node(state: WorkflowState) -> dict[str, Any]:
+        await _assert_not_cancelled(state)
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
         endpoints = (state.get("normalized_spec") or {}).get("endpoints", [])
@@ -415,6 +436,7 @@ def create_apiweaver_graph(
 
     # 4. Code Generation Node (supports multi-phase and cross-chunk consistency)
     async def code_agent_node(state: WorkflowState) -> dict[str, Any]:
+        await _assert_not_cancelled(state)
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
         plan = state.get("execution_plan", {})
@@ -537,6 +559,7 @@ def create_apiweaver_graph(
 
     # 5. Testing Node
     async def test_agent_node(state: WorkflowState) -> dict[str, Any]:
+        await _assert_not_cancelled(state)
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
         backend = get_settings().sandbox_backend.upper()
@@ -628,6 +651,7 @@ def create_apiweaver_graph(
 
     # 6. Self-Healing Repair Node
     async def repair_agent_node(state: WorkflowState) -> dict[str, Any]:
+        await _assert_not_cancelled(state)
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
         attempts = list(state.get("repair_attempts", []))
@@ -757,6 +781,7 @@ def create_apiweaver_graph(
 
     # 7. Export Node
     async def export_agent_node(state: WorkflowState) -> dict[str, Any]:
+        await _assert_not_cancelled(state)
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
         terminal_logger.log_start(
@@ -1051,13 +1076,35 @@ class LangGraphOrchestrator:
 
                     run_obj = await session.get(WorkflowRun, workflow_run_id)
                     if run_obj:
-                        run_obj.status = final_status
-                        run_obj.total_tokens_used = result_state.get("total_tokens_used", 0)
-                        if final_status == WorkflowStatus.COMPLETED:
-                            run_obj.completed_at = datetime.datetime.now(datetime.UTC)
-                    await session.commit()
+                        if run_obj.status == WorkflowStatus.CANCELLED:
+                            final_status = WorkflowStatus.CANCELLED
+                        else:
+                            run_obj.status = final_status
+                            run_obj.total_tokens_used = result_state.get("total_tokens_used", 0)
+                            if final_status == WorkflowStatus.COMPLETED:
+                                run_obj.completed_at = datetime.datetime.now(datetime.UTC)
+                        await session.commit()
 
             return result_state
+
+        except WorkflowCancelledError:
+            logger.info("langgraph_execution_cancelled", run_id=run_id_str)
+            terminal_logger.log_complete(
+                "finalize",
+                run_id_str,
+                0,
+                0,
+                details="Workflow execution cancelled by user; pipeline stopped.",
+            )
+            current["status"] = WorkflowStatus.CANCELLED
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    run_obj = await session.get(WorkflowRun, workflow_run_id)
+                    if run_obj and run_obj.status != WorkflowStatus.CANCELLED:
+                        run_obj.status = WorkflowStatus.CANCELLED
+                        run_obj.completed_at = datetime.datetime.now(datetime.UTC)
+                        await session.commit()
+            return cast(WorkflowState, current)
 
         except Exception as exc:
             logger.error("langgraph_execution_failed", run_id=run_id_str, error=str(exc))

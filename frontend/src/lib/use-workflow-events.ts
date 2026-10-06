@@ -13,7 +13,7 @@ const RECONNECT_MAX_MS = 15000;
 const STALL_TIMEOUT_MS = 30000;
 
 // Lifecycle events after which the run is over and the stream is left.
-const TERMINAL_EVENT_TYPES = new Set(["workflow.completed", "workflow.failed"]);
+const TERMINAL_EVENT_TYPES = new Set(["workflow.completed", "workflow.failed", "workflow.cancelled"]);
 
 // The plan gate pauses by publishing workflow.completed with a paused status;
 // that is a hold, not an end — the same stream carries the resume.

@@ -261,6 +261,7 @@ async def cancel_workflow_run(
     run_id: uuid.UUID,
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
+    redis_client: Redis = Depends(get_redis),
 ) -> dict[str, str]:
     """Cancel an in-progress workflow run."""
     run = await session.get(WorkflowRun, run_id)
@@ -286,6 +287,17 @@ async def cancel_workflow_run(
         resource_type="workflow_run",
         resource_id=str(run.id),
     )
+
+    try:
+        from app.services.event_publisher import EventPublisher
+        event_pub = EventPublisher(redis_client)
+        await event_pub.publish_workflow_completed(
+            run_id=str(run.id),
+            project_id=str(run.project_id),
+            status=WorkflowStatus.CANCELLED.value,
+        )
+    except Exception:
+        pass
 
     return {"status": WorkflowStatus.CANCELLED, "message": "Workflow cancelled."}
 
