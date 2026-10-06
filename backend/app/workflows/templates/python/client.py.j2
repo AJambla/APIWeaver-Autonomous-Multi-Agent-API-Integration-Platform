@@ -57,6 +57,7 @@ class {{ title.replace(' ', '').replace('-', '') }}Client:
         api_key: Optional[str] = None,
         timeout: float = 30.0,
         max_retries: int = 3,
+        **kwargs: Any,
     ) -> None:
         self.base_url = base_url or os.getenv("{{ title.upper().replace(' ', '_').replace('-', '_') }}_BASE_URL", "{{ base_url }}")
         self.api_key = api_key or os.getenv("{{ title.upper().replace(' ', '_').replace('-', '_') }}_API_KEY")

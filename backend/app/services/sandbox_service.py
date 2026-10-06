@@ -220,10 +220,27 @@ async def _main() -> int:
     # Credentials arrive via the APIWEAVER_API_KEY env var (never a file inside
     # the container — Security.md §7); payload["api_key"] stays as a secondary
     # source for hosts that pre-date the env-var channel.
-    client = client_class(
-        base_url=payload.get("base_url"),
-        api_key=os.environ.get("APIWEAVER_API_KEY") or payload.get("api_key"),
-    )
+    import inspect
+    init_kwargs = {}
+    resolved_auth = os.environ.get("APIWEAVER_API_KEY") or payload.get("api_key")
+    try:
+        init_sig = inspect.signature(client_class.__init__)
+        params = init_sig.parameters
+        has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        if "base_url" in params or has_varkw:
+            init_kwargs["base_url"] = payload.get("base_url")
+        if "api_key" in params or has_varkw:
+            init_kwargs["api_key"] = resolved_auth
+        elif "token" in params:
+            init_kwargs["token"] = resolved_auth
+        elif "auth_token" in params:
+            init_kwargs["auth_token"] = resolved_auth
+        client = client_class(**init_kwargs)
+    except TypeError:
+        try:
+            client = client_class(base_url=payload.get("base_url"))
+        except TypeError:
+            client = client_class()
 
     operation = getattr(client, payload["op_id"], None)
     if operation is None:

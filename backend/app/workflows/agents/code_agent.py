@@ -32,7 +32,11 @@ the following endpoint group, following the project's style guide:
 - Python: PEP 8, type hints on all functions, Pydantic v2 models, httpx for
   HTTP, structured custom exceptions per error class, docstrings (Google style).
   Use standard library, httpx, and pydantic ONLY. Do not import external packages like tenacity (implement retries using standard loops / asyncio.sleep).
+  CRITICAL CONSTRUCTOR REQUIREMENT: The main Client class __init__ MUST accept:
+  def __init__(self, base_url: str | None = None, api_key: str | None = None, **kwargs: Any) -> None:
+  Never omit api_key or **kwargs from __init__.
 - Node.js: TypeScript strict mode, Zod schemas, native fetch, ESM modules.
+  Client constructor MUST accept an optional config object: constructor(config?: { baseUrl?: string; apiKey?: string; [key: string]: any })
 
 Always implement: retry with exponential backoff for 429/500/502/503,
 pagination helpers if the endpoint response indicates pagination
@@ -52,6 +56,8 @@ Original code:
 
 Failure context:
 - Endpoint: {method} {path}
+- Error: {error}
+- Stack trace: {stack_trace}
 - Request sent: {request_snapshot}
 - Response received: {response_snapshot} (status {status_code})
 - Failure classification: {failure_classification}
@@ -59,6 +65,8 @@ Failure context:
 
 Produce a MINIMAL, targeted patch that addresses the specific failure. Do not
 rewrite unrelated code. Use standard library and httpx/pydantic only.
+CRITICAL: If the error mentions constructor / __init__ arguments (e.g. unexpected keyword argument 'api_key'),
+ensure __init__(self, base_url: str | None = None, api_key: str | None = None, **kwargs: Any) accepts both base_url and api_key and **kwargs!
 Explain your diagnosis in ≤2 sentences in the `diagnosis` field, then return the corrected file content in full.
 
 Respond with JSON matching schema: {repair_output_schema}
@@ -301,6 +309,8 @@ async def run_code_agent(
             file_content=fence_untrusted("FILE CONTENT", file_content),
             method=failure_diagnosis.get("method", ""),
             path=failure_diagnosis.get("path", ""),
+            error=failure_diagnosis.get("error", "Unknown test failure"),
+            stack_trace=fence_untrusted("STACK TRACE", failure_diagnosis.get("stack_trace") or "None"),
             request_snapshot=fence_untrusted(
                 "REQUEST DATA", json.dumps(failure_diagnosis.get("request_snapshot", {}))
             ),
