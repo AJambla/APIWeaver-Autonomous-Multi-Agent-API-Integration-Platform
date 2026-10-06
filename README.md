@@ -1,205 +1,253 @@
 # APIWeaver
 
-> **Autonomous Multi-Agent API Integration Platform**  
-> Ingests raw API specifications and unstructured documentation, computes topological dependency graphs, generates typed client code, executes sandboxed validation with iterative self-healing repairs, and exports production-ready SDKs, servers, Docker containers, and MCP tool servers.
+<div align="center">
+
+**Autonomous Multi-Agent API Integration Platform**
+
+[![CI/CD](https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/actions/workflows/ci.yml/badge.svg)](https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/actions/workflows/ci.yml)
+[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![React Version](https://img.shields.io/badge/react-18-61dafb.svg?logo=react)](https://react.dev/)
+[![Docker](https://img.shields.io/badge/docker-ready-2496ed.svg?logo=docker)](https://www.docker.com/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
+*Ingests raw API specifications and unstructured documentation, computes topological dependency graphs, generates typed client code, executes sandboxed validation with iterative self-healing repairs, and exports production-ready SDKs, servers, Docker containers, and MCP tool servers.*
+
+[About](#about-apiweaver) • [Architecture](#platform-architecture) • [Key Capabilities](#key-capabilities) • [Quick Start](#quick-start) • [Deployment](#deployment-options) • [Testing](#automated-testing--quality-gates) • [Contributing](CONTRIBUTING.md) • [Security](SECURITY.md)
+
+</div>
 
 ---
 
-## Current Status (Phases 1 → 7 Complete & Production Hardened ✅)
+## About APIWeaver
 
-- **Phase 1: Platform Foundation** ✅ — FastAPI architecture, Argon2id & RS256 JWT auth, RBAC matrix, project CRUD, PostgreSQL schema & Alembic migrations (10 versions), Redis JTI denylist & rate limiting.
-- **Phase 2: Document Ingestion & Vector RAG** ✅ — OpenAPI 3.x, Swagger 2.0, Postman v2.1 deterministic normalization + PDF/HTML/Markdown LLM fallback; Qdrant vector store with semantic chunking & 1536-dim embeddings; Planner agent with topological DAG execution plans.
-- **Phase 3: Autonomous Code Generation, Sandbox Testing & Export** ✅ — Code Generator Agent (Python/TypeScript Jinja2 templates), Testing Agent (Docker executor + in-process mock for hermetic testing, 8-category failure classification, 3-attempt self-healing patch loop), Export Agent (8 packaging targets: SDK, Standalone Client, FastAPI, Docker, MCP, GitHub, Docs, CI/CD).
-- **Phase 4: Async Workers, Streaming & Frontend Core** ✅ — Celery workers with Redis broker, Redis Streams SSE real-time event streaming, Vite + React 18 SPA, GitHub App & OAuth integration.
-- **Phase 5: Frontend Feature Polish & Rich Visualizations** ✅ — Monaco Editor (read-only + diff views), interactive SVG Dependency Graph (pan/zoom/risk indicators), Recharts monitoring metrics, self-healing timeline, dedicated error boundaries.
-- **Phase 6: Infrastructure & Observability** ✅ — AWS Terraform (9 modules), OpenTelemetry distributed tracing, Prometheus metrics, and single-node production Docker Compose stack.
-- **Phase 7: Hardening & Enterprise Controls** ✅ — Audit log DB-level immutability, enterprise per-organization rate-limit overrides, project Retry Policy API, non-blocking `aiobotocore` async S3 storage, storage key/Vault path traversal prevention, and production sandbox isolation.
+Modern software integrations frequently stall on ambiguous, incomplete, or fragmented API documentation. **APIWeaver** transforms this lifecycle from a manual, error-prone engineering chore into an autonomous, verified pipeline:
+
+1. **Ingest Heterogeneous Documentation:** Ingests standardized schemas (OpenAPI 3.x, Swagger 2.0, Postman Collections) as well as unstructured documents (PDFs, Markdown, HTML guides).
+2. **Topological Dependency Resolution:** Derives parameter lineages, stateful prerequisites (e.g. `POST /auth/token` precedes `GET /accounts`), and flags destructive endpoints for human review.
+3. **Autonomous Code Generation:** Produces idiomatic, strongly-typed client libraries in Python and TypeScript/Node.js using modular templates.
+4. **Sandboxed Validation & Self-Healing:** Executes real syntax and integration test suites in isolated Docker sandboxes. When failures occur, an LLM-driven classifier pinpoints the fault and iteratively repairs code in up to 3 self-healing loops.
+5. **Multi-Target Distribution:** Packages and exports directly to Python SDKs, npm packages, standalone single-file clients, production FastAPI proxy routers, Docker containers, Model Context Protocol (MCP) tool servers, GitHub repositories, and automated CI/CD workflows.
 
 ---
 
-## Repository Layout
+## Platform Architecture
 
+APIWeaver operates as an event-driven, multi-agent state machine backed by persistent storage, vector retrieval, and isolated execution engines:
+
+```mermaid
+flowchart TD
+    subgraph ClientLayer ["Client & Ingestion Tier"]
+        Web["React 18 SPA (Vite)\n(React Router + Monaco Editor + Recharts)"]
+        API["FastAPI Gateway (v1 REST + SSE + WebSocket)\n(Argon2id + RS256 JWT + API Keys + Rate Limiting)"]
+        Ingest["Ingestion Engine\n(OpenAPI / Swagger / Postman / PDF / Markdown / HTML)"]
+    end
+
+    subgraph Agents ["Autonomous Multi-Agent Pipeline"]
+        DocAgent["Documentation Agent\n(Spec Normalization + Vector Chunking)"]
+        PlannerAgent["Planner Agent\n(Topological DAG + Execution Plan + HITL Gate)"]
+        CodeAgent["Code Generator Agent\n(Python & TypeScript SDKs + Parallel Batching)"]
+        TestAgent["Testing & Repair Agent\n(Docker Sandbox + Failure Classification + Patch Loop)"]
+        ExportAgent["Export Agent\n(SDK / Docker / MCP / FastAPI / GitHub / Docs)"]
+    end
+
+    subgraph StorageInfra ["Storage, Vector & Security Infrastructure"]
+        Postgres[(PostgreSQL 16\n28+ Tables + Partitioning + 10 Migrations)]
+        Redis[(Redis 7\nJTI Denylist + Rate Limiter + Streams Pub/Sub)]
+        Qdrant[(Qdrant Vector DB\nTenant-Isolated Semantic Search)]
+        MinIO[(S3 / MinIO Object Storage\nNon-blocking aiobotocore Client)]
+        Vault[(HashiCorp Vault KV v2\nTarget API Secrets & OAuth Tokens)]
+        CeleryWorker["Agent Worker\n(Celery + Redis Broker + DLQ)"]
+    end
+
+    Web -->|HTTPS / WSS| API
+    API --> Ingest
+    API --> Postgres
+    API --> Redis
+    API --> Vault
+    Ingest --> MinIO
+    API -->|Enqueue Workflows| CeleryWorker
+    CeleryWorker --> Agents
+    DocAgent --> Qdrant
+    PlannerAgent --> Postgres
+    CodeAgent --> Postgres
+    TestAgent --> Postgres
+    ExportAgent --> Postgres
+    API -->|Real-time SSE| Web
 ```
-API_Weaver/
-├── frontend/                  # Vite + React 18 SPA (React Router v6, Tailwind CSS, Monaco, Lucide, Recharts)
-│   ├── src/                   # Components, pages, hooks, state, and test suites
-│   └── package.json           # Vitest, Testing Library, ESLint, Vite configuration
-├── backend/                   # FastAPI REST API & Core Services (SQLAlchemy, Alembic, Pydantic v2)
-│   ├── alembic/               # 10 Database migrations (initial schema -> test runs summary)
-│   ├── app/                   # API routes, core auth/RBAC, models, and background services
-│   │   ├── api/v1/            # 17 modular REST routers + SSE & WebSocket endpoints
-│   │   ├── workflows/agents/  # DocAgent, PlannerAgent, CodeAgent, TestAgent, ExportAgent
-│   │   └── services/          # Qdrant, Vault, GitHub, S3 Storage, Redis Event services
-│   └── tests/                 # 32 pytest test suites (316 hermetic tests) + conftest fixtures
-├── agent_worker/              # Celery background task worker definitions & DLQ tasks
-├── infra/                     # Infrastructure & Deployment configurations
-│   ├── terraform/             # AWS Terraform modules (VPC, RDS, ElastiCache, S3, KMS, ALB, Route53)
-│   └── docker/                # Production single-node & dev Docker Compose files + Sandbox Dockerfile
-├── monitoring/                # Grafana dashboards & Prometheus Alertmanager rules
-├── secrets/                   # Local development RSA JWT key pairs
-├── .github/workflows/         # Production CI/CD pipeline (backend, frontend, terraform, trivy, GHCR matrix)
-└── Project-docs/              # Complete PRD, architecture, security, and UI/UX specifications
-```
 
 ---
 
-## How to Run Locally
+## Key Capabilities
 
-You can run APIWeaver either using **Option 1 (Docker Compose)** or **Option 2 (Bare-Metal Local Dev Mode)**.
+### 🔍 Unified Multi-Format Documentation Ingestion
+- Deterministic normalizers parse structured OpenAPI 3.0/3.1, Swagger 2.0, and Postman v2.1 specifications into a canonical schema.
+- Built-in unstructured document parser extracts endpoints and request shapes from freeform PDFs, HTML pages, and Markdown files.
+- Qdrant-backed vector RAG provides semantic similarity search with tenant payload filtering.
+
+### 🗺️ Topological Dependency Graph & Human-in-the-Loop Review
+- Automatically constructs Directed Acyclic Graphs (DAGs) representing entity lifecycles.
+- Identifies prerequisite chains (e.g. creating a parent organization before querying child accounts).
+- Flags destructive operations (`DELETE`, batch modifications) and halts execution for Human-in-the-Loop (HITL) review and one-click cryptographic approval.
+
+### ⚡ Parallel SDK Generation
+- Generates fully-typed client code in **Python** (Pydantic models, HTTPX async clients) and **TypeScript/Node.js** (Fetch/Axios, strict type definitions).
+- Independent endpoint sub-graphs are generated in parallel using asynchronous batch execution.
+
+### 🛡️ Docker Sandbox Execution & Self-Healing Repair
+- LLM-authored client modules are executed inside sandboxed, unprivileged Docker containers (`nobody:nobody`) with strict memory, CPU, PID, and timeout bounds.
+- Automated failure classifier categorizes errors across 8 distinct taxonomies (auth errors, schema mismatches, rate limits, network timeouts, etc.).
+- Triggers up to 3 iterative self-healing repair attempts, synthesizing targeted code patches and verifying resolution before completion.
+
+### 📦 8 Multi-Target Export Formats
+1. **SDK Package:** Wheel and npm package configurations ready for distribution (`pyproject.toml`, `package.json`).
+2. **Standalone Client:** Flattened single-file clients (`client.py`, `client.ts`).
+3. **FastAPI Proxy Server:** Ready-to-run backend router implementing target-API integrations with dependency injection.
+4. **Docker Container:** Multi-stage container builds with health probes and unprivileged runtimes.
+5. **Model Context Protocol (MCP):** Generates Anthropic-compatible MCP tool servers with JSON schema validation.
+6. **GitHub Repository:** Automatically commits and pushes files to a designated repository using GitHub Apps and OAuth.
+7. **Interactive Documentation:** Static and interactive Markdown and OpenAPI 3.1 documentation.
+8. **CI/CD Workflows:** Automated GitHub Actions workflows for continuous SDK building and testing.
+
+### 🔒 Enterprise-Grade Security & Multi-Tenancy
+- **Authentication:** Argon2id password hashing, RS256 JWT access tokens, rotating refresh token families, and SHA-256 hashed API keys.
+- **Secret Isolation:** Target API credentials and OAuth tokens are written directly to HashiCorp Vault KV v2; tokens are completely purged upon connection revocation.
+- **Path Traversal Protection:** All storage keys and Vault paths are validated against directory traversal attacks (`..`).
+- **Audit Logging:** Append-only database-level immutable audit logging (`audit_logs`).
+- **Security Headers:** HTTP response headers enforce `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, and `Permissions-Policy`.
 
 ---
 
-### Option 1: Docker Compose (Full Stack Single-Node Production)
+## Quick Start
 
-Best if you have Docker Desktop installed and want to start the full stack (PostgreSQL, Redis, Qdrant, MinIO, Vault, FastAPI API, Celery Worker, and React Web App) with a single command.
+### Option 1: Turnkey Docker Compose (Recommended)
 
-```powershell
-# 1. Copy environment variables
+Run the full production stack—PostgreSQL, Redis, Qdrant, MinIO, Vault, FastAPI Backend, Celery Worker, and React Web Dashboard—with a single command:
+
+```bash
+# 1. Clone repository
+git clone https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform.git
+cd APIWeaver
+
+# 2. Configure environment
 cp .env.example .env
 
-# 2. Start all containers in the background (including containerized UI)
+# 3. Boot all services
 docker compose -f infra/docker/docker-compose.single-node.yml --profile docker-ui up -d --build
 ```
 
-- **Web Dashboard:** [http://localhost:3000](http://localhost:3000)
-- **API Swagger Docs:** [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)
-- **MinIO Console:** [http://localhost:9001](http://localhost:9001) (`minioadmin` / `minioadmin`)
-- **Qdrant Dashboard:** [http://localhost:6333/dashboard](http://localhost:6333/dashboard)
-- **Vault Server:** [http://localhost:8200](http://localhost:8200)
+#### Service Endpoints
 
-To view logs or stop the stack:
-```powershell
-# View streaming logs
+| Service | Endpoint | Description |
+| :--- | :--- | :--- |
+| **Web Dashboard** | [http://localhost:3000](http://localhost:3000) | React 18 integration and monitoring UI |
+| **FastAPI Swagger Docs** | [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs) | Interactive OpenAPI documentation |
+| **Liveness & Readiness Probes** | [http://localhost:8000/healthz](http://localhost:8000/healthz) | Health probes for load balancers |
+| **MinIO Console** | [http://localhost:9001](http://localhost:9001) | S3 storage UI (`minioadmin` / `minioadmin`) |
+| **Qdrant Vector Dashboard** | [http://localhost:6333/dashboard](http://localhost:6333/dashboard) | Vector collection explorer |
+| **HashiCorp Vault** | [http://localhost:8200](http://localhost:8200) | Secrets management server |
+
+To inspect logs or tear down:
+```bash
 docker compose -f infra/docker/docker-compose.single-node.yml logs -f
-
-# Stop all services
 docker compose -f infra/docker/docker-compose.single-node.yml down
 ```
 
 ---
 
-### Option 2: Bare-Metal Local Dev Mode
+### Option 2: Local Development Mode
 
-Best for active local code editing with instant hot-reloading.
+For active development with hot-reloading:
 
-#### Prerequisites
+#### 1. Prerequisites
+- **Python 3.12+** & **Poetry**
+- **Node.js 20+** & **npm**
+- **Docker** (for supporting databases)
 
-1. **Python 3.12+**: Download & install from [python.org](https://www.python.org/downloads/).
-2. **Node.js 20+ & npm**: Download & install LTS from [nodejs.org](https://nodejs.org/).
-3. **Docker** (to run supporting data stores via `infra/docker/docker-compose.dev.yml`):
-   ```powershell
-   docker compose -f infra/docker/docker-compose.dev.yml up -d
-   ```
-   *(Starts Postgres 16 on `:5432` and Redis 7 on `:6379`)*
+#### 2. Start Data Stores
+```bash
+docker compose -f infra/docker/docker-compose.dev.yml up -d
+```
 
----
-
-#### Step 1: First-Time Setup & Installation
-
-Open PowerShell in the project root (`API_Weaver`):
-
-```powershell
-# 1. Copy the environment configuration
-cp .env.example .env
-
-# 2. Backend dependency installation
+#### 3. Setup Backend
+```bash
 cd backend
 poetry install --with dev
-
-# 3. Apply all 10 Database Migrations
 poetry run alembic upgrade head
-
-# 4. Frontend Dependency Installation
-cd ..\frontend
-npm ci --legacy-peer-deps
-```
-
----
-
-#### Step 2: Running the Services (Start in 3 Separate Terminals)
-
-##### 🖥️ Terminal 1: React + Vite Frontend
-```powershell
-cd frontend
-npm run dev
-```
-- **UI Address:** [http://localhost:3000](http://localhost:3000)
-
----
-
-##### ⚙️ Terminal 2: FastAPI Backend Server
-```powershell
-cd backend
 poetry run uvicorn app.main:app --reload --port 8000
 ```
-- **Interactive Swagger Docs:** [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)
-- **OpenAPI JSON Spec:** [http://localhost:8000/api/v1/openapi.json](http://localhost:8000/api/v1/openapi.json)
-- **Liveness Probe:** [http://localhost:8000/healthz](http://localhost:8000/healthz)
-- **Readiness Probe:** [http://localhost:8000/readyz](http://localhost:8000/readyz)
 
----
-
-##### 🤖 Terminal 3: Celery Agent Worker
-```powershell
+#### 4. Setup Celery Worker (In a separate terminal)
+```bash
 cd backend
 poetry run celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4
 ```
-*(Handles async document ingestion, topological planning, LLM code generation, sandboxed test execution, and multi-target export).*
 
----
-
-#### Step 3: First-Time User Flow
-
-1. Open [http://localhost:3000](http://localhost:3000) in your browser.
-2. Navigate to `/auth/login` and click **Register** to create your organization and initial admin user.
-3. Click **New Project** on the dashboard.
-4. Upload an API specification (`.json`, `.yaml`, `.pdf`, `.md`, or `.html`).
-5. Review the topological dependency graph on the **Plan** screen, click **Approve**, and monitor autonomous agents generating, testing, and exporting SDKs in real-time!
-
----
-
-## Verification & Automated Testing
-
-### Frontend Suite (Vitest & ESLint)
-```powershell
+#### 5. Setup Frontend (In a separate terminal)
+```bash
 cd frontend
-npm run lint          # ESLint with 0 warnings
-npm test              # 19 unit & component tests across 4 test suites (100% pass)
-npm run build         # Production Vite bundle compilation
+npm ci --legacy-peer-deps
+npm run dev
 ```
 
-### Backend Suite (Pytest & Ruff)
-```powershell
+Visit [http://localhost:3000](http://localhost:3000) to access the application.
+
+---
+
+## Deployment Options
+
+APIWeaver supports modular deployment architectures:
+
+1. **Self-Hosted Single-Node:** Configured via [`infra/docker/docker-compose.single-node.yml`](infra/docker/docker-compose.single-node.yml) for standalone deployment on EC2, GCP Compute Engine, or bare-metal servers.
+2. **Cloud Infrastructure (AWS Terraform):** Production Terraform modules located in [`infra/terraform/`](infra/terraform/) provision:
+   - Isolated VPC across multiple availability zones.
+   - Amazon RDS PostgreSQL (multi-AZ with automated backups).
+   - Amazon ElastiCache Redis cluster.
+   - Amazon S3 storage buckets with KMS encryption.
+   - Application Load Balancers (ALB) and Route53 DNS management.
+
+---
+
+## Automated Testing & Quality Gates
+
+The codebase maintains **100% hermetic test coverage** across both backend and frontend layers:
+
+```bash
+# Backend Quality Checks (316 Tests, 0 Failures)
 cd backend
-poetry run ruff check .      # Strict ruff linter check (0 errors)
-poetry run pytest -v         # 316 unit, integration, and security tests (100% pass)
+poetry run ruff check .          # Strict linting verification
+poetry run pytest -v             # Complete unit, integration, and security suites
+
+# Frontend Quality Checks (19 Tests, 0 Failures)
+cd frontend
+npm run lint                    # ESLint with 0 warnings
+npm test                        # Vitest unit and UI component suites
+npm run build                   # Production Vite bundle compilation
 ```
 
 ---
 
-## Continuous Integration & Deployment (CI/CD)
+## Configuration Reference
 
-The GitHub Actions workflow in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) enforces production quality gates on every Pull Request and `push` to `main`:
+Configuration is managed via environment variables (see [`.env.example`](.env.example) for defaults):
 
-1. **`test-backend`**: Runs in an isolated Linux environment with live PostgreSQL 16 and Redis 7 containers, running Ruff, Mypy, and Pytest with coverage.
-2. **`test-frontend`**: Installs dependencies with npm cache, runs ESLint, Vitest component test suites, and compiles production Vite assets.
-3. **`validate-infra`**: Validates AWS Terraform configurations (`terraform fmt -check`, `terraform init -backend=false`, `terraform validate`) and Docker Compose schemas.
-4. **`security-scan`**: Scans the filesystem using Aqua Security Trivy for high/critical vulnerabilities.
-5. **`build-and-push-images`**: On `main` branch, builds and pushes 4 production Docker containers to GitHub Container Registry (`ghcr.io`):
-   - `api` (`backend/Dockerfile`)
-   - `web` (`frontend/Dockerfile`)
-   - `agent-worker` (`agent_worker/Dockerfile`)
-   - `sandbox-python` (`infra/docker/Dockerfile.sandbox-python`)
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `DATABASE_URL` | `postgresql+asyncpg://...` | Async PostgreSQL database connection URL |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL for rate limits and streams |
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant vector database endpoint |
+| `S3_ENDPOINT_URL` | `http://localhost:9000` | S3 / MinIO object storage endpoint |
+| `VAULT_ADDR` | `http://localhost:8200` | HashiCorp Vault server address |
+| `OPENAI_API_KEY` | *(Secret)* | LLM API key for documentation parsing and code generation |
+| `LLM_MODEL` | `gemini-2.0-flash` / `gpt-4o-mini` | Default model identifier for agents |
+| `SANDBOX_BACKEND` | `docker` | Sandbox isolation mode (`docker` strictly enforced in production) |
+| `JWT_PRIVATE_KEY_PATH` | `./secrets/jwt_private.pem` | RS256 RSA private key path for JWT signing |
+| `JWT_PUBLIC_KEY_PATH` | `./secrets/jwt_public.pem` | RS256 RSA public key path for JWT verification |
 
 ---
 
-## Documentation
+## Community & Governance
 
-Comprehensive design specifications and architectural blueprints live in [`Project-docs/`](Project-docs/):
-- **[`PRD.md`](Project-docs/PRD.md)** — Product requirements and user journeys.
-- **[`Architecture.md`](Project-docs/Architecture.md)** — System components and data flow.
-- **[`Database.md`](Project-docs/Database.md)** — Relational schemas, partitioning, and indexing.
-- **[`API.md`](Project-docs/API.md)** — REST, SSE, and WebSocket endpoint specifications.
-- **[`Security.md`](Project-docs/Security.md)** — Authentication, RBAC matrix, and Vault secrets.
-- **[`UIUX.md`](Project-docs/UIUX.md)** — Design system, screen wireframes, and component guidelines.
-- **[`Deployment.md`](Project-docs/Deployment.md)** — AWS Terraform, Docker Compose topologies, and CI/CD pipelines.
+- **Contributing:** Please review our [Contributing Guidelines](CONTRIBUTING.md) for branch naming, coding standards, and pull request procedures.
+- **Security:** To report security vulnerabilities or review our defense-in-depth measures, read our [Security Policy](SECURITY.md).
+- **License:** Licensed under the [Apache License, Version 2.0](LICENSE).
