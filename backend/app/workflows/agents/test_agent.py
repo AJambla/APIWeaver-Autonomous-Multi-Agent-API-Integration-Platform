@@ -355,16 +355,12 @@ async def _create_sandbox(
         await sandbox._load_modules()
         return sandbox
 
-    target_languages = state.get("target_languages", ["python"])
-    preferred_lang = "python" if "python" in target_languages else ("node" if "node" in target_languages else "python")
+    target_languages = state.get("target_languages", ["python", "node"])
 
     files: dict[str, str] = {}
     for file_meta in generated_files:
         lang = file_meta.get("language")
-        if lang not in ("python", "node"):
-            continue
-        # If testing a specific language, filter to files of that language
-        if preferred_lang and lang != preferred_lang:
+        if lang not in target_languages and lang not in ("python", "node"):
             continue
         try:
             raw = await storage_service.download(file_meta["content_s3_key"])
