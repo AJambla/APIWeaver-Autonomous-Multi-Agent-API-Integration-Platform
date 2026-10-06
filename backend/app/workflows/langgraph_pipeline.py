@@ -468,7 +468,7 @@ def create_apiweaver_graph(
                         args=[str(run_id), {**state, "generated_files": generated_files, "total_tokens_used": total_tokens}, phase_num],
                         task_id=f"run_code_agent:{run_id}:phase_{phase_num}",
                     )
-                    phase_result = result.get(timeout=300)
+                    phase_result = await asyncio.to_thread(result.get, timeout=300)
                 else:
                     from app.workflows.agents import code_agent as code_agent_module
                     phase_result = await code_agent_module.run_code_agent(
@@ -490,7 +490,7 @@ def create_apiweaver_graph(
                         args=[str(run_id), {**state, "generated_files": generated_files, "total_tokens_used": total_tokens}, None],
                         task_id=f"run_code_agent:{run_id}:consistency",
                     )
-                    consistency_result = result.get(timeout=300)
+                    consistency_result = await asyncio.to_thread(result.get, timeout=300)
                 else:
                     from app.workflows.agents import code_agent as code_agent_module
                     consistency_result = await code_agent_module.run_code_agent(
@@ -554,6 +554,55 @@ def create_apiweaver_graph(
             tool_calls=_storage_tool_calls(files_before, generated_files),
         )
         await _save_checkpoint({**state, **updates}, "code_agent")
+
+        # Persist CodeGenerationRun & GeneratedFile records for GET /projects/{id}/files
+        if session_factory and run_id and generated_files:
+            try:
+                async with session_factory() as session:
+                    from app.models.codegen import CodeGenerationRun, GeneratedFile
+                    from app.models.enums import GeneratedFileType
+                    run_uuid = uuid.UUID(str(run_id))
+                    existing_run = await session.scalar(
+                        select(CodeGenerationRun).where(CodeGenerationRun.workflow_run_id == run_uuid)
+                    )
+                    if existing_run is None:
+                        existing_run = CodeGenerationRun(
+                            workflow_run_id=run_uuid,
+                            target_language="python",
+                            status="completed",
+                        )
+                        session.add(existing_run)
+                        await session.flush()
+
+                    existing_paths = set((await session.execute(
+                        select(GeneratedFile.file_path).where(GeneratedFile.code_generation_run_id == existing_run.id)
+                    )).scalars().all())
+
+                    for gf in generated_files:
+                        fp = gf.get("file_path", "")
+                        s3_key = gf.get("content_s3_key", "")
+                        if fp and s3_key and fp not in existing_paths:
+                            file_type_val = GeneratedFileType.SDK.value
+                            if "test" in fp.lower():
+                                file_type_val = GeneratedFileType.TEST.value
+                            elif "docker" in fp.lower():
+                                file_type_val = GeneratedFileType.DOCKERFILE.value
+                            elif "readme" in fp.lower():
+                                file_type_val = GeneratedFileType.README.value
+
+                            session.add(
+                                GeneratedFile(
+                                    code_generation_run_id=existing_run.id,
+                                    file_path=fp,
+                                    content_s3_key=s3_key,
+                                    language=gf.get("language") or ("python" if fp.endswith(".py") else "node"),
+                                    file_type=file_type_val,
+                                )
+                            )
+                            existing_paths.add(fp)
+                    await session.commit()
+            except Exception as exc:
+                logger.warning("codegen_files_persist_failed", error=str(exc))
 
         return updates
 
@@ -885,6 +934,7 @@ def create_apiweaver_graph(
                 run_id=run_id,
                 project_id=state.get("project_id"),
                 status=final_status.value,
+                progress_percent=updates["progress_percent"],
             )
 
         await _record_event(
@@ -1104,6 +1154,12 @@ class LangGraphOrchestrator:
                         run_obj.status = WorkflowStatus.CANCELLED
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
                         await session.commit()
+            await self._record_event(
+                workflow_run_id,
+                agent_name="orchestrator",
+                event_type="workflow_finished",
+                payload={"status": "cancelled", "reason": "user_cancelled"},
+            )
             return cast(WorkflowState, current)
 
         except Exception as exc:
