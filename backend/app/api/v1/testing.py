@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import datetime
 import uuid
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.deps import get_db
+from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError
-from app.models.enums import ActorType, TestEnvironment
+from app.models.enums import ActorType, TestEnvironment, WorkflowStatus
 from app.models.project import Project
 from app.models.testing import TestResult, TestRun
+from app.models.workflow import WorkflowRun
 from app.rbac.enforce import require_project_permission
-from app.rbac.policy import Permission
+from app.rbac.policy import Permission, Principal
 from app.schemas.testing import (
     RepairAttemptResponse,
     TestRequest,
@@ -23,6 +26,11 @@ from app.schemas.testing import (
     TestRunSummaryResponse,
 )
 from app.services import audit_service
+from app.services.event_publisher import EventPublisher
+from app.services.workflow_input_service import (
+    load_generated_files,
+    load_normalized_spec,
+)
 from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
 
@@ -34,7 +42,9 @@ async def trigger_test(
     payload: TestRequest,
     background_tasks: BackgroundTasks,
     project: Project = Depends(require_project_permission(Permission.TEST_RUN)),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ) -> TestRunResponse:
     """Trigger tests for a project."""
     # Validate environment
@@ -43,10 +53,22 @@ async def trigger_test(
         from app.core.errors import UnprocessableEntityError
         raise UnprocessableEntityError(f"Invalid environment: {env}. Must be 'sandbox' or 'live'.")
 
+    # The orchestrator writes agent events keyed by workflow run, so this stage needs a
+    # real WorkflowRun row rather than the TestRun's own id.
+    run = WorkflowRun(
+        project_id=project.id,
+        triggered_by=principal.user_id,
+        status=WorkflowStatus.QUEUED,
+    )
+    session.add(run)
+    await session.flush()
+
     # Create test run
     test_run = TestRun(
         project_id=project.id,
+        workflow_run_id=run.id,
         environment=env,
+        status="running",
     )
     session.add(test_run)
     await session.flush()
@@ -63,26 +85,63 @@ async def trigger_test(
     await session.commit()
 
     # Execute tests in background
-    engine_session_factory = __import__("sqlalchemy.ext.asyncio", fromlist=["async_sessionmaker"]).async_sessionmaker(
+    engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = Orchestrator(engine_session_factory)
+    orchestrator = Orchestrator(
+        engine_session_factory,
+        event_publisher=EventPublisher(redis_client),
+    )
 
-    # For now, use a simple workflow state to trigger testing
+    # Testing is a single-stage run: the spec and the generated client have to come back
+    # out of the database, because this request never passed through the earlier stages.
+    async with engine_session_factory() as hydrate_session:
+        normalized_spec = await load_normalized_spec(hydrate_session, project.id)
+        generated_files = await load_generated_files(hydrate_session, project.id)
+
     initial_state: WorkflowState = {
         "project_id": str(project.id),
         "organization_id": str(project.organization_id),
-        "workflow_run_id": str(test_run.id),
+        "workflow_run_id": str(run.id),
         "stages": ["test"],
         "target_languages": ["python", "node"],
-        "generated_files": [],
+        "normalized_spec": normalized_spec,
+        "generated_files": generated_files,
         "test_suite": [],
         "errors": [],
     }
 
-    background_tasks.add_task(orchestrator.run, test_run.id, initial_state)
+    background_tasks.add_task(
+        _execute_test_run, orchestrator, run.id, initial_state, engine_session_factory, test_run.id
+    )
 
     return TestRunResponse(test_run_id=test_run.id, status="running")
+
+
+async def _execute_test_run(
+    orchestrator: Orchestrator,
+    run_id: uuid.UUID,
+    initial_state: WorkflowState,
+    session_factory: async_sessionmaker[AsyncSession],
+    test_run_id: uuid.UUID,
+) -> WorkflowState:
+    """Run the test stage, then close out the TestRun row.
+
+    `run_test_agent` records results itself; this only catches the paths where the stage
+    never executed (no spec, no generated files, or a raised error), which would otherwise
+    leave the run showing "running" forever.
+    """
+    state = await orchestrator.run(run_id, initial_state)
+
+    async with session_factory() as session:
+        test_run = await session.get(TestRun, test_run_id)
+        if test_run is not None and test_run.status == "running":
+            errors = [str(e) for e in (state.get("errors") or [])]
+            test_run.status = "failed"
+            test_run.summary = {"errors": errors or ["The test stage did not execute."]}
+            test_run.completed_at = datetime.datetime.now(datetime.UTC)
+            await session.commit()
+    return state
 
 
 @router.get("/{id}/test-runs/{run_id}", response_model=TestRunSummaryResponse)
@@ -119,9 +178,12 @@ async def get_test_run(
     failed = sum(1 for r in results if r.status == "failed")
     skipped = sum(1 for r in results if r.status == "skipped")
 
+    stored_summary = test_run.summary or {}
+    errors = [str(error) for error in (stored_summary.get("errors") or [])]
+
     return TestRunSummaryResponse(
         test_run_id=test_run.id,
-        status="completed",
+        status=test_run.status,
         summary={
             "total": len(results),
             "passed": passed,
@@ -129,6 +191,7 @@ async def get_test_run(
             "skipped": skipped,
         },
         results=result_responses,
+        errors=errors,
     )
 
 

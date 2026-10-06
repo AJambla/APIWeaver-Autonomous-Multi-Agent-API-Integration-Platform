@@ -96,6 +96,29 @@ def create_apiweaver_graph(
     """Build and wire the StateGraph for APIWeaver."""
     builder = StateGraph(WorkflowState)
 
+    async def _record_event(
+        state: WorkflowState,
+        *,
+        agent_name: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist the AgentEvent rows the project logs read, as the standard engine does."""
+        if session_factory is None or not state.get("workflow_run_id"):
+            return
+        try:
+            async with session_factory() as session:
+                await record_agent_event(
+                    session,
+                    workflow_run_id=uuid.UUID(str(state["workflow_run_id"])),
+                    agent_name=agent_name,
+                    event_type=event_type,
+                    payload=payload,
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("langgraph_event_record_failed", error=str(exc))
+
     # 1. Document Ingestion Node
     async def doc_agent_node(state: WorkflowState) -> dict[str, Any]:
         check_budget(state)
@@ -170,6 +193,19 @@ def create_apiweaver_graph(
                 progress_percent=15,
             )
 
+        await _record_event(
+            state,
+            agent_name="doc_agent",
+            event_type="stage_completed",
+            payload={
+                "node_name": "doc_agent",
+                "status": doc_updates.get("status"),
+                "progress_percent": 15,
+                "llm_tokens": max(tokens_after - tokens_before, 0),
+                "total_tokens_used": tokens_after,
+            },
+        )
+
         return updates
 
     # 2. Planner Agent Node
@@ -240,6 +276,19 @@ def create_apiweaver_graph(
                 current_node="planner_agent",
                 progress_percent=30,
             )
+
+        await _record_event(
+            state,
+            agent_name="planner_agent",
+            event_type="stage_completed",
+            payload={
+                "node_name": "planner_agent",
+                "status": planner_updates.get("status"),
+                "progress_percent": 30,
+                "llm_tokens": max(tokens_after - tokens_before, 0),
+                "total_tokens_used": tokens_after,
+            },
+        )
 
         return updates
 
@@ -337,6 +386,19 @@ def create_apiweaver_graph(
                 progress_percent=60,
             )
 
+        await _record_event(
+            state,
+            agent_name="code_agent",
+            event_type="stage_completed",
+            payload={
+                "node_name": "code_agent",
+                "progress_percent": 60,
+                "files_generated": len(generated_files),
+                "llm_tokens": max(total_tokens - tokens_before, 0),
+                "total_tokens_used": total_tokens,
+            },
+        )
+
         return updates
 
     # 5. Testing Node
@@ -392,6 +454,20 @@ def create_apiweaver_graph(
                 progress_percent=75,
             )
 
+        await _record_event(
+            state,
+            agent_name="test_agent",
+            event_type="stage_completed",
+            payload={
+                "node_name": "test_agent",
+                "status": test_updates.get("status"),
+                "progress_percent": 75,
+                "llm_tokens": max(tokens_after - tokens_before, 0),
+                "total_tokens_used": tokens_after,
+                "test_summary": summary,
+            },
+        )
+
         return updates
 
     # 6. Self-Healing Repair Node
@@ -443,6 +519,19 @@ def create_apiweaver_graph(
                 payload={"attempt_number": attempt_number},
             )
 
+        await _record_event(
+            state,
+            agent_name="repair_agent",
+            event_type="stage_completed",
+            payload={
+                "node_name": "repair_agent",
+                "attempt_number": attempt_number,
+                "files_repaired": len(repaired_files),
+                "llm_tokens": max(tokens_after - tokens_before, 0),
+                "total_tokens_used": tokens_after,
+            },
+        )
+
         return updates
 
     # 7. Export Node
@@ -464,7 +553,7 @@ def create_apiweaver_graph(
             raise
 
         tokens_after = export_updates.get("total_tokens_used", tokens_before)
-        artifacts = export_updates.get("export_artifacts", [])
+        artifacts = export_updates.get("exports", [])
 
         terminal_logger.log_complete(
             "export_agent",
@@ -488,6 +577,20 @@ def create_apiweaver_graph(
                 progress_percent=95,
             )
 
+        await _record_event(
+            state,
+            agent_name="export_agent",
+            event_type="stage_completed",
+            payload={
+                "node_name": "export_agent",
+                "status": export_updates.get("status"),
+                "progress_percent": 95,
+                "artifacts_published": len(artifacts),
+                "llm_tokens": max(tokens_after - tokens_before, 0),
+                "total_tokens_used": tokens_after,
+            },
+        )
+
         return updates
 
     # 8. Finalize Node
@@ -500,6 +603,10 @@ def create_apiweaver_graph(
             if current_status == WorkflowStatus.PAUSED_FOR_APPROVAL
             else WorkflowStatus.COMPLETED
         )
+        if state.get("errors"):
+            # An agent reported a hard-stop reason (no spec, nothing to test) —
+            # that is a failed run, not a completed or paused one.
+            final_status = WorkflowStatus.FAILED
 
         terminal_logger.log_complete(
             "finalize",
@@ -521,6 +628,16 @@ def create_apiweaver_graph(
                 project_id=state.get("project_id"),
                 status=final_status.value,
             )
+
+        await _record_event(
+            state,
+            agent_name="orchestrator",
+            event_type="workflow_finished",
+            payload={
+                "status": final_status.value,
+                "total_tokens_used": state.get("total_tokens_used", 0),
+            },
+        )
 
         return updates
 
@@ -591,6 +708,30 @@ class LangGraphOrchestrator:
         )
         self.graph = self._builder.compile(checkpointer=self.checkpointer)
 
+    async def _record_event(
+        self,
+        workflow_run_id: uuid.UUID,
+        *,
+        agent_name: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist a run-level AgentEvent, as the standard orchestrator does."""
+        if self.session_factory is None:
+            return
+        try:
+            async with self.session_factory() as session:
+                await record_agent_event(
+                    session,
+                    workflow_run_id=workflow_run_id,
+                    agent_name=agent_name,
+                    event_type=event_type,
+                    payload=payload,
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("langgraph_event_record_failed", error=str(exc))
+
     async def run(
         self,
         workflow_run_id: uuid.UUID,
@@ -611,6 +752,16 @@ class LangGraphOrchestrator:
                     run_obj.status = WorkflowStatus.RUNNING
                     run_obj.started_at = datetime.datetime.now(datetime.UTC)
                     await session.commit()
+
+        await self._record_event(
+            workflow_run_id,
+            agent_name="orchestrator",
+            event_type="workflow_started",
+            payload={
+                "stages": current.get("stages", ["plan"]),
+                "execution_mode": "langgraph",
+            },
+        )
 
         if self.event_publisher:
             await self.event_publisher.publish_workflow_started(
@@ -663,6 +814,13 @@ class LangGraphOrchestrator:
                         run_obj.status = WorkflowStatus.FAILED
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
                         await session.commit()
+
+            await self._record_event(
+                workflow_run_id,
+                agent_name="orchestrator",
+                event_type="workflow_failed",
+                payload={"error": str(exc), "status": WorkflowStatus.FAILED.value},
+            )
 
             if self.event_publisher:
                 await self.event_publisher.publish_workflow_completed(
