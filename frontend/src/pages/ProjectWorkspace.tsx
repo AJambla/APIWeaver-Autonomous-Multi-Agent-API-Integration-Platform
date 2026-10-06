@@ -575,8 +575,14 @@ export const ProjectWorkspace: React.FC = () => {
     setUploadError('');
     setUploadResult(null);
     try {
+      const isJson = specContent.trim().startsWith('{');
       const payloadFile =
-        file ?? new File([specContent], 'openapi.yaml', { type: 'application/yaml' });
+        file ??
+        new File(
+          [specContent],
+          isJson ? 'spec.json' : 'spec.yaml',
+          { type: isJson ? 'application/json' : 'application/yaml' },
+        );
       const formData = new FormData();
       formData.append('file', payloadFile);
 

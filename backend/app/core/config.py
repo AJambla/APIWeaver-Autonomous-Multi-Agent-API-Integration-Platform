@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     openai_api_base_url: str = "https://api.openai.com/v1"
     anthropic_api_key: str | None = None
     llm_model: str = "gpt-4o-mini"
+    anthropic_model: str = "claude-3-5-sonnet-20241022"
     embedding_model: str = "text-embedding-3-small"
     embedding_base_url: str | None = None
     # Chunks of a single document that get embedded and indexed. Without a ceiling, one
@@ -92,6 +93,7 @@ class Settings(BaseSettings):
 
     # --- GitHub Export (Phase 4) -------------------------------------------------
     github_app_id: str | None = None
+    github_app_slug: str = "apiweaver"
     github_app_private_key_path: Path | None = None
     github_app_client_id: str | None = None
     github_app_client_secret_vault_path: str | None = None
