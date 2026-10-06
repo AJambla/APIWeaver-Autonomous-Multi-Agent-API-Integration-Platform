@@ -85,9 +85,29 @@ async def test_cancel_workflow(
 
 
 async def test_orchestrator_agent_nodes(
-    session_factory: async_sessionmaker[AsyncSession],
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch
 ) -> None:
     """Test Doc and Planner agent nodes in isolation."""
+    from app.workflows.llm import LLMClient
+
+    async def _mock_generate_json(self, *, system_prompt: str, user_prompt: str, **kwargs):
+        if "Doc" in system_prompt or "Documentation" in system_prompt:
+            return {
+                "title": "Pet API",
+                "base_url": "https://api.example.com",
+                "confidence_score": 0.9,
+                "endpoints": [
+                    {"method": "GET", "path": "/pets", "summary": "List all pets"},
+                    {"method": "POST", "path": "/pets", "summary": "Create a pet"},
+                ],
+            }, 50
+        return {
+            "phases": [{"phase_number": 1, "name": "Pets", "endpoints": ["GET /pets"]}],
+            "dependency_graph": {"nodes": [], "edges": []},
+        }, 50
+
+    monkeypatch.setattr(LLMClient, "generate_json", _mock_generate_json)
+
     sample_doc = b"# Pet API\nGET /pets - List all pets\nPOST /pets - Create a pet"
     state: WorkflowState = {
         "project_id": "test-proj",

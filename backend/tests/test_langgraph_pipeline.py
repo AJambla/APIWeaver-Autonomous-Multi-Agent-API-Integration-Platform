@@ -73,8 +73,28 @@ def test_route_after_testing():
 
 
 @pytest.mark.asyncio
-async def test_langgraph_orchestrator_plan_only():
+async def test_langgraph_orchestrator_plan_only(monkeypatch):
     """Test running LangGraphOrchestrator for doc + plan stages."""
+    from app.workflows.llm import LLMClient
+
+    async def _mock_generate_json(self, *, system_prompt: str, user_prompt: str, **kwargs):
+        if "Doc" in system_prompt or "Documentation" in system_prompt:
+            return {
+                "title": "Users API",
+                "base_url": "https://api.example.com",
+                "confidence_score": 0.95,
+                "endpoints": [
+                    {"method": "GET", "path": "/users", "summary": "List users"},
+                    {"method": "POST", "path": "/users", "summary": "Create user"},
+                ],
+            }, 50
+        return {
+            "phases": [{"phase_number": 1, "name": "Users", "endpoints": ["GET /users"]}],
+            "dependency_graph": {"nodes": [], "edges": []},
+        }, 50
+
+    monkeypatch.setattr(LLMClient, "generate_json", _mock_generate_json)
+
     orchestrator = LangGraphOrchestrator()
     run_id = uuid.uuid4()
 
@@ -96,8 +116,27 @@ async def test_langgraph_orchestrator_plan_only():
 
 
 @pytest.mark.asyncio
-async def test_langgraph_orchestrator_pauses_for_approval():
+async def test_langgraph_orchestrator_pauses_for_approval(monkeypatch):
     """Test that LangGraph pauses at the approval gate when plan is unapproved."""
+    from app.workflows.llm import LLMClient
+
+    async def _mock_generate_json(self, *, system_prompt: str, user_prompt: str, **kwargs):
+        if "Doc" in system_prompt or "Documentation" in system_prompt:
+            return {
+                "title": "Users API",
+                "base_url": "https://api.example.com",
+                "confidence_score": 0.95,
+                "endpoints": [
+                    {"method": "GET", "path": "/users", "summary": "List users"},
+                ],
+            }, 50
+        return {
+            "phases": [{"phase_number": 1, "name": "Users", "endpoints": ["GET /users"]}],
+            "dependency_graph": {"nodes": [], "edges": []},
+        }, 50
+
+    monkeypatch.setattr(LLMClient, "generate_json", _mock_generate_json)
+
     orchestrator = LangGraphOrchestrator()
     run_id = uuid.uuid4()
 
