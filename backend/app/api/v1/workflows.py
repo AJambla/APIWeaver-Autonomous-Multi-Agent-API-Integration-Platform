@@ -235,7 +235,10 @@ async def approve_workflow_gate(
         resume_state = dict(latest_checkpoint.state_snapshot)
         resume_state["plan_approved"] = True
         resume_state["approval_notes"] = payload.notes
-        resume_state["stages"] = ["generate", "test", "export"]
+        if (resume_state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(resume_state.get("repair_attempts", [])) >= 3:
+            resume_state["stages"] = ["export"]
+        else:
+            resume_state["stages"] = ["generate", "test", "export"]
 
         engine_session_factory = async_sessionmaker(
             bind=session.bind, class_=AsyncSession, expire_on_commit=False

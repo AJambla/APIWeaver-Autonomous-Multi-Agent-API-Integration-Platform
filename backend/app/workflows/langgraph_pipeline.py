@@ -119,7 +119,7 @@ def route_after_code(state: WorkflowState) -> str:
 
 
 def route_after_testing(state: WorkflowState) -> str:
-    """Evaluate test results: export if passed, loop to repair if failing, or escalate."""
+    """Evaluate test results: export if passed, loop to repair if failing, or terminate."""
     stages = state.get("stages", ["plan", "generate", "test", "export"])
     test_summary = state.get("test_run_summary") or {}
     failed_count = test_summary.get("failed", 0)
@@ -130,7 +130,7 @@ def route_after_testing(state: WorkflowState) -> str:
             return "export_agent"
         return "finalize"
 
-    # Check repair attempts
+    # Check repair attempts (bounded to 3)
     repair_attempts = state.get("repair_attempts", [])
     if len(repair_attempts) < 3:
         return "repair_agent"
@@ -381,16 +381,24 @@ def create_apiweaver_graph(
     # 3. Human Approval Gate Node (holds execution until human sign-off)
     async def approval_gate_node(state: WorkflowState) -> dict[str, Any]:
         run_id = state.get("workflow_run_id", "")
+        test_summary = state.get("test_run_summary") or {}
+        failed_tests = test_summary.get("failed", 0)
+        is_repair_exhausted = failed_tests > 0 and len(state.get("repair_attempts", [])) >= 3
+        reason = (
+            f"Self-healing repair exhausted (3/3 attempts failed; {failed_tests} tests failing). Workflow paused awaiting human review"
+            if is_repair_exhausted
+            else "Human approval gate reached. Workflow paused awaiting project owner sign-off"
+        )
         terminal_logger.log_idle(
             "approval_gate",
             run_id,
-            reason="Human approval gate reached. Workflow paused awaiting project owner sign-off",
+            reason=reason,
         )
 
         updates: dict[str, Any] = {
             "status": WorkflowStatus.PAUSED_FOR_APPROVAL,
             "current_node": "approval_gate",
-            "progress_percent": state.get("progress_percent", 30),
+            "progress_percent": 80 if is_repair_exhausted else state.get("progress_percent", 30),
         }
 
         if event_publisher and run_id:
@@ -398,7 +406,7 @@ def create_apiweaver_graph(
                 run_id=run_id,
                 project_id=state.get("project_id"),
                 event_type="workflow.paused",
-                payload={"reason": "human_approval_required"},
+                payload={"reason": "test_repair_exhausted" if is_repair_exhausted else "human_approval_required"},
             )
 
         await _save_checkpoint({**state, **updates}, "approval_gate")
@@ -551,10 +559,16 @@ def create_apiweaver_graph(
         failed = summary.get("failed", 0)
 
         if failed > 0:
+            failed_items = [
+                f"{r.get('method')} {r.get('path')} ({r.get('error') or 'status mismatch'})"
+                for r in test_updates.get("test_suite", [])
+                if r.get("status") == "failed"
+            ]
+            failed_desc = "; ".join(failed_items[:3])
             terminal_logger.log_fallback(
                 "test_agent",
                 run_id,
-                reason=f"{failed} test(s) failed inside sandbox",
+                reason=f"{failed} test(s) failed inside sandbox: {failed_desc}",
                 fallback_action="Triggering self-healing repair cycle via repair_agent",
             )
 
@@ -580,6 +594,19 @@ def create_apiweaver_graph(
                 progress_percent=75,
             )
 
+        failed_tests_summary = [
+            {
+                "method": r.get("method"),
+                "path": r.get("path"),
+                "status_code": r.get("status_code"),
+                "error": r.get("error"),
+                "stack_trace": (r.get("stack_trace") or "")[:2000],
+                "classification": r.get("classification"),
+            }
+            for r in test_updates.get("test_suite", [])
+            if r.get("status") == "failed"
+        ]
+
         await _record_event(
             state,
             agent_name="test_agent",
@@ -591,6 +618,7 @@ def create_apiweaver_graph(
                 "llm_tokens": max(tokens_after - tokens_before, 0),
                 "total_tokens_used": tokens_after,
                 "test_summary": summary,
+                "failed_tests": failed_tests_summary,
             },
             tool_calls=_sandbox_tool_calls(test_updates.get("test_suite", [])),
         )
@@ -611,31 +639,89 @@ def create_apiweaver_graph(
         )
 
         tokens_before = state.get("total_tokens_used", 0)
+        repaired_files = list(state.get("generated_files", []))
+        total_tokens = tokens_before
+
+        test_suite = state.get("test_suite", [])
+        failed_tests = [r for r in test_suite if r.get("status") == "failed"]
+
+        target_file_path = "client.py"
+        for f in repaired_files:
+            fp = f.get("file_path", "")
+            if "client" in fp.lower():
+                target_file_path = fp
+                break
+
+        primary_failure = failed_tests[0] if failed_tests else {}
+        failure_diagnosis = {
+            "failed_tests_count": len(failed_tests),
+            "method": primary_failure.get("method", "GET"),
+            "path": primary_failure.get("path", "/"),
+            "status_code": primary_failure.get("status_code", 0),
+            "error": primary_failure.get("error", "Unknown test failure"),
+            "stack_trace": primary_failure.get("stack_trace"),
+            "request_snapshot": primary_failure.get("request_snapshot", {}),
+            "response_snapshot": primary_failure.get("response_snapshot", {}),
+            "classification": (
+                primary_failure.get("classification", {}).get("classification")
+                if isinstance(primary_failure.get("classification"), dict)
+                else primary_failure.get("classification", "generated_code_bug")
+            ) if primary_failure else "generated_code_bug",
+            "reasoning": (
+                primary_failure.get("classification", {}).get("reasoning")
+                if isinstance(primary_failure.get("classification"), dict)
+                else None
+            ) if primary_failure else None,
+            "prior_attempts": [
+                ra.get("diff_summary") for ra in attempts
+                if ra.get("target_file") == target_file_path
+            ],
+        }
+
         try:
+            from app.workflows.agents import code_agent as code_agent_module
+            repair_result = await code_agent_module.run_code_agent(
+                {**state, "generated_files": repaired_files, "total_tokens_used": total_tokens},
+                failure_diagnosis=failure_diagnosis,
+                target_file=target_file_path,
+            )
+
+            if repair_result.get("generated_files"):
+                repaired_files = repair_result["generated_files"]
+            total_tokens = repair_result.get("total_tokens_used", total_tokens)
+
+            diff_summary = "Targeted repair applied"
+            for rf in repaired_files:
+                if rf.get("file_path") == target_file_path and rf.get("repair_diagnosis"):
+                    diff_summary = rf["repair_diagnosis"]
+                    break
+
             attempts.append({
                 "attempt_number": attempt_number,
+                "target_file": target_file_path,
+                "diff_summary": diff_summary,
+                "error": primary_failure.get("error"),
                 "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
-                "outcome": "in_progress",
+                "outcome": "applied",
             })
-            repaired = await run_code_agent(state, phase_number=None)
         except Exception as exc:
             terminal_logger.log_failure("repair_agent", run_id, exc)
             raise
 
-        tokens_after = repaired.get("total_tokens_used", tokens_before)
-        repaired_files = repaired.get("generated_files", state.get("generated_files", []))
+        tokens_after = total_tokens
 
         terminal_logger.log_complete(
             "repair_agent",
             run_id,
             tokens_before=tokens_before,
             tokens_after=tokens_after,
-            details=f"Repair pass applied to {len(repaired_files)} file(s); re-routing back to test_agent",
+            details=f"Self-healing repair #{attempt_number}/3 applied to {target_file_path}; re-routing back to test_agent",
         )
 
         updates: dict[str, Any] = {
             "generated_files": repaired_files,
             "repair_attempts": attempts,
+            "total_tokens_used": tokens_after,
             "current_node": "repair_agent",
         }
 
@@ -644,7 +730,11 @@ def create_apiweaver_graph(
                 run_id=run_id,
                 project_id=state.get("project_id"),
                 event_type="workflow.repair_attempt",
-                payload={"attempt_number": attempt_number},
+                payload={
+                    "attempt_number": attempt_number,
+                    "target_file": target_file_path,
+                    "error": primary_failure.get("error"),
+                },
             )
 
         await _record_event(
@@ -654,6 +744,8 @@ def create_apiweaver_graph(
             payload={
                 "node_name": "repair_agent",
                 "attempt_number": attempt_number,
+                "target_file": target_file_path,
+                "error": primary_failure.get("error"),
                 "files_repaired": len(repaired_files),
                 "llm_tokens": max(tokens_after - tokens_before, 0),
                 "total_tokens_used": tokens_after,
@@ -737,10 +829,17 @@ def create_apiweaver_graph(
             and (state.get("document_id") or "generate" in state.get("stages", []))
         ):
             final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+        elif (state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(state.get("repair_attempts", [])) >= 3:
+            final_status = WorkflowStatus.FAILED
+            state.setdefault("errors", []).append(
+                f"Self-healing repair loop exhausted (3/3 attempts failed). {(state.get('test_run_summary') or {}).get('failed')} test(s) failed."
+            )
+        elif (state.get("test_run_summary") or {}).get("failed", 0) > 0 and "export" not in state.get("stages", []):
+            final_status = WorkflowStatus.FAILED
+        elif state.get("errors"):
+            final_status = WorkflowStatus.FAILED
         else:
             final_status = WorkflowStatus.COMPLETED
-        if state.get("errors"):
-            final_status = WorkflowStatus.FAILED
 
         terminal_logger.log_complete(
             "finalize",
