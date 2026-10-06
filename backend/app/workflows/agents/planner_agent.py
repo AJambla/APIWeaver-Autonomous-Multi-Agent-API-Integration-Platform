@@ -89,7 +89,6 @@ async def run_planner_agent(
     # Algorithmic baseline clustering & dependency extraction
     nodes: list[dict[str, Any]] = []
     destructive: list[dict[str, Any]] = []
-    edges: list[dict[str, Any]] = []
 
     for idx, ep in enumerate(endpoints):
         method = ep.get("method", "GET").upper()

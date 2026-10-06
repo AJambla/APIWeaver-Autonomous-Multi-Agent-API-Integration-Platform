@@ -101,7 +101,6 @@ class LangGraphAgentLogger:
         speed_tps = (tokens_delta / duration) if (duration > 0 and tokens_delta > 0) else 0.0
         speed_str = f"{speed_tps:.1f} tokens/s" if speed_tps > 0 else f"{1.0/duration:.1f} ops/s"
 
-        run_tag = run_id[:8] if run_id else "unknown"
         display_name = node_name.replace("_", " ").title()
 
         msg = (

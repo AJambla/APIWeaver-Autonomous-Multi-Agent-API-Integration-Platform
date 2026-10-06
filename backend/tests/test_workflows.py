@@ -416,8 +416,8 @@ async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
 
     monkeypatch.setattr(celery_module.app, "send_task", _failing_send_task)
 
-    from app.core import config as config_module
     from app.api.v1 import workflows as workflows_module
+    from app.core import config as config_module
     orig_settings = config_module.get_settings()
     prod_settings = orig_settings.model_copy(update={"app_env": "production"})
     monkeypatch.setattr(config_module, "get_settings", lambda: prod_settings)

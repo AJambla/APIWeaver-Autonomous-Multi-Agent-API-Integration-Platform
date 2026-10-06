@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 import pytest
 
+from app.core.errors import DependencyUnavailableError
 from app.services.chunker import chunk_text
 from app.services.document_parser import extract_text
 from app.services.qdrant_service import FakeQdrantClient, ScoredChunk
-from app.core.errors import DependencyUnavailableError
 from app.workflows.agents.doc_agent import _upsert_to_qdrant, run_doc_agent
 from app.workflows.llm import LLMClient
 from app.workflows.state import WorkflowState

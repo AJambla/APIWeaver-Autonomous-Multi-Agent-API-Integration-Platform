@@ -288,7 +288,7 @@ async def cancel_workflow_run(
     run_id: uuid.UUID,
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
-    redis_client: Redis = Depends(get_redis),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ) -> dict[str, str]:
     """Cancel an in-progress workflow run."""
     run = await session.get(WorkflowRun, run_id)

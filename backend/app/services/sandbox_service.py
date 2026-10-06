@@ -648,7 +648,7 @@ class DockerSandboxExecutor:
                     asyncio.to_thread(container.wait),
                     timeout=self._settings.sandbox_timeout_seconds,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await asyncio.to_thread(container.kill)
                 result["error"] = (
                     f"sandbox_timeout: exceeded {self._settings.sandbox_timeout_seconds}s"

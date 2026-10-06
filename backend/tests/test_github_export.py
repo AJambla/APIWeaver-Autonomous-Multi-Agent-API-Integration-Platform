@@ -78,14 +78,13 @@ class TestGitHubExport:
         self, session_factory, db, fake_vault, mock_state
     ):
         """GitHub export resolves the owner's GitHub connection + installation and pushes files."""
+        from app.models.github import GitHubConnection
         from tests.conftest import (
             add_project_member,
             make_org,
             make_project,
             make_user,
         )
-
-        from app.models.github import GitHubConnection
 
         user = await make_user(db, email="github-exporter@example.com")
         org = await make_org(db, name="GitHub Export Org")

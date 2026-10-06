@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
-
 from app.models.auth_config import AuthConfig, SecretRef
 from app.models.enums import AuthScheme
 from app.services.vault_service import FakeVaultClient
