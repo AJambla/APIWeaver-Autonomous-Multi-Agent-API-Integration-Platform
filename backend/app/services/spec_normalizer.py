@@ -10,7 +10,10 @@ from urllib.parse import urlparse
 import yaml
 
 from app.core.errors import UnprocessableEntityError
+from app.core.logging import get_logger
 from app.models.enums import DocumentFormat, HTTPMethod, ParameterLocation
+
+logger = get_logger(__name__)
 
 _METHODS = {method.value.lower(): method.value for method in HTTPMethod}
 
@@ -34,47 +37,72 @@ class NormalizedSpec:
     endpoints: list[NormalizedEndpoint]
 
 
-def detect_format(content: bytes, filename: str, format_hint: str | None) -> str:
-    if format_hint:
-        aliases = {"openapi": DocumentFormat.OPENAPI, "swagger": DocumentFormat.SWAGGER,
-                   "postman": DocumentFormat.POSTMAN}
-        if format_hint in aliases:
-            return aliases[format_hint]
-        raise UnprocessableEntityError("format_hint must be openapi, swagger, or postman.")
-
-    suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if suffix == "json":
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise UnprocessableEntityError("The uploaded JSON document is invalid.") from exc
-        if isinstance(parsed, dict) and "swagger" in parsed:
-            return DocumentFormat.SWAGGER
-        if isinstance(parsed, dict) and "openapi" in parsed:
-            return DocumentFormat.OPENAPI
-        if isinstance(parsed, dict) and "info" in parsed and "item" in parsed:
-            return DocumentFormat.POSTMAN
-    if suffix in {"yaml", "yml"}:
+def _sniff_content(content: bytes, filename: str = "") -> str | None:
+    """Sniff API document format directly from payload content."""
+    parsed: Any = None
+    # Try JSON first
+    try:
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Try YAML
         try:
             parsed = yaml.safe_load(content)
-        except yaml.YAMLError as exc:
-            raise UnprocessableEntityError("The uploaded YAML document is invalid.") from exc
-        if isinstance(parsed, dict) and "swagger" in parsed:
+        except Exception:
+            parsed = None
+
+    if isinstance(parsed, dict):
+        if "swagger" in parsed:
             return DocumentFormat.SWAGGER
-        if isinstance(parsed, dict) and "openapi" in parsed:
+        if "openapi" in parsed:
             return DocumentFormat.OPENAPI
+        if "info" in parsed and "item" in parsed:
+            return DocumentFormat.POSTMAN
+
+    return None
+
+
+def detect_format(content: bytes, filename: str, format_hint: str | None) -> str:
+    sniffed = _sniff_content(content, filename)
+
+    if format_hint:
+        aliases = {
+            "openapi": DocumentFormat.OPENAPI,
+            "swagger": DocumentFormat.SWAGGER,
+            "postman": DocumentFormat.POSTMAN,
+        }
+        hint_key = format_hint.strip().lower() if format_hint else ""
+        hint_format = aliases.get(hint_key)
+
+        # If sniffed content conclusively identifies a format, check if hint contradicts it
+        if sniffed is not None:
+            if hint_format is not None and hint_format != sniffed:
+                logger.warning(
+                    "format_hint_contradicts_content_overridden",
+                    format_hint=format_hint,
+                    sniffed_format=sniffed,
+                    filename=filename,
+                )
+            return sniffed
+
+        if hint_format is not None:
+            return hint_format
+        raise UnprocessableEntityError("format_hint must be openapi, swagger, or postman.")
+
+    if sniffed is not None:
+        return sniffed
+
     raise UnprocessableEntityError("Only OpenAPI 3.x, Swagger 2.0, and Postman v2.1 are supported.")
 
 
 def normalize(content: bytes, filename: str, format_hint: str | None = None) -> NormalizedSpec:
     document_format = detect_format(content, filename, format_hint)
+    data: Any = None
     try:
-        data = (
-            json.loads(content)
-            if filename.lower().endswith(".json")
-            else yaml.safe_load(content)
-        )
-    except (json.JSONDecodeError, yaml.YAMLError) as exc:
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            data = yaml.safe_load(content)
+    except Exception as exc:
         raise UnprocessableEntityError("The uploaded API document is invalid.") from exc
     if not isinstance(data, dict):
         raise UnprocessableEntityError("The API document must contain an object at its root.")

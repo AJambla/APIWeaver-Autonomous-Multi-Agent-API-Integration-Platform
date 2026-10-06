@@ -257,6 +257,21 @@ async def test_upload_normalizes_swagger_2(client: AsyncClient) -> None:
     assert spec.json()["base_url"] == "https://legacy.example.test/api"
 
 
+async def test_upload_normalizes_swagger_2_with_contradictory_format_hint(client: AsyncClient) -> None:
+    project_id, headers = await _project_headers(client)
+    response = await client.post(
+        f"/api/v1/projects/{project_id}/upload",
+        headers=headers,
+        files={"file": ("petstore-openapi.json", SWAGGER, "application/json")},
+        data={"format_hint": "openapi"},
+    )
+    assert response.status_code == 202, response.text
+    spec = await client.get(f"/api/v1/projects/{project_id}/spec", headers=headers)
+    assert spec.status_code == 200
+    assert spec.json()["base_url"] == "https://legacy.example.test/api"
+    assert response.json()["endpoints_discovered"] > 0
+
+
 async def test_upload_normalizes_postman_v21(client: AsyncClient) -> None:
     project_id, headers = await _project_headers(client)
     response = await client.post(

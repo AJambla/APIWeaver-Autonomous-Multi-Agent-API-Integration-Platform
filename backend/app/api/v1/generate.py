@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError
 from app.models.codegen import CodeGenerationRun, GeneratedFile
-from app.models.enums import ActorType
+from app.models.enums import ActorType, WorkflowStatus
 from app.models.project import Project
 from app.models.workflow import WorkflowRun
 from app.rbac.enforce import require_project_permission
@@ -38,6 +38,23 @@ async def trigger_generate(
     redis_client: aioredis.Redis = Depends(get_redis),
 ) -> GenerateResponseAlias:
     """Trigger code generation for a project."""
+    # Supersede any active or paused runs for this project
+    stale_runs = (
+        await session.scalars(
+            select(WorkflowRun).where(
+                WorkflowRun.project_id == project.id,
+                WorkflowRun.status.in_([
+                    WorkflowStatus.RUNNING,
+                    WorkflowStatus.QUEUED,
+                    WorkflowStatus.PAUSED_FOR_APPROVAL,
+                ]),
+            )
+        )
+    ).all()
+    for stale in stale_runs:
+        stale.status = WorkflowStatus.CANCELLED
+        stale.error_details = {"reason": "superseded_by_new_generate"}
+
     # Find or create workflow run
     run = WorkflowRun(
         project_id=project.id,

@@ -53,7 +53,13 @@ async def ingest_document(
     # Try deterministic normalization first
     try:
         normalized = normalize(content, filename, format_hint)
-    except UnprocessableEntityError:
+    except UnprocessableEntityError as exc:
+        logger.warning(
+            "deterministic_normalization_failed",
+            filename=filename,
+            format_hint=format_hint,
+            error=str(exc),
+        )
         # Freeform document - store Document + DocumentVersion only
         normalized = None
 

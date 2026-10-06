@@ -123,7 +123,12 @@ async def run_doc_agent(
             "total_tokens_used": total_tokens,
         }
     except Exception as parse_err:
-        logger.info("doc_agent_deterministic_fallback", error=str(parse_err))
+        logger.warning(
+            "doc_agent_deterministic_fallback",
+            filename=filename,
+            format_hint=format_hint,
+            error=str(parse_err),
+        )
 
     # 3. Freeform document extraction via LLM
     text_content = extract_text(raw_bytes, filename, None)
