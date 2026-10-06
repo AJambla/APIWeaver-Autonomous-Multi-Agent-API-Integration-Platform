@@ -60,3 +60,22 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
             duration_ms=round((time.perf_counter() - started) * 1000, 2),
         )
         return response
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Enforce standard HTTP security response headers across all endpoints."""
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-XSS-Protection", "1; mode=block")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
+        )
+        return response
+

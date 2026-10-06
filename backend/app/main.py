@@ -23,7 +23,7 @@ from app.core.config import Settings, get_settings
 from app.core.errors import APIError, ErrorCode, build_error_body
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import registry as metrics_registry
-from app.core.middleware import RequestIDMiddleware
+from app.core.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
 from app.core.ratelimit import RateLimitMiddleware
 from app.core.security import load_keys
 from app.core.telemetry import instrument_app
@@ -226,6 +226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Middleware is applied bottom-up, so the request-id middleware is added last to run
     # first — the rate limiter's error body needs a request_id already assigned.
     app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RequestIDMiddleware)
     app.add_middleware(
         CORSMiddleware,

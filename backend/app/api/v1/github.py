@@ -202,6 +202,7 @@ async def github_status(
 async def github_disconnect(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
+    vault: VaultClient = Depends(create_vault_client),
 ) -> None:
     """Revoke GitHub connection and delete tokens from Vault."""
     result = await session.execute(
@@ -218,9 +219,11 @@ async def github_disconnect(
     # Mark as revoked
     connection.revoked_at = datetime.now(UTC)
 
-    # Delete tokens from Vault (would use vault_client)
-    # await vault_client.delete_secret(connection.access_token_vault_path)
-    # await vault_client.delete_secret(connection.refresh_token_vault_path)
+    # Delete tokens from Vault
+    if connection.access_token_vault_path:
+        await vault.delete_secret(connection.access_token_vault_path)
+    if connection.refresh_token_vault_path:
+        await vault.delete_secret(connection.refresh_token_vault_path)
 
     await session.commit()
 

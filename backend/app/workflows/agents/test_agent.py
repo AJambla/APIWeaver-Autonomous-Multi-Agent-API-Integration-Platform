@@ -351,6 +351,11 @@ async def _create_sandbox(
     """
     settings = get_settings()
     if settings.sandbox_backend != "docker":
+        if getattr(settings, "app_env", "") in ("production", "staging"):
+            raise RuntimeError(
+                f"SANDBOX_BACKEND={settings.sandbox_backend} cannot be used in {settings.app_env} mode. "
+                "Docker sandbox executor is strictly required."
+            )
         sandbox = MockSandboxClient(generated_files, spec)
         await sandbox._load_modules()
         return sandbox

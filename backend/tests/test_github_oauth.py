@@ -58,16 +58,25 @@ class TestGitHubOAuth:
         assert data["github_username"] == "testuser"
 
     @pytest.mark.asyncio
-    async def test_disconnect_revokes_connection(self, client, auth_headers, session_factory):
-        """DELETE /github/disconnect revokes an active connection."""
+    async def test_disconnect_revokes_connection(
+        self, client, auth_headers, session_factory, fake_vault
+    ):
+        """DELETE /github/disconnect revokes an active connection and deletes tokens from Vault."""
         me = await client.get("/api/v1/auth/me", headers=auth_headers)
         user_id = uuid.UUID(me.json()["user"]["id"])
+
+        access_path = f"secret/github/connections/{user_id}/access"
+        refresh_path = f"secret/github/connections/{user_id}/refresh"
+        await fake_vault.write_secret(access_path, {"token": "ghp_access_token"})
+        await fake_vault.write_secret(refresh_path, {"token": "ghr_refresh_token"})
 
         async with session_factory() as session:
             conn = GitHubConnection(
                 user_id=user_id,
                 github_user_id="12345",
                 github_username="testuser",
+                access_token_vault_path=access_path,
+                refresh_token_vault_path=refresh_path,
             )
             session.add(conn)
             await session.commit()
@@ -81,6 +90,10 @@ class TestGitHubOAuth:
         status_res = await client.get("/api/v1/github/status", headers=auth_headers)
         assert status_res.status_code == 200
         assert status_res.json()["connected"] is False
+
+        # Verify secrets are deleted from Vault
+        assert await fake_vault.read_secret(access_path) is None
+        assert await fake_vault.read_secret(refresh_path) is None
 
     @pytest.mark.asyncio
     async def test_repos_requires_connection(self, client, auth_headers):

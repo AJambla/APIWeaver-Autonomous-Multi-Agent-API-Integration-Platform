@@ -26,6 +26,17 @@ class VaultClient(Protocol):
     async def delete_secret(self, path: str) -> None: ...
 
 
+def validate_vault_path(path: str) -> str:
+    """Validate Vault path to prevent path traversal."""
+    if not isinstance(path, str):
+        raise ValueError("Vault path must be a string")
+    cleaned = path.strip().replace("\\", "/").strip("/")
+    parts = cleaned.split("/")
+    if any(part in ("..", ".") for part in parts) or not cleaned:
+        raise ValueError(f"Path traversal or empty path not permitted in Vault path: {path}")
+    return cleaned
+
+
 class HttpVaultClient:
     """Async Vault client speaking HTTP KV v2 to HashiCorp Vault."""
 
@@ -35,7 +46,7 @@ class HttpVaultClient:
         self._headers = {"X-Vault-Token": self.vault_token}
 
     def _kv_url(self, path: str) -> str:
-        clean_path = path.strip("/")
+        clean_path = validate_vault_path(path)
         if clean_path.startswith("secret/data/"):
             return f"{self.vault_addr}/v1/{clean_path}"
         if clean_path.startswith("secret/"):
@@ -44,7 +55,7 @@ class HttpVaultClient:
         return f"{self.vault_addr}/v1/secret/data/{clean_path}"
 
     def _kv_delete_url(self, path: str) -> str:
-        clean_path = path.strip("/")
+        clean_path = validate_vault_path(path)
         if clean_path.startswith("secret/metadata/"):
             return f"{self.vault_addr}/v1/{clean_path}"
         if clean_path.startswith("secret/"):
@@ -103,14 +114,17 @@ class FakeVaultClient:
         self._secrets: dict[str, dict[str, Any]] = {}
 
     async def write_secret(self, path: str, data: dict[str, Any]) -> None:
-        self._secrets[path.strip("/")] = dict(data)
+        clean_path = validate_vault_path(path)
+        self._secrets[clean_path] = dict(data)
 
     async def read_secret(self, path: str) -> dict[str, Any] | None:
-        data = self._secrets.get(path.strip("/"))
+        clean_path = validate_vault_path(path)
+        data = self._secrets.get(clean_path)
         return dict(data) if data is not None else None
 
     async def delete_secret(self, path: str) -> None:
-        self._secrets.pop(path.strip("/"), None)
+        clean_path = validate_vault_path(path)
+        self._secrets.pop(clean_path, None)
 
 
 # Module-level singleton (export_agent.py uses this)

@@ -163,13 +163,13 @@ class Settings(BaseSettings):
         """Fail boot rather than run generated code inside the API process (audit C2/M1).
 
         `sandbox_backend="mock"` imports and executes LLM-authored modules in-process, so
-        it is a test-only opt-in; a production deployment that asks for it is a
+        it is a test-only opt-in; a production or staging deployment that asks for it is a
         misconfiguration, not a supported mode.
         """
-        if self.app_env == "production" and self.sandbox_backend == "mock":
+        if self.app_env in ("production", "staging") and self.sandbox_backend != "docker":
             raise ValueError(
-                "SANDBOX_BACKEND=mock runs LLM-generated code in this process and is "
-                "test-only; production must use SANDBOX_BACKEND=docker."
+                f"SANDBOX_BACKEND={self.sandbox_backend} runs LLM-generated code in this process and is "
+                f"test-only; {self.app_env} must use SANDBOX_BACKEND=docker."
             )
         return self
 
