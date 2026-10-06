@@ -40,6 +40,7 @@ import {
   DependencyGraph,
   DependencyNode,
   ExportRecord,
+  ExportTriggerResponse,
   HistoryItem,
   MCPExportResponse,
   Page,
@@ -77,6 +78,11 @@ type UploadPhase = 'idle' | 'working' | 'success' | 'error';
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : 'Something went wrong.');
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+// A test run that has stopped moving: polling ends and the panel reports its outcome.
+const TERMINAL_TEST_STATUSES = ['completed', 'completed_with_failures', 'failed'];
+// An export row still waiting on the pipeline; anything else has a real status.
+const OPEN_EXPORT_STATUSES = ['queued', 'pending', 'running'];
 
 const CORE_STEPS: Array<{ id: TabId; n: number; label: string; desc: string }> = [
   { id: 'upload', n: 1, label: 'Upload Spec', desc: 'Import API documentation' },
@@ -639,7 +645,7 @@ export const ProjectWorkspace: React.FC = () => {
       for (let attempt = 0; attempt < 20; attempt += 1) {
         await sleep(attempt === 0 ? 1500 : 3000);
         summary = await apiFetch<TestRunSummary>(`/projects/${id}/test-runs/${trigger.test_run_id}`).catch(() => summary);
-        if (summary && summary.results.length > 0) break;
+        if (summary && (summary.results.length > 0 || TERMINAL_TEST_STATUSES.includes(summary.status))) break;
       }
       setTestSummary(summary);
     } catch (err) {
@@ -661,11 +667,31 @@ export const ProjectWorkspace: React.FC = () => {
         const res = await apiFetch<MCPExportResponse>(`/projects/${id}/export/mcp`, { method: 'POST' });
         setExportNote(`MCP export complete — ${res.tools_generated} tool${res.tools_generated === 1 ? '' : 's'} generated, ${res.flagged_destructive} flagged destructive.`);
       } else {
-        await apiFetch(`/projects/${id}/export`, {
+        const triggered = await apiFetch<ExportTriggerResponse>(`/projects/${id}/export`, {
           method: 'POST',
           body: JSON.stringify({ export_types: [exportType] }),
         });
-        setExportNote(`${exportType} export queued.`);
+        const watched = new Set(triggered.artifacts.map(a => a.export_id));
+        let rows: ExportRecord[] = [];
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await sleep(attempt === 0 ? 1500 : 3000);
+          const next = await apiFetch<ExportRecord[]>(`/projects/${id}/exports`).catch(() => null);
+          if (Array.isArray(next)) rows = next;
+          const mine = rows.filter(row => watched.has(row.id));
+          if (mine.length > 0 && mine.every(row => !OPEN_EXPORT_STATUSES.includes(row.status))) break;
+        }
+        setExports(rows);
+        const mine = rows.filter(row => watched.has(row.id));
+        if (mine.length === 0) {
+          setExportError('The export could not be tracked — no export row was recorded.');
+        } else if (mine.some(row => row.status === 'failed')) {
+          setExportError(`${exportType} export failed. See Recent exports for the recorded status.`);
+        } else if (mine.every(row => row.status === 'completed')) {
+          setExportNote(`${exportType} export completed.`);
+        } else {
+          setExportNote(`${exportType} export is still running — refresh Recent exports for its result.`);
+        }
+        return;
       }
       const rows = await apiFetch<ExportRecord[]>(`/projects/${id}/exports`).catch(() => [] as ExportRecord[]);
       setExports(Array.isArray(rows) ? rows : []);
@@ -1069,7 +1095,7 @@ export const ProjectWorkspace: React.FC = () => {
                 <h2 className="text-lg font-medium tracking-tight">API Topology & Integration Plan</h2>
                 <p className="text-xs text-neutral-500">
                   {graph && graph.nodes.length > 0
-                    ? `${graph.nodes.length} endpoint${graph.nodes.length === 1 ? '' : 's'} · ${graph.edges.length} dependency${graph.edges.length === 1 ? '' : 'ies'} extracted from the specification`
+                    ? `${graph.nodes.length} endpoint${graph.nodes.length === 1 ? '' : 's'} · ${graph.edges.length} ${graph.edges.length === 1 ? 'dependency' : 'dependencies'} extracted from the specification`
                     : 'Generated from the uploaded specification'}
                 </p>
               </div>
@@ -1367,6 +1393,30 @@ export const ProjectWorkspace: React.FC = () => {
                   </div>
                 </div>
               </>
+            ) : testSummary && TERMINAL_TEST_STATUSES.includes(testSummary.status) ? (
+              <div
+                className={
+                  testSummary.status === 'failed'
+                    ? 'rounded-xl border border-red-500/25 bg-red-950/20 p-4'
+                    : 'rounded-xl border border-amber-500/25 bg-amber-950/20 p-4'
+                }
+              >
+                <p className={`flex items-center gap-2 text-sm ${testSummary.status === 'failed' ? 'text-red-300' : 'text-amber-300'}`}>
+                  <XCircle className="h-4 w-4 shrink-0" />
+                  Test run {shortId(testSummary.test_run_id)} ended as “{testSummary.status}” without running any tests.
+                </p>
+                <ul className="mt-2 space-y-1 text-xs text-neutral-400">
+                  {(testSummary.errors && testSummary.errors.length > 0
+                    ? testSummary.errors
+                    : ['The testing agent reported no per-endpoint results.']
+                  ).map(reason => (
+                    <li key={reason} className="flex gap-2">
+                      <span aria-hidden="true">•</span>
+                      <span>{reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ) : testBusy ? (
               <div className={`${cardCls} flex items-center gap-3 p-5 text-sm text-neutral-300`}>
                 <Loader2 className="h-4 w-4 animate-spin" /> Executing tests… results appear as each endpoint completes.

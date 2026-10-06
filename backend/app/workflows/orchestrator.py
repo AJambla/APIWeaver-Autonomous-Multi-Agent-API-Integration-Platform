@@ -437,7 +437,7 @@ class Orchestrator:
                 )
 
             # 4. Testing Stage
-            if "test" in stages and current_dict.get("generated_files"):
+            if "test" in stages:
                 await _check_token_budget(current_dict)
                 from app.workflows.agents.test_agent import run_test_agent
 
@@ -476,7 +476,9 @@ class Orchestrator:
                 )
 
             # 5. Export Stage
-            if "export" in stages and current_dict.get("test_suite"):
+            if "export" in stages and (
+                current_dict.get("test_suite") or current_dict.get("generated_files")
+            ):
                 await _check_token_budget(current_dict)
                 from app.workflows.agents.export_agent import ExportAgent
 
@@ -527,6 +529,10 @@ class Orchestrator:
                 # Plan produced but never approved, so generation was skipped —
                 # park the run at the human-approval gate instead of completing.
                 final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+            if current_dict.get("errors"):
+                # An agent reported a hard-stop reason (no spec, nothing to test) —
+                # that is a failed run, not a completed or paused one.
+                final_status = WorkflowStatus.FAILED
 
             current_dict["status"] = final_status
             is_done = final_status == WorkflowStatus.COMPLETED
@@ -537,7 +543,7 @@ class Orchestrator:
                 if run_obj:
                     run_obj.status = final_status
                     run_obj.total_tokens_used = current_dict.get("total_tokens_used", 0)
-                    if final_status == WorkflowStatus.COMPLETED:
+                    if final_status in (WorkflowStatus.COMPLETED, WorkflowStatus.FAILED):
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
                     await session.commit()
 
@@ -761,7 +767,7 @@ class Orchestrator:
                     ),
                 )
 
-            if "test" in stages and current_dict.get("generated_files"):
+            if "test" in stages:
                 await _check_token_budget(current_dict)
                 tokens_before = current_dict.get("total_tokens_used", 0)
                 result = celery_app.send_task(
@@ -790,7 +796,9 @@ class Orchestrator:
                     tool_calls=_sandbox_tool_calls(test_updates.get("test_suite", [])),
                 )
 
-            if "export" in stages and current_dict.get("test_suite"):
+            if "export" in stages and (
+                current_dict.get("test_suite") or current_dict.get("generated_files")
+            ):
                 await _check_token_budget(current_dict)
                 tokens_before = current_dict.get("total_tokens_used", 0)
                 result = celery_app.send_task(
@@ -833,6 +841,10 @@ class Orchestrator:
                 # Plan produced but never approved, so generation was skipped —
                 # park the run at the human-approval gate instead of completing.
                 final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+            if current_dict.get("errors"):
+                # An agent reported a hard-stop reason (no spec, nothing to test) —
+                # that is a failed run, not a completed or paused one.
+                final_status = WorkflowStatus.FAILED
 
             current_dict["status"] = final_status
             is_done = final_status == WorkflowStatus.COMPLETED
@@ -843,7 +855,7 @@ class Orchestrator:
                 if run_obj:
                     run_obj.status = final_status
                     run_obj.total_tokens_used = current_dict.get("total_tokens_used", 0)
-                    if final_status == WorkflowStatus.COMPLETED:
+                    if final_status in (WorkflowStatus.COMPLETED, WorkflowStatus.FAILED):
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
                     await session.commit()
 

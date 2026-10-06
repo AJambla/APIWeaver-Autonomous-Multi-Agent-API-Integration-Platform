@@ -170,6 +170,7 @@ export interface TestRunSummary {
   status: string;
   summary: { total?: number; passed?: number; failed?: number; skipped?: number };
   results: TestResultItem[];
+  errors?: string[];
 }
 
 export interface ExportRecord {
@@ -177,6 +178,11 @@ export interface ExportRecord {
   export_type: string;
   status: string;
   created_at: string | null;
+}
+
+export interface ExportTriggerResponse {
+  export_id: string;
+  artifacts: { export_id: string; type: string; status: string }[];
 }
 
 export interface MCPExportResponse {

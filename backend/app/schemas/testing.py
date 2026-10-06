@@ -56,4 +56,5 @@ class TestRunSummaryResponse(ResponseModel):
     status: str
     summary: dict[str, Any]
     results: list[TestResultResponse]
+    errors: list[str] = Field(default_factory=list, description="Reasons the run stopped without results.")
     repairs: list[RepairAttemptResponse] | None = None

@@ -34,6 +34,10 @@ class WorkflowState(TypedDict, total=False):
     test_suite: list[dict[str, Any]]
     test_run_summary: dict[str, Any] | None
 
+    # Export stage
+    export_types: list[str] | None
+    exports: list[dict[str, Any]]
+
     # Pipeline tracking
     current_node: str
     progress_percent: int
