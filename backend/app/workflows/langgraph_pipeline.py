@@ -46,7 +46,52 @@ def check_budget(state: WorkflowState) -> None:
         raise RuntimeError(f"token_budget_exceeded: {used}/{budget}")
 
 
+def _storage_tool_calls(
+    previous_files: list[dict[str, Any]], updated_files: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """ToolCall rows for files the code agent newly uploaded this stage."""
+    prev_paths = {f.get("file_path") for f in previous_files}
+    return [
+        {
+            "tool_name": "storage.upload",
+            "arguments": {"file_path": f.get("file_path"), "language": f.get("language")},
+            "result": {"s3_key": f.get("content_s3_key")},
+        }
+        for f in updated_files
+        if f.get("file_path") not in prev_paths
+    ]
+
+
+def _sandbox_tool_calls(test_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """ToolCall rows for the sandbox executions driven by the testing agent."""
+    return [
+        {
+            "tool_name": "sandbox.execute_test",
+            "arguments": {"method": r.get("method"), "path": r.get("path")},
+            "result": {"status": r.get("status"), "error": r.get("error")},
+            "duration_ms": r.get("latency_ms"),
+        }
+        for r in test_results
+    ]
+
+
 # --- Routing Conditions -------------------------------------------------------------
+
+
+def route_from_start(state: WorkflowState) -> str:
+    """Determine initial node based on requested workflow stages."""
+    stages = state.get("stages", ["plan"])
+    if not state.get("normalized_spec") and ("doc" in stages or "plan" in stages):
+        return "doc_agent"
+    if "plan" in stages and not (state.get("plan_approved") and "generate" in stages):
+        return "planner_agent"
+    if "generate" in stages:
+        return "code_agent"
+    if "test" in stages:
+        return "test_agent"
+    if "export" in stages:
+        return "export_agent"
+    return "finalize"
 
 
 def route_after_planner(state: WorkflowState) -> str:
@@ -61,6 +106,16 @@ def route_after_planner(state: WorkflowState) -> str:
 
     # Otherwise route to human approval gate
     return "approval_gate"
+
+
+def route_after_code(state: WorkflowState) -> str:
+    """Determine whether to proceed to testing, export, or finish after code gen."""
+    stages = state.get("stages", ["plan", "generate", "test", "export"])
+    if "test" in stages:
+        return "test_agent"
+    if "export" in stages:
+        return "export_agent"
+    return "finalize"
 
 
 def route_after_testing(state: WorkflowState) -> str:
@@ -102,8 +157,9 @@ def create_apiweaver_graph(
         agent_name: str,
         event_type: str,
         payload: dict[str, Any] | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Persist the AgentEvent rows the project logs read, as the standard engine does."""
+        """Persist the AgentEvent rows the project logs read."""
         if session_factory is None or not state.get("workflow_run_id"):
             return
         try:
@@ -114,14 +170,40 @@ def create_apiweaver_graph(
                     agent_name=agent_name,
                     event_type=event_type,
                     payload=payload,
+                    tool_calls=tool_calls,
                 )
                 await session.commit()
         except Exception as exc:
             logger.warning("langgraph_event_record_failed", error=str(exc))
 
+    async def _save_checkpoint(state: WorkflowState, node_name: str) -> None:
+        """Persist intermediate state snapshot checkpoint to PostgreSQL."""
+        if session_factory is None or not state.get("workflow_run_id"):
+            return
+        try:
+            async with session_factory() as session:
+                serializable = {k: v for k, v in dict(state).items() if k != "raw_document_bytes"}
+                checkpoint = WorkflowCheckpoint(
+                    workflow_run_id=uuid.UUID(str(state["workflow_run_id"])),
+                    node_name=node_name,
+                    state_snapshot=serializable,
+                )
+                session.add(checkpoint)
+                await session.commit()
+        except Exception as exc:
+            logger.warning("langgraph_checkpoint_save_failed", error=str(exc))
+
     # 1. Document Ingestion Node
     async def doc_agent_node(state: WorkflowState) -> dict[str, Any]:
         check_budget(state)
+        # If normalized_spec is already present (e.g. parsed directly from OpenAPI upload),
+        # skip re-normalizing.
+        if state.get("normalized_spec"):
+            return {
+                "progress_percent": 15,
+                "current_node": "doc_agent",
+            }
+
         run_id = state.get("workflow_run_id", "")
         doc_filename = state.get("document_filename", "unspecified_spec")
         terminal_logger.log_start(
@@ -205,6 +287,7 @@ def create_apiweaver_graph(
                 "total_tokens_used": tokens_after,
             },
         )
+        await _save_checkpoint({**state, **updates}, "doc_agent")
 
         return updates
 
@@ -254,10 +337,11 @@ def create_apiweaver_graph(
         }
 
         # Persist dependency graph if session_factory is available
+        edges_written = 0
         if session_factory and state.get("project_id"):
             try:
                 async with session_factory() as session:
-                    await persist_endpoint_dependencies(
+                    edges_written = await persist_endpoint_dependencies(
                         session,
                         project_id=uuid.UUID(state["project_id"]),
                         execution_plan=planner_updates.get("execution_plan")
@@ -285,10 +369,12 @@ def create_apiweaver_graph(
                 "node_name": "planner_agent",
                 "status": planner_updates.get("status"),
                 "progress_percent": 30,
+                "edges_written": edges_written,
                 "llm_tokens": max(tokens_after - tokens_before, 0),
                 "total_tokens_used": tokens_after,
             },
         )
+        await _save_checkpoint({**state, **updates}, "planner_agent")
 
         return updates
 
@@ -315,6 +401,8 @@ def create_apiweaver_graph(
                 payload={"reason": "human_approval_required"},
             )
 
+        await _save_checkpoint({**state, **updates}, "approval_gate")
+
         return updates
 
     # 4. Code Generation Node (supports multi-phase and cross-chunk consistency)
@@ -332,23 +420,59 @@ def create_apiweaver_graph(
 
         tokens_before = state.get("total_tokens_used", 0)
         generated_files = list(state.get("generated_files", []))
+        files_before = list(generated_files)
         total_tokens = tokens_before
+        budget = state.get("token_budget") or DEFAULT_TOKEN_BUDGET
+        execution_mode = state.get("execution_mode", "sync")
 
         try:
             for phase in phases:
+                if total_tokens >= budget:
+                    raise RuntimeError(f"token_budget_exceeded: {total_tokens}/{budget}")
+
                 phase_num = phase.get("phase_number")
-                phase_result = await run_code_agent(state, phase_number=phase_num)
+                if execution_mode == "async":
+                    from agent_worker.celery_app import app as celery_app
+                    result = celery_app.send_task(
+                        "agent_worker.tasks.run_code_agent",
+                        args=[str(run_id), {**state, "generated_files": generated_files, "total_tokens_used": total_tokens}, phase_num],
+                        task_id=f"run_code_agent:{run_id}:phase_{phase_num}",
+                    )
+                    phase_result = result.get(timeout=300)
+                else:
+                    from app.workflows.agents import code_agent as code_agent_module
+                    phase_result = await code_agent_module.run_code_agent(
+                        {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
+                        phase_number=phase_num,
+                    )
+
                 generated_files.extend(phase_result.get("generated_files", []))
-                total_tokens += phase_result.get("total_tokens_used", 0)
+                total_tokens = phase_result.get("total_tokens_used", total_tokens)
+                if total_tokens >= budget:
+                    raise RuntimeError(f"token_budget_exceeded: {total_tokens}/{budget}")
 
             # Consistency pass
-            consistency_result = await run_code_agent(
-                {**state, "generated_files": generated_files},  # type: ignore[misc]
-                phase_number=None,
-            )
-            if consistency_result.get("generated_files"):
-                generated_files = consistency_result["generated_files"]
-                total_tokens += consistency_result.get("total_tokens_used", 0)
+            if total_tokens < budget:
+                if execution_mode == "async":
+                    from agent_worker.celery_app import app as celery_app
+                    result = celery_app.send_task(
+                        "agent_worker.tasks.run_code_agent",
+                        args=[str(run_id), {**state, "generated_files": generated_files, "total_tokens_used": total_tokens}, None],
+                        task_id=f"run_code_agent:{run_id}:consistency",
+                    )
+                    consistency_result = result.get(timeout=300)
+                else:
+                    from app.workflows.agents import code_agent as code_agent_module
+                    consistency_result = await code_agent_module.run_code_agent(
+                        {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
+                        phase_number=None,
+                    )
+
+                if consistency_result.get("generated_files"):
+                    generated_files = consistency_result["generated_files"]
+                total_tokens = consistency_result.get("total_tokens_used", total_tokens)
+                if total_tokens >= budget:
+                    raise RuntimeError(f"token_budget_exceeded: {total_tokens}/{budget}")
         except Exception as exc:
             terminal_logger.log_failure("code_agent", run_id, exc)
             raise
@@ -397,7 +521,9 @@ def create_apiweaver_graph(
                 "llm_tokens": max(total_tokens - tokens_before, 0),
                 "total_tokens_used": total_tokens,
             },
+            tool_calls=_storage_tool_calls(files_before, generated_files),
         )
+        await _save_checkpoint({**state, **updates}, "code_agent")
 
         return updates
 
@@ -466,7 +592,9 @@ def create_apiweaver_graph(
                 "total_tokens_used": tokens_after,
                 "test_summary": summary,
             },
+            tool_calls=_sandbox_tool_calls(test_updates.get("test_suite", [])),
         )
+        await _save_checkpoint({**state, **updates}, "test_agent")
 
         return updates
 
@@ -531,6 +659,7 @@ def create_apiweaver_graph(
                 "total_tokens_used": tokens_after,
             },
         )
+        await _save_checkpoint({**state, **updates}, "repair_agent")
 
         return updates
 
@@ -590,6 +719,7 @@ def create_apiweaver_graph(
                 "total_tokens_used": tokens_after,
             },
         )
+        await _save_checkpoint({**state, **updates}, "export_agent")
 
         return updates
 
@@ -598,14 +728,18 @@ def create_apiweaver_graph(
         run_id = state.get("workflow_run_id", "")
         current_status = state.get("status")
 
-        final_status = (
-            WorkflowStatus.PAUSED_FOR_APPROVAL
-            if current_status == WorkflowStatus.PAUSED_FOR_APPROVAL
-            else WorkflowStatus.COMPLETED
-        )
+        if current_status == WorkflowStatus.PAUSED_FOR_APPROVAL:
+            final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+        elif (
+            state.get("execution_plan")
+            and not state.get("plan_approved")
+            and not state.get("generated_files")
+            and (state.get("document_id") or "generate" in state.get("stages", []))
+        ):
+            final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+        else:
+            final_status = WorkflowStatus.COMPLETED
         if state.get("errors"):
-            # An agent reported a hard-stop reason (no spec, nothing to test) —
-            # that is a failed run, not a completed or paused one.
             final_status = WorkflowStatus.FAILED
 
         terminal_logger.log_complete(
@@ -618,7 +752,7 @@ def create_apiweaver_graph(
 
         updates: dict[str, Any] = {
             "status": final_status,
-            "progress_percent": 100 if final_status == WorkflowStatus.COMPLETED else 90,
+            "progress_percent": 100 if final_status == WorkflowStatus.COMPLETED else (30 if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else 90),
             "current_node": "completed",
         }
 
@@ -638,6 +772,7 @@ def create_apiweaver_graph(
                 "total_tokens_used": state.get("total_tokens_used", 0),
             },
         )
+        await _save_checkpoint({**state, **updates}, updates["current_node"])
 
         return updates
 
@@ -652,7 +787,18 @@ def create_apiweaver_graph(
     builder.add_node("finalize", finalize_node)
 
     # --- Wire Edges ---
-    builder.add_edge(START, "doc_agent")
+    builder.add_conditional_edges(
+        START,
+        route_from_start,
+        {
+            "doc_agent": "doc_agent",
+            "planner_agent": "planner_agent",
+            "code_agent": "code_agent",
+            "test_agent": "test_agent",
+            "export_agent": "export_agent",
+            "finalize": "finalize",
+        },
+    )
     builder.add_edge("doc_agent", "planner_agent")
 
     builder.add_conditional_edges(
@@ -666,7 +812,16 @@ def create_apiweaver_graph(
     )
 
     builder.add_edge("approval_gate", "finalize")
-    builder.add_edge("code_agent", "test_agent")
+
+    builder.add_conditional_edges(
+        "code_agent",
+        route_after_code,
+        {
+            "test_agent": "test_agent",
+            "export_agent": "export_agent",
+            "finalize": "finalize",
+        },
+    )
 
     builder.add_conditional_edges(
         "test_agent",
@@ -695,11 +850,13 @@ class LangGraphOrchestrator:
         event_publisher: EventPublisher | None = None,
         qdrant_client: QdrantClient | None = None,
         checkpointer: Any | None = None,
+        execution_mode: Literal["sync", "async"] = "sync",
     ) -> None:
         self.session_factory = session_factory
         self.event_publisher = event_publisher
         self.qdrant_client = qdrant_client
         self.checkpointer = checkpointer or MemorySaver()
+        self.execution_mode = execution_mode
 
         self._builder = create_apiweaver_graph(
             session_factory=self.session_factory,
@@ -716,7 +873,7 @@ class LangGraphOrchestrator:
         event_type: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        """Persist a run-level AgentEvent, as the standard orchestrator does."""
+        """Persist a run-level AgentEvent."""
         if self.session_factory is None:
             return
         try:
@@ -742,6 +899,7 @@ class LangGraphOrchestrator:
         current: dict[str, Any] = dict(initial_state)
         current["workflow_run_id"] = run_id_str
         current["status"] = WorkflowStatus.RUNNING
+        current["execution_mode"] = self.execution_mode
         current.setdefault("total_tokens_used", 0)
 
         # Update DB run status to RUNNING
@@ -759,7 +917,7 @@ class LangGraphOrchestrator:
             event_type="workflow_started",
             payload={
                 "stages": current.get("stages", ["plan"]),
-                "execution_mode": "langgraph",
+                "execution_mode": self.execution_mode,
             },
         )
 
@@ -779,7 +937,7 @@ class LangGraphOrchestrator:
 
             final_status = result_state.get("status", WorkflowStatus.COMPLETED)
 
-            # Persist checkpoint and final run status
+            # Persist final checkpoint and run status
             if self.session_factory:
                 async with self.session_factory() as session:
                     serializable = {
@@ -830,3 +988,6 @@ class LangGraphOrchestrator:
                 )
 
             return cast(WorkflowState, current)
+
+
+Orchestrator = LangGraphOrchestrator

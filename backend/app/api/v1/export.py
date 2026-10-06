@@ -25,7 +25,7 @@ from app.services.workflow_input_service import (
     load_normalized_spec,
 )
 from app.workflows.agents.export_agent import ExportAgent
-from app.workflows.orchestrator import Orchestrator
+from app.workflows.langgraph_pipeline import LangGraphOrchestrator
 from app.workflows.state import WorkflowState
 
 router = APIRouter(prefix="/projects", tags=["export"])
@@ -84,8 +84,8 @@ async def trigger_export(
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = Orchestrator(
-        engine_session_factory,
+    orchestrator = LangGraphOrchestrator(
+        session_factory=engine_session_factory,
         event_publisher=EventPublisher(redis_client),
     )
 
@@ -118,7 +118,7 @@ async def trigger_export(
 
 
 async def _execute_export_run(
-    orchestrator: Orchestrator,
+    orchestrator: LangGraphOrchestrator,
     run_id: uuid.UUID,
     initial_state: WorkflowState,
     session_factory: async_sessionmaker[AsyncSession],
