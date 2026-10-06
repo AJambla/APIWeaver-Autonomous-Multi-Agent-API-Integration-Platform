@@ -270,7 +270,7 @@ async def test_generation_stops_before_a_phase_the_budget_cannot_pay_for(
     from unittest.mock import patch
 
     from app.workflows.agents import code_agent as code_agent_module
-    from app.workflows.orchestrator import Orchestrator
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
 
     project_id, run_id = await _seed_project_run(session_factory, "m13phases")
     calls: list[Any] = []
@@ -296,7 +296,7 @@ async def test_consistency_pass_respects_the_token_budget(
     from unittest.mock import patch
 
     from app.workflows.agents import code_agent as code_agent_module
-    from app.workflows.orchestrator import Orchestrator
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
 
     project_id, run_id = await _seed_project_run(session_factory, "m13consistency")
     calls: list[Any] = []
@@ -344,7 +344,7 @@ async def test_async_dispatch_enforces_the_token_budget(
 
     from agent_worker import celery_app as celery_module
 
-    from app.workflows.orchestrator import Orchestrator
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
 
     project_id, run_id = await _seed_project_run(session_factory, "m13async")
     fake_celery = _FakeCeleryApp(spend=600)
@@ -412,8 +412,8 @@ async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
     assert "Celery worker queue is unavailable" in res.json()["error"]["message"]
 
 
-async def test_trigger_workflow_with_langgraph_engine(client: AsyncClient) -> None:
-    """Trigger workflow with engine='langgraph' routes to LangGraphOrchestrator."""
+async def test_trigger_workflow_routes_to_langgraph(client: AsyncClient) -> None:
+    """Trigger workflow routes to LangGraphOrchestrator."""
     project_id, _, headers = await _setup_project(client)
 
     res = await client.post(
@@ -421,7 +421,6 @@ async def test_trigger_workflow_with_langgraph_engine(client: AsyncClient) -> No
         json={
             "stages": ["plan"],
             "target_languages": ["python"],
-            "engine": "langgraph",
             "execution_mode": "sync",
         },
         headers=headers,
@@ -432,8 +431,8 @@ async def test_trigger_workflow_with_langgraph_engine(client: AsyncClient) -> No
     assert data["status"] == "queued"
 
 
-async def test_async_workflow_passes_engine_to_celery(client: AsyncClient, monkeypatch) -> None:
-    """Async workflow dispatches engine parameter to Celery."""
+async def test_async_workflow_dispatches_to_celery(client: AsyncClient, monkeypatch) -> None:
+    """Async workflow dispatches task to Celery without obsolete engine parameter."""
     project_id, _, headers = await _setup_project(client)
     dispatched = []
 
@@ -450,13 +449,13 @@ async def test_async_workflow_passes_engine_to_celery(client: AsyncClient, monke
         json={
             "stages": ["plan"],
             "target_languages": ["python"],
-            "engine": "langgraph",
             "execution_mode": "async",
         },
         headers=headers,
     )
     assert res.status_code == 202
     assert len(dispatched) == 1
-    assert dispatched[0]["args"][2] == "langgraph"
+    assert dispatched[0]["name"] == "agent_worker.tasks.run_workflow"
+    assert len(dispatched[0]["args"]) == 2
 
 
