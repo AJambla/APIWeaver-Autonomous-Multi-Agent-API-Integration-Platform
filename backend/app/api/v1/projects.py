@@ -207,7 +207,7 @@ async def get_project(
     last_run_status = await session.scalar(
         select(WorkflowRun.status)
         .where(WorkflowRun.project_id == project.id)
-        .order_by(WorkflowRun.id.desc())
+        .order_by(WorkflowRun.created_at.desc())
         .limit(1)
     )
 

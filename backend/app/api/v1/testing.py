@@ -144,6 +144,61 @@ async def _execute_test_run(
     return state
 
 
+@router.get("/{id}/test-runs/latest", response_model=TestRunSummaryResponse)
+async def get_latest_test_run(
+    project: Project = Depends(require_project_permission(Permission.TEST_READ)),
+    session: AsyncSession = Depends(get_db),
+) -> TestRunSummaryResponse:
+    """Get the latest test run with results and summary for a project."""
+    test_run = await session.scalar(
+        select(TestRun)
+        .where(TestRun.project_id == project.id)
+        .order_by(TestRun.started_at.desc())
+        .limit(1)
+    )
+    if test_run is None:
+        raise NotFoundError("No test runs found for this project.")
+
+    results = list((await session.execute(
+        select(TestResult).where(TestResult.test_run_id == test_run.id)
+    )).scalars())
+
+    result_responses = [
+        TestResultResponse(
+            id=r.id,
+            test_run_id=r.test_run_id,
+            endpoint_id=r.endpoint_id,
+            status=r.status,
+            status_code=r.status_code,
+            latency_ms=r.latency_ms,
+            error=r.response_snapshot.get("error") if r.response_snapshot else None,
+            response_snapshot=r.response_snapshot,
+            stack_trace=r.response_snapshot.get("stack_trace") if r.response_snapshot else None,
+        )
+        for r in results
+    ]
+
+    passed = sum(1 for r in results if r.status == "passed")
+    failed = sum(1 for r in results if r.status == "failed")
+    skipped = sum(1 for r in results if r.status == "skipped")
+
+    stored_summary = test_run.summary or {}
+    errors = [str(error) for error in (stored_summary.get("errors") or [])]
+
+    return TestRunSummaryResponse(
+        test_run_id=test_run.id,
+        status=test_run.status,
+        summary={
+            "total": len(results),
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+        },
+        results=result_responses,
+        errors=errors,
+    )
+
+
 @router.get("/{id}/test-runs/{run_id}", response_model=TestRunSummaryResponse)
 async def get_test_run(
     run_id: uuid.UUID,
