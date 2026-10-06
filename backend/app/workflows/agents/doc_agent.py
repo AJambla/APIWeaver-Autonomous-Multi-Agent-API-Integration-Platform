@@ -129,27 +129,9 @@ async def run_doc_agent(
     text_content = extract_text(raw_bytes, filename, None)
     user_prompt = fence_untrusted("DOCUMENT DATA", text_content[:8000])
 
-    fallback_spec = {
-        "title": "Extracted API Spec",
-        "base_url": "https://api.example.com",
-        "confidence_score": 0.85,
-        "endpoints": [
-            {
-                "method": "GET",
-                "path": "/health",
-                "summary": "Health check",
-                "parameters": [],
-                "request_schema": None,
-                "response_schemas": {"200": {"type": "object"}},
-                "confidence_score": 0.9,
-            }
-        ],
-    }
-
     extracted_json, tokens = await client.generate_json(
         system_prompt=DOC_AGENT_SYSTEM_PROMPT,
         user_prompt=user_prompt,
-        fallback_json=fallback_spec,
     )
     total_tokens += tokens
 

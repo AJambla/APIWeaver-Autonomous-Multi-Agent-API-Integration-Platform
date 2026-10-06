@@ -15,8 +15,10 @@ def _make_settings(**overrides) -> Settings:
         redis_url="redis://localhost:6379/0",
         jwt_private_key_path="test-jwt-key.pem",
         jwt_public_key_path="test-jwt-key.pub",
-        # Production Settings refuse the in-process sandbox (audit M1), which conftest
-        # exports into the environment; these tests only vary app_env and provider keys.
+        openai_api_key="",
+        openai_api_base_url="",
+        anthropic_api_key="",
+        embedding_base_url="",
         sandbox_backend="docker",
     )
     values.update(overrides)
@@ -30,7 +32,6 @@ async def test_generate_json_raises_in_production_without_keys():
         await client.generate_json(
             system_prompt="system",
             user_prompt="user",
-            fallback_json={"answer": "mock"},
         )
 
 
@@ -41,25 +42,21 @@ async def test_generate_embedding_raises_in_production_without_key():
         await client.generate_embedding("hello")
 
 
-async def test_generate_json_still_falls_back_in_development():
+async def test_generate_json_raises_in_development_without_keys():
     client = LLMClient(_make_settings(app_env="development"))
 
-    parsed, tokens = await client.generate_json(
-        system_prompt="system",
-        user_prompt="user",
-        fallback_json={"answer": "mock"},
-    )
-
-    assert parsed == {"answer": "mock"}
-    assert tokens == 50
+    with pytest.raises(DependencyUnavailableError, match="No LLM provider configured"):
+        await client.generate_json(
+            system_prompt="system",
+            user_prompt="user",
+        )
 
 
-async def test_generate_embedding_still_zero_vector_in_development():
+async def test_generate_embedding_raises_in_development_without_key():
     client = LLMClient(_make_settings(app_env="development"))
 
-    embedding = await client.generate_embedding("hello")
-
-    assert embedding == [0.0] * 1536
+    with pytest.raises(DependencyUnavailableError, match="No embedding provider configured"):
+        await client.generate_embedding("hello")
 
 
 async def test_generate_json_uses_provider_when_key_set(monkeypatch):

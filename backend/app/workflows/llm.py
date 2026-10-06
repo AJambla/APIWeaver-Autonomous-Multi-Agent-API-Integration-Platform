@@ -161,32 +161,27 @@ class LLMClient:
         """Calls the LLM with JSON mode, returns (parsed_json, token_count)."""
         full_system_prompt = f"{SHARED_SAFETY_PREAMBLE}\n\n{system_prompt}"
 
-        try:
-            if self.settings.openai_api_key or (
-                self.settings.openai_api_base_url
-                and self.settings.openai_api_base_url.rstrip("/") != "https://api.openai.com/v1"
-            ):
-                return _as_json_object(
-                    await self._call_openai(full_system_prompt, user_prompt), "openai"
-                )
-
-            if self.settings.anthropic_api_key:
-                return _as_json_object(
-                    await self._call_anthropic(full_system_prompt, user_prompt), "anthropic"
-                )
-        except Exception as exc:
-            if self.settings.is_production:
-                raise
-            logger.warning("llm_call_failed_fallback_activated", error=str(exc))
-            return fallback_json or {}, 50
-
-        if self.settings.is_production:
-            raise DependencyUnavailableError(
-                "No LLM provider configured; set OPENAI_API_KEY, OPENAI_API_BASE_URL, or ANTHROPIC_API_KEY."
+        if self.settings.anthropic_api_key and not self.settings.openai_api_key:
+            return _as_json_object(
+                await self._call_anthropic(full_system_prompt, user_prompt), "anthropic"
             )
 
-        logger.info("llm_mock_invocation", reason="no_api_key_configured")
-        return fallback_json or {}, 50
+        if self.settings.openai_api_key or (
+            self.settings.openai_api_base_url
+            and self.settings.openai_api_base_url.rstrip("/") != "https://api.openai.com/v1"
+        ):
+            return _as_json_object(
+                await self._call_openai(full_system_prompt, user_prompt), "openai"
+            )
+
+        if self.settings.anthropic_api_key:
+            return _as_json_object(
+                await self._call_anthropic(full_system_prompt, user_prompt), "anthropic"
+            )
+
+        raise DependencyUnavailableError(
+            "No LLM provider configured; set OPENAI_API_KEY, OPENAI_API_BASE_URL, or ANTHROPIC_API_KEY."
+        )
 
     async def generate_code_file_map(
         self,
@@ -234,17 +229,9 @@ Return a JSON object mapping file_path -> file_content.
             f"Phase: {phase_number if phase_number is not None else 'all'}"
         )
 
-        fallback = {
-            "python": {
-                "models.py": "# Pydantic models\nfrom pydantic import BaseModel\n\nclass BaseModel(BaseModel):\n    pass\n",
-                "client.py": "# API client\nimport httpx\n\nclass APIClient:\n    pass\n",
-            }
-        }
-
         return await self.generate_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            fallback_json=fallback,
         )
 
     async def generate_repair(
@@ -281,15 +268,9 @@ Respond with JSON matching schema: {repair_output_schema}
 
         user_prompt = f"Failure Diagnosis:\n{json.dumps(diagnosis, indent=2)}\n\nSpec Context:\n{json.dumps(spec_context, indent=2)[:4000]}"
 
-        fallback = {
-            "diagnosis": "Could not determine repair strategy",
-            "corrected_content": original_file,
-        }
-
         return await self.generate_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            fallback_json=fallback,
         )
 
     async def classify_failure(
@@ -326,16 +307,9 @@ Respond with JSON: {"classification": "...", "confidence": 0.0-1.0, "reasoning":
             f"Generated Code:\n{generated_code[:3000]}"
         )
 
-        fallback = {
-            "classification": "generated_code_bug",
-            "confidence": 0.5,
-            "reasoning": "Default fallback classification",
-        }
-
         return await self.generate_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            fallback_json=fallback,
         )
 
     async def generate_export_manifest(
@@ -371,15 +345,9 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             f"Test summary: {json.dumps(test_summary, indent=2)}"
         )
 
-        fallback = {
-            "artifacts": [],
-            "metadata": {"export_type": export_type},
-        }
-
         return await self.generate_json(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            fallback_json=fallback,
         )
 
     async def _call_openai(self, system: str, user: str) -> tuple[dict[str, Any], int]:
@@ -447,12 +415,9 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             )
         )
         if not self.settings.openai_api_key and not has_custom_endpoint:
-            if self.settings.is_production:
-                raise DependencyUnavailableError(
-                    "No embedding provider configured; set OPENAI_API_KEY or EMBEDDING_BASE_URL."
-                )
-            logger.info("embedding_mock_invocation", reason="no_openai_api_key")
-            return [0.0] * 1536
+            raise DependencyUnavailableError(
+                "No embedding provider configured; set OPENAI_API_KEY or EMBEDDING_BASE_URL."
+            )
 
         base_url = (
             self.settings.embedding_base_url
@@ -491,12 +456,7 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             except httpx.TransportError as exc:
                 raise _TransientProviderError(f"openai transport error: {exc}") from exc
             data = res.json()
-            raw_emb = data["data"][0]["embedding"]
-            if len(raw_emb) > 1536:
-                return raw_emb[:1536]
-            if len(raw_emb) < 1536:
-                return raw_emb + [0.0] * (1536 - len(raw_emb))
-            return raw_emb
+            return data["data"][0]["embedding"]
 
         return await self._call_provider("openai", send)
 

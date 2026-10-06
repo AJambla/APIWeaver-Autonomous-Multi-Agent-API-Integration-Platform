@@ -36,7 +36,7 @@ the following endpoint group, following the project's style guide:
   def __init__(self, base_url: str | None = None, api_key: str | None = None, **kwargs: Any) -> None:
   Never omit api_key or **kwargs from __init__.
 - Node.js: TypeScript strict mode, Zod schemas, native fetch, ESM modules.
-  Client constructor MUST accept an optional config object: constructor(config?: { baseUrl?: string; apiKey?: string; [key: string]: any })
+  Client constructor MUST accept an optional config object: constructor(config?: {{ baseUrl?: string; apiKey?: string; [key: string]: any }})
 
 Always implement: retry with exponential backoff for 429/500/502/503,
 pagination helpers if the endpoint response indicates pagination
@@ -159,7 +159,6 @@ async def _run_self_review(
         review_json, tokens = await llm_client.generate_json(
             system_prompt=review_prompt,
             user_prompt="Review the generated files for correctness and security.",
-            fallback_json={"passed": True, "issues": [], "summary": "Self-review skipped"},
         )
         return {
             "self_review_passed": review_json.get("passed", True),
@@ -381,7 +380,6 @@ async def run_code_agent(
             consistency_json, tokens = await client.generate_json(
                 system_prompt=consistency_prompt,
                 user_prompt="Review the above files for cross-chunk consistency issues.",
-                fallback_json={},
             )
             total_tokens += tokens
 
@@ -429,12 +427,9 @@ async def run_code_agent(
             f"Endpoints:\n{fence_untrusted('ENDPOINT LIST', endpoint_list)}"
         )
 
-        fallback_files = template_files  # Use templates as fallback
-
         llm_files, tokens = await client.generate_json(
             system_prompt=llm_prompt,
             user_prompt=user_prompt,
-            fallback_json=fallback_files,
         )
         total_tokens += tokens
 
