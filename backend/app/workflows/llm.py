@@ -465,14 +465,19 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.settings.embedding_model,
             "input": text,
+            "dimensions": 1536,
         }
         async def send() -> list[float]:
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     res = await client.post(url, json=payload, headers=headers)
+                    if res.status_code == 400 and "dimensions" in payload:
+                        # Fallback for providers that reject the 'dimensions' parameter
+                        del payload["dimensions"]
+                        res = await client.post(url, json=payload, headers=headers)
                     res.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
@@ -486,7 +491,12 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             except httpx.TransportError as exc:
                 raise _TransientProviderError(f"openai transport error: {exc}") from exc
             data = res.json()
-            return data["data"][0]["embedding"]
+            raw_emb = data["data"][0]["embedding"]
+            if len(raw_emb) > 1536:
+                return raw_emb[:1536]
+            if len(raw_emb) < 1536:
+                return raw_emb + [0.0] * (1536 - len(raw_emb))
+            return raw_emb
 
         return await self._call_provider("openai", send)
 
