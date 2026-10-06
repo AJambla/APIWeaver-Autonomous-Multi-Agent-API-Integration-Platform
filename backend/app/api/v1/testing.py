@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import uuid
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_db
+from app.core.deps import get_db, get_redis
 from app.core.errors import NotFoundError
 from app.models.enums import ActorType, TestEnvironment
 from app.models.project import Project
@@ -23,6 +24,7 @@ from app.schemas.testing import (
     TestRunSummaryResponse,
 )
 from app.services import audit_service
+from app.services.event_publisher import EventPublisher
 from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
 
@@ -35,6 +37,7 @@ async def trigger_test(
     background_tasks: BackgroundTasks,
     project: Project = Depends(require_project_permission(Permission.TEST_RUN)),
     session: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ) -> TestRunResponse:
     """Trigger tests for a project."""
     # Validate environment
@@ -66,7 +69,10 @@ async def trigger_test(
     engine_session_factory = __import__("sqlalchemy.ext.asyncio", fromlist=["async_sessionmaker"]).async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = Orchestrator(engine_session_factory)
+    orchestrator = Orchestrator(
+        engine_session_factory,
+        event_publisher=EventPublisher(redis_client),
+    )
 
     # For now, use a simple workflow state to trigger testing
     initial_state: WorkflowState = {

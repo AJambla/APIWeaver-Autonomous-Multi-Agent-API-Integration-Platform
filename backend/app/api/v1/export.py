@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import uuid
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.deps import get_db
+from app.core.deps import get_db, get_redis
 from app.models.enums import ActorType, ExportType
 from app.models.export import Export
 from app.models.project import Project
@@ -16,6 +17,7 @@ from app.rbac.policy import Permission
 from app.schemas.export import ExportRequest, ExportResponse, MCPExportResponse
 from sqlalchemy import select
 from app.services import audit_service
+from app.services.event_publisher import EventPublisher
 from app.workflows.agents.export_agent import ExportAgent
 from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
@@ -29,6 +31,7 @@ async def trigger_export(
     background_tasks: BackgroundTasks,
     project: Project = Depends(require_project_permission(Permission.EXPORT_CREATE)),
     session: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ) -> ExportResponse:
     """Trigger artifact exports for a project."""
     # Create export record
@@ -63,7 +66,10 @@ async def trigger_export(
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = Orchestrator(engine_session_factory)
+    orchestrator = Orchestrator(
+        engine_session_factory,
+        event_publisher=EventPublisher(redis_client),
+    )
 
     initial_state: WorkflowState = {
         "project_id": str(project.id),
