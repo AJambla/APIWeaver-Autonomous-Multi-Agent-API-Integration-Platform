@@ -16,7 +16,7 @@ docker compose -f docker-compose.dev.yml up --build
 
 | Service | Local Port |
 |---|---|
-| Next.js frontend | 3000 |
+| React (Vite) frontend | 3000 |
 | FastAPI backend | 8000 |
 | PostgreSQL | 5432 |
 | Redis | 6379 |
@@ -24,13 +24,13 @@ docker compose -f docker-compose.dev.yml up --build
 | MinIO (S3-compatible, local) | 9000 |
 | Local LLM (optional, Ollama/Llama) | 11434 |
 
-Hot-reload enabled for both frontend (Next.js dev server) and backend (`uvicorn --reload`). Seed data script (`scripts/seed_dev.py`) populates a sample project with a pre-parsed OpenAPI spec for immediate UI development without needing a real upload.
+Hot-reload enabled for both frontend (Vite dev server) and backend (`uvicorn --reload`). Seed data script (`scripts/seed_dev.py`) populates a sample project with a pre-parsed OpenAPI spec for immediate UI development without needing a real upload.
 
 ---
 
 ## 2. Production Environment
 
-Managed SaaS deployment runs on **AWS EKS** (see `Architecture.md §6` deployment diagram). Self-hosted customers deploy via the provided **Helm chart** or **Docker Compose (single-node)** for smaller installations.
+Production deployment runs via **Docker Compose (single-node production stack)** or cloud provisioning via **AWS Terraform modules**.
 
 ---
 
@@ -61,19 +61,16 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine
-WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
-USER node
-EXPOSE 3000
-CMD ["node", "server.js"]
+FROM nginxinc/nginx-unprivileged:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/ || exit 1
+CMD ["nginx", "-g", "daemon off;"]
 ```
 
 ---
