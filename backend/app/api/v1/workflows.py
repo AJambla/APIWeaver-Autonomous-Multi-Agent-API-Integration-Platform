@@ -289,6 +289,19 @@ async def cancel_workflow_run(
     )
 
     try:
+        from app.services.agent_event_service import record_agent_event
+        await record_agent_event(
+            session,
+            workflow_run_id=run.id,
+            agent_name="orchestrator",
+            event_type="workflow_finished",
+            payload={"status": "cancelled", "reason": "user_cancelled"},
+        )
+        await session.flush()
+    except Exception:
+        pass
+
+    try:
         from app.services.event_publisher import EventPublisher
         event_pub = EventPublisher(redis_client)
         await event_pub.publish_workflow_completed(
