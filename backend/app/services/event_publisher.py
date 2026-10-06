@@ -98,12 +98,25 @@ class EventPublisher:
         project_id: str | None,
         status: str,
         result: dict[str, Any] | None = None,
+        progress_percent: int | None = None,
     ) -> None:
+        if progress_percent is None:
+            if status == "completed":
+                progress = 100
+            elif status == "paused_for_approval":
+                progress = 50
+            elif status == "cancelled":
+                progress = 0
+            else:
+                progress = 90
+        else:
+            progress = progress_percent
+
         await self.publish(
             run_id,
             project_id,
             "workflow.completed",
-            {"status": status, "progress_percent": 100, "result": result or {}},
+            {"status": status, "progress_percent": progress, "result": result or {}},
         )
 
     async def publish_test_result(
