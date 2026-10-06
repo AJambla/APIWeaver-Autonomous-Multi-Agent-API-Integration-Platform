@@ -29,9 +29,11 @@ from app.workflows.agents.export_agent import ExportAgent
 from app.workflows.agents.planner_agent import run_planner_agent
 from app.workflows.agents.test_agent import run_test_agent
 from app.workflows.event_recorder import record_agent_event
+from app.workflows.langgraph_logger import LangGraphAgentLogger
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
+terminal_logger = LangGraphAgentLogger()
 
 DEFAULT_TOKEN_BUDGET = 1_000_000
 
@@ -98,10 +100,39 @@ def create_apiweaver_graph(
     async def doc_agent_node(state: WorkflowState) -> dict[str, Any]:
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
-        logger.info("langgraph_doc_node_started", run_id=run_id)
+        doc_filename = state.get("document_filename", "unspecified_spec")
+        terminal_logger.log_start(
+            "doc_agent",
+            run_id,
+            details=f"Document: '{doc_filename}' | Parsing & Normalizing API Specification",
+        )
 
         tokens_before = state.get("total_tokens_used", 0)
-        doc_updates = await run_doc_agent(state, qdrant_client=qdrant_client)
+        try:
+            doc_updates = await run_doc_agent(state, qdrant_client=qdrant_client)
+        except Exception as exc:
+            terminal_logger.log_failure("doc_agent", run_id, exc)
+            raise
+
+        tokens_after = doc_updates.get("total_tokens_used", tokens_before)
+        spec = doc_updates.get("normalized_spec") or state.get("normalized_spec") or {}
+        endpoints = spec.get("endpoints", [])
+
+        if doc_updates.get("is_fallback") or not endpoints:
+            terminal_logger.log_fallback(
+                "doc_agent",
+                run_id,
+                reason="Non-standard document or heuristic normalizer triggered",
+                fallback_action="Applied deterministic baseline schema extraction",
+            )
+
+        terminal_logger.log_complete(
+            "doc_agent",
+            run_id,
+            tokens_before=tokens_before,
+            tokens_after=tokens_after,
+            details=f"Normalized API Spec '{spec.get('title', 'API')}' with {len(endpoints)} endpoints",
+        )
 
         updates: dict[str, Any] = {
             **doc_updates,
@@ -145,9 +176,41 @@ def create_apiweaver_graph(
     async def planner_agent_node(state: WorkflowState) -> dict[str, Any]:
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
-        logger.info("langgraph_planner_node_started", run_id=run_id)
+        endpoints = (state.get("normalized_spec") or {}).get("endpoints", [])
+        terminal_logger.log_start(
+            "planner_agent",
+            run_id,
+            details=f"Analyzing {len(endpoints)} endpoints for topological DAG ordering & dependency clustering",
+        )
 
-        planner_updates = await run_planner_agent(state)
+        tokens_before = state.get("total_tokens_used", 0)
+        try:
+            planner_updates = await run_planner_agent(state)
+        except Exception as exc:
+            terminal_logger.log_failure("planner_agent", run_id, exc)
+            raise
+
+        tokens_after = planner_updates.get("total_tokens_used", tokens_before)
+        plan = planner_updates.get("execution_plan") or {}
+        phases = plan.get("phases", [])
+        nodes = plan.get("dependency_graph", {}).get("nodes", [])
+
+        if planner_updates.get("is_fallback"):
+            terminal_logger.log_fallback(
+                "planner_agent",
+                run_id,
+                reason="Model fallback or simplified specification",
+                fallback_action="Applied algorithmic dependency graph & phase DAG clustering",
+            )
+
+        terminal_logger.log_complete(
+            "planner_agent",
+            run_id,
+            tokens_before=tokens_before,
+            tokens_after=tokens_after,
+            details=f"Synthesized execution plan with {len(phases)} phase(s) and {len(nodes)} DAG node(s)",
+        )
+
         updates: dict[str, Any] = {
             **planner_updates,
             "progress_percent": 30,
@@ -183,7 +246,11 @@ def create_apiweaver_graph(
     # 3. Human Approval Gate Node (holds execution until human sign-off)
     async def approval_gate_node(state: WorkflowState) -> dict[str, Any]:
         run_id = state.get("workflow_run_id", "")
-        logger.info("langgraph_approval_gate_reached", run_id=run_id)
+        terminal_logger.log_idle(
+            "approval_gate",
+            run_id,
+            reason="Human approval gate reached. Workflow paused awaiting project owner sign-off",
+        )
 
         updates: dict[str, Any] = {
             "status": WorkflowStatus.PAUSED_FOR_APPROVAL,
@@ -205,29 +272,55 @@ def create_apiweaver_graph(
     async def code_agent_node(state: WorkflowState) -> dict[str, Any]:
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
-        logger.info("langgraph_code_node_started", run_id=run_id)
-
         plan = state.get("execution_plan", {})
         phases = plan.get("phases", [])
-        settings = get_settings()
-
-        generated_files = list(state.get("generated_files", []))
-        total_tokens = state.get("total_tokens_used", 0)
-
-        # Run phases
-        for phase in phases:
-            phase_num = phase.get("phase_number")
-            phase_result = await run_code_agent(state, phase_number=phase_num)
-            generated_files.extend(phase_result.get("generated_files", []))
-            total_tokens += phase_result.get("total_tokens_used", 0)
-
-        # Consistency pass
-        consistency_result = await run_code_agent(
-            {**state, "generated_files": generated_files},  # type: ignore[misc]
-            phase_number=None,
+        target_langs = state.get("target_languages", ["python"])
+        terminal_logger.log_start(
+            "code_agent",
+            run_id,
+            details=f"Target Languages: {target_langs} across {len(phases)} execution phase(s)",
         )
-        if consistency_result.get("generated_files"):
-            generated_files = consistency_result["generated_files"]
+
+        tokens_before = state.get("total_tokens_used", 0)
+        generated_files = list(state.get("generated_files", []))
+        total_tokens = tokens_before
+
+        try:
+            for phase in phases:
+                phase_num = phase.get("phase_number")
+                phase_result = await run_code_agent(state, phase_number=phase_num)
+                generated_files.extend(phase_result.get("generated_files", []))
+                total_tokens += phase_result.get("total_tokens_used", 0)
+
+            # Consistency pass
+            consistency_result = await run_code_agent(
+                {**state, "generated_files": generated_files},  # type: ignore[misc]
+                phase_number=None,
+            )
+            if consistency_result.get("generated_files"):
+                generated_files = consistency_result["generated_files"]
+                total_tokens += consistency_result.get("total_tokens_used", 0)
+        except Exception as exc:
+            terminal_logger.log_failure("code_agent", run_id, exc)
+            raise
+
+        if any(f.get("is_fallback") for f in generated_files):
+            terminal_logger.log_fallback(
+                "code_agent",
+                run_id,
+                reason="Template-based client synthesis used",
+                fallback_action="Applied jinja2 baseline SDK templates",
+            )
+
+        file_names = [f.get("file_path", "") for f in generated_files[:4]]
+        preview_files = ", ".join(file_names) + ("..." if len(generated_files) > 4 else "")
+        terminal_logger.log_complete(
+            "code_agent",
+            run_id,
+            tokens_before=tokens_before,
+            tokens_after=total_tokens,
+            details=f"Generated {len(generated_files)} SDK file(s) ({preview_files})",
+        )
 
         updates: dict[str, Any] = {
             "generated_files": generated_files,
@@ -250,9 +343,41 @@ def create_apiweaver_graph(
     async def test_agent_node(state: WorkflowState) -> dict[str, Any]:
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
-        logger.info("langgraph_test_node_started", run_id=run_id)
+        backend = get_settings().sandbox_backend.upper()
+        terminal_logger.log_start(
+            "test_agent",
+            run_id,
+            details=f"Executing verification suite inside {backend} sandbox environment",
+        )
 
-        test_updates = await run_test_agent(state, session_factory=session_factory)
+        tokens_before = state.get("total_tokens_used", 0)
+        try:
+            test_updates = await run_test_agent(state, session_factory=session_factory)
+        except Exception as exc:
+            terminal_logger.log_failure("test_agent", run_id, exc)
+            raise
+
+        tokens_after = test_updates.get("total_tokens_used", tokens_before)
+        summary = test_updates.get("test_run_summary") or {}
+        passed = summary.get("passed", 0)
+        failed = summary.get("failed", 0)
+
+        if failed > 0:
+            terminal_logger.log_fallback(
+                "test_agent",
+                run_id,
+                reason=f"{failed} test(s) failed inside sandbox",
+                fallback_action="Triggering self-healing repair cycle via repair_agent",
+            )
+
+        terminal_logger.log_complete(
+            "test_agent",
+            run_id,
+            tokens_before=tokens_before,
+            tokens_after=tokens_after,
+            details=f"Sandbox test run complete: {passed} passed, {failed} failed (duration: {summary.get('duration_ms', 0)}ms)",
+        )
+
         updates: dict[str, Any] = {
             **test_updates,
             "progress_percent": 75,
@@ -273,23 +398,39 @@ def create_apiweaver_graph(
     async def repair_agent_node(state: WorkflowState) -> dict[str, Any]:
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
-        logger.info("langgraph_repair_node_started", run_id=run_id)
-
         attempts = list(state.get("repair_attempts", []))
         attempt_number = len(attempts) + 1
+        terminal_logger.log_start(
+            "repair_agent",
+            run_id,
+            details=f"Self-healing repair attempt #{attempt_number}/3 | Diagnosing failures & repairing client",
+        )
 
-        # Track attempt
-        attempts.append({
-            "attempt_number": attempt_number,
-            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
-            "outcome": "in_progress",
-        })
+        tokens_before = state.get("total_tokens_used", 0)
+        try:
+            attempts.append({
+                "attempt_number": attempt_number,
+                "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+                "outcome": "in_progress",
+            })
+            repaired = await run_code_agent(state, phase_number=None)
+        except Exception as exc:
+            terminal_logger.log_failure("repair_agent", run_id, exc)
+            raise
 
-        # Re-run consistency/repair pass on generated code
-        repaired = await run_code_agent(state, phase_number=None)
+        tokens_after = repaired.get("total_tokens_used", tokens_before)
+        repaired_files = repaired.get("generated_files", state.get("generated_files", []))
+
+        terminal_logger.log_complete(
+            "repair_agent",
+            run_id,
+            tokens_before=tokens_before,
+            tokens_after=tokens_after,
+            details=f"Repair pass applied to {len(repaired_files)} file(s); re-routing back to test_agent",
+        )
 
         updates: dict[str, Any] = {
-            "generated_files": repaired.get("generated_files", state.get("generated_files", [])),
+            "generated_files": repaired_files,
             "repair_attempts": attempts,
             "current_node": "repair_agent",
         }
@@ -308,10 +449,30 @@ def create_apiweaver_graph(
     async def export_agent_node(state: WorkflowState) -> dict[str, Any]:
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
-        logger.info("langgraph_export_node_started", run_id=run_id)
+        terminal_logger.log_start(
+            "export_agent",
+            run_id,
+            details="Packaging SDK distribution bundles, wheel/npm archives, and docs",
+        )
 
-        export_agent = ExportAgent(session_factory=session_factory)
-        export_updates = await export_agent.run(state)
+        tokens_before = state.get("total_tokens_used", 0)
+        try:
+            export_agent = ExportAgent(session_factory=session_factory)
+            export_updates = await export_agent.run(state)
+        except Exception as exc:
+            terminal_logger.log_failure("export_agent", run_id, exc)
+            raise
+
+        tokens_after = export_updates.get("total_tokens_used", tokens_before)
+        artifacts = export_updates.get("export_artifacts", [])
+
+        terminal_logger.log_complete(
+            "export_agent",
+            run_id,
+            tokens_before=tokens_before,
+            tokens_after=tokens_after,
+            details=f"Export packaging complete: {len(artifacts)} distribution artifact(s) published",
+        )
 
         updates: dict[str, Any] = {
             **export_updates,
@@ -338,6 +499,14 @@ def create_apiweaver_graph(
             WorkflowStatus.PAUSED_FOR_APPROVAL
             if current_status == WorkflowStatus.PAUSED_FOR_APPROVAL
             else WorkflowStatus.COMPLETED
+        )
+
+        terminal_logger.log_complete(
+            "finalize",
+            run_id,
+            0,
+            0,
+            details=f"LangGraph execution finished with final status: {final_status.value.upper()}",
         )
 
         updates: dict[str, Any] = {

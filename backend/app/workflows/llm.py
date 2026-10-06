@@ -161,18 +161,24 @@ class LLMClient:
         """Calls the LLM with JSON mode, returns (parsed_json, token_count)."""
         full_system_prompt = f"{SHARED_SAFETY_PREAMBLE}\n\n{system_prompt}"
 
-        if self.settings.openai_api_key or (
-            self.settings.openai_api_base_url
-            and self.settings.openai_api_base_url.rstrip("/") != "https://api.openai.com/v1"
-        ):
-            return _as_json_object(
-                await self._call_openai(full_system_prompt, user_prompt), "openai"
-            )
+        try:
+            if self.settings.openai_api_key or (
+                self.settings.openai_api_base_url
+                and self.settings.openai_api_base_url.rstrip("/") != "https://api.openai.com/v1"
+            ):
+                return _as_json_object(
+                    await self._call_openai(full_system_prompt, user_prompt), "openai"
+                )
 
-        if self.settings.anthropic_api_key:
-            return _as_json_object(
-                await self._call_anthropic(full_system_prompt, user_prompt), "anthropic"
-            )
+            if self.settings.anthropic_api_key:
+                return _as_json_object(
+                    await self._call_anthropic(full_system_prompt, user_prompt), "anthropic"
+                )
+        except Exception as exc:
+            if self.settings.is_production:
+                raise
+            logger.warning("llm_call_failed_fallback_activated", error=str(exc))
+            return fallback_json or {}, 50
 
         if self.settings.is_production:
             raise DependencyUnavailableError(
