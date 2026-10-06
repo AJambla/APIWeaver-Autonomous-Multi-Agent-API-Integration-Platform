@@ -198,6 +198,12 @@ import traceback
 
 async def _main() -> int:
     payload_path = os.environ.get("APIWEAVER_PAYLOAD_PATH", "/sandbox/payload.json")
+    if "/sandbox" not in sys.path:
+        sys.path.insert(0, "/sandbox")
+    payload_dir = os.path.dirname(payload_path)
+    if payload_dir and payload_dir not in sys.path:
+        sys.path.insert(0, payload_dir)
+
     with open(payload_path, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
 
@@ -270,14 +276,15 @@ async def _main() -> int:
 def _run() -> int:
     try:
         return asyncio.run(_main())
-    except Exception:
+    except Exception as exc:
         failure = traceback.format_exc()
+        error_msg = str(exc) if str(exc) else (failure.strip().splitlines()[-1] if failure else "Unknown error")
         print("APIWEAVER_RESULT:" + json.dumps({
             "status": "failed",
             "status_code": None,
             "latency_ms": 0,
             "response_snapshot": None,
-            "error": failure,
+            "error": error_msg,
             "stack_trace": failure,
         }))
         return 1
@@ -593,7 +600,7 @@ class DockerSandboxExecutor:
                 image=sandbox_img,
                 command=sandbox_cmd,
                 environment=environment,
-                binds={str(self._workspace): {"bind": "/sandbox", "mode": "ro"}},
+                volumes={str(self._workspace): {"bind": "/sandbox", "mode": "ro"}},
                 tmpfs={"/tmp": "size=64m"},
                 nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
                 mem_limit=_memory_to_bytes(self._settings.sandbox_max_memory),
