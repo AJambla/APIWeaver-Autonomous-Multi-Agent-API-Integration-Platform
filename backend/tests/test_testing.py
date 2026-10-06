@@ -310,3 +310,16 @@ class TestTestingAPI:
         )
         assert own.status_code == 200, own.text
         assert [r["outcome"] for r in own.json()] == ["resolved"]
+
+    @pytest.mark.asyncio
+    async def test_get_latest_test_run_returns_latest_run(self, client, db):
+        """GET /projects/{id}/test-runs/latest returns the most recent test run."""
+        headers, project_a, _, (run_a, _), _ = (
+            await self._seed_viewer_with_two_projects(client, db, "latestrun")
+        )
+
+        res = await client.get(
+            f"/api/v1/projects/{project_a}/test-runs/latest", headers=headers
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["test_run_id"] == str(run_a)
