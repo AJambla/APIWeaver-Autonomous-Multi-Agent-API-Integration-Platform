@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
+import re
 import uuid
 from typing import Any
 
@@ -18,6 +20,16 @@ from app.services.spec_normalizer import NormalizedSpec, normalize
 from app.services.storage_service import ObjectStorage
 
 logger = get_logger(__name__)
+
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize uploaded document filename to prevent path traversal and injection."""
+    base = Path(filename).name.strip()
+    base = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", base)
+    base = base.replace("..", "").strip(". ")
+    if not base:
+        base = "document"
+    return base[:255]
 
 
 def _guess_format_from_filename(filename: str) -> str:
@@ -74,7 +86,7 @@ async def ingest_document(
         raise ConflictError("This document has already been uploaded to the project.")
 
     document_id = uuid.uuid4()
-    safe_name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] or "document"
+    safe_name = sanitize_filename(filename)
     object_key = f"projects/{project_id}/documents/{document_id}/{safe_name}"
     await storage.put(key=object_key, content=content, content_type=content_type)
 

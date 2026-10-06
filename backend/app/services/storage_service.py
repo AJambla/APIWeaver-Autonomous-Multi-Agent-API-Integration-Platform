@@ -24,6 +24,17 @@ class ObjectStorage(Protocol):
     async def download(self, key: str) -> bytes: ...
 
 
+def validate_storage_key(key: str) -> str:
+    """Validate storage key to prevent directory traversal or malformed paths."""
+    if not isinstance(key, str):
+        raise ValueError("Storage key must be a string")
+    cleaned = key.strip().replace("\\", "/").lstrip("/")
+    parts = cleaned.split("/")
+    if any(part in ("..", ".") for part in parts) or not cleaned:
+        raise ValueError(f"Invalid or unsafe storage key: {key}")
+    return cleaned
+
+
 class AsyncS3ObjectStorage:
     """Async S3-compatible storage client using aiobotocore; works with AWS S3 and MinIO."""
 
@@ -47,6 +58,7 @@ class AsyncS3ObjectStorage:
     async def get(self, *, key: str) -> bytes | None:
         import botocore.exceptions
 
+        key = validate_storage_key(key)
         async with await self._get_client() as client:
             try:
                 response = await client.get_object(Bucket=self._bucket, Key=key)
@@ -59,11 +71,13 @@ class AsyncS3ObjectStorage:
                 raise
 
     async def put(self, *, key: str, content: bytes, content_type: str | None) -> None:
+        key = validate_storage_key(key)
         extra = {"ContentType": content_type} if content_type else {}
         async with await self._get_client() as client:
             await client.put_object(Bucket=self._bucket, Key=key, Body=content, **extra)
 
     async def delete(self, *, key: str) -> None:
+        key = validate_storage_key(key)
         async with await self._get_client() as client:
             await client.delete_object(Bucket=self._bucket, Key=key)
 
@@ -84,12 +98,15 @@ class InMemoryObjectStorage:
         self._store: dict[str, bytes] = {}
 
     async def get(self, *, key: str) -> bytes | None:
+        key = validate_storage_key(key)
         return self._store.get(key)
 
     async def put(self, *, key: str, content: bytes, content_type: str | None = None) -> None:
+        key = validate_storage_key(key)
         self._store[key] = content
 
     async def delete(self, *, key: str) -> None:
+        key = validate_storage_key(key)
         self._store.pop(key, None)
 
     async def upload(self, key: str, content: bytes) -> None:
