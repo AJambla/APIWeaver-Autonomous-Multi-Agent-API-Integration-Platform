@@ -66,9 +66,20 @@ async def test_record_agent_event_persists_tool_calls(db: AsyncSession) -> None:
     assert calls[0].result == {"s3_key": "generated/x/1/client.py"}
 
 
+from app.workflows.llm import LLMClient
+
+
 async def test_plan_run_writes_events_visible_in_project_logs(
-    client: AsyncClient, db: AsyncSession
+    client: AsyncClient, db: AsyncSession, monkeypatch
 ) -> None:
+    async def _fake_planner_generate_json(*args, **kwargs):
+        return {
+            "phases": [{"phase_number": 1, "name": "Users", "endpoints": ["GET /users", "POST /users"]}],
+            "dependency_graph": {"nodes": [], "edges": []},
+        }, 50
+
+    monkeypatch.setattr(LLMClient, "generate_json", _fake_planner_generate_json)
+
     res = await client.post(
         "/api/v1/auth/register",
         json={

@@ -167,8 +167,14 @@ def test_settings(repo_root: Path) -> Iterator[Settings]:
     # the Docker backend (audit finding C2).
     previous = os.environ.get("SANDBOX_BACKEND")
     previous_env = os.environ.get("APP_ENV")
+    previous_openai_key = os.environ.get("OPENAI_API_KEY")
+    previous_openai_base = os.environ.get("OPENAI_API_BASE_URL")
+    previous_anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
     os.environ["SANDBOX_BACKEND"] = "mock"
     os.environ["APP_ENV"] = "development"
+    os.environ["OPENAI_API_KEY"] = ""
+    os.environ["OPENAI_API_BASE_URL"] = ""
+    os.environ["ANTHROPIC_API_KEY"] = ""
     try:
         yield Settings(
             database_url="sqlite+aiosqlite:///:memory:",
@@ -178,6 +184,9 @@ def test_settings(repo_root: Path) -> Iterator[Settings]:
             app_env="development",
             log_level="WARNING",
             sandbox_backend="mock",
+            openai_api_key="",
+            openai_api_base_url="",
+            anthropic_api_key="",
         )
     finally:
         if previous is None:
@@ -188,6 +197,18 @@ def test_settings(repo_root: Path) -> Iterator[Settings]:
             os.environ.pop("APP_ENV", None)
         else:
             os.environ["APP_ENV"] = previous_env
+        if previous_openai_key is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = previous_openai_key
+        if previous_openai_base is None:
+            os.environ.pop("OPENAI_API_BASE_URL", None)
+        else:
+            os.environ["OPENAI_API_BASE_URL"] = previous_openai_base
+        if previous_anthropic_key is None:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        else:
+            os.environ["ANTHROPIC_API_KEY"] = previous_anthropic_key
 
 
 @pytest.fixture(autouse=True)

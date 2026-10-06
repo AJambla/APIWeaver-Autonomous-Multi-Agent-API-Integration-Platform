@@ -171,8 +171,21 @@ class TestLLMClientEmbedding:
 
 class TestRunDocAgentWithQdrant:
     @pytest.mark.asyncio
-    async def test_run_doc_agent_upserts_to_qdrant(self):
+    async def test_run_doc_agent_upserts_to_qdrant(self, monkeypatch):
         """Test that doc_agent calls Qdrant upsert when client provided."""
+        async def fake_generate_json(self, *args, **kwargs):
+            return {
+                "title": "API",
+                "base_url": "https://api.example.com",
+                "endpoints": [{"method": "GET", "path": "/test", "summary": "Test endpoint"}],
+            }, 50
+
+        async def fake_generate_embedding(self, chunk: str) -> list[float]:
+            return [0.0] * 1536
+
+        monkeypatch.setattr(LLMClient, "generate_json", fake_generate_json)
+        monkeypatch.setattr(LLMClient, "generate_embedding", fake_generate_embedding)
+
         fake_qdrant = FakeQdrantClient()
         state: WorkflowState = {
             "project_id": str(uuid.uuid4()),
