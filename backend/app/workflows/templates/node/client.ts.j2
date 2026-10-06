@@ -170,7 +170,6 @@ export class {{ title.replace(' ', '').replace('-', '') }}Client {
     throw lastError || new APIWeaverError("Request failed after retries");
   }
 
-  // {% for resource, endpoints in resources.items() %}
   // {{ resource.title() }} Endpoints
   {% for resource, endpoints in resources.items() %}
   {% for ep in endpoints %}
@@ -226,7 +225,7 @@ export class {{ title.replace(' ', '').replace('-', '') }}Client {
 {% set op_id = ep.get('operationId', ep.path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
 export async function {{ op_id }}(
   {% for param in ep.get('parameters', []) %}
-  {% if param.location == 'path' or (param.location == 'query' && param.required) %}
+  {% if param.location == 'path' or (param.location == 'query' and param.required) %}
   {{ param.name }}: {{ 'string' if param.type == 'string' else param.type }},
   {% endif %}
   {% endfor %}
@@ -238,7 +237,7 @@ export async function {{ op_id }}(
   const c = client || new {{ title.replace(' ', '').replace('-', '') }}Client();
   return c.{{ op_id }}(
     {% for param in ep.get('parameters', []) %}
-    {% if param.location == 'path' or (param.location == 'query' && param.required) %}
+    {% if param.location == 'path' or (param.location == 'query' and param.required) %}
     {{ param.name }},
     {% endif %}
     {% endfor %}
