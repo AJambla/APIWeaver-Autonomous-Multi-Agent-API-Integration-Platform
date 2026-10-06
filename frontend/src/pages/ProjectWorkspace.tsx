@@ -378,6 +378,7 @@ export const ProjectWorkspace: React.FC = () => {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [buildError, setBuildError] = useState('');
+  const [targetLanguages, setTargetLanguages] = useState<string[]>(['python', 'node']);
 
   /* --- test tab --- */
   const [testEnv, setTestEnv] = useState('sandbox');
@@ -654,7 +655,7 @@ export const ProjectWorkspace: React.FC = () => {
           method: 'POST',
           body: JSON.stringify({
             approved: true,
-            target_languages: ['python', 'node'],
+            target_languages: targetLanguages.length > 0 ? targetLanguages : ['python', 'node'],
           }),
         });
         setActiveRunId(runId);
@@ -694,7 +695,7 @@ export const ProjectWorkspace: React.FC = () => {
         method: 'POST',
         body: JSON.stringify({
           stages: ['plan', 'generate', 'test', 'export'],
-          target_languages: ['python', 'node'],
+          target_languages: targetLanguages.length > 0 ? targetLanguages : ['python', 'node'],
           execution_mode: 'sync',
         }),
       });
@@ -1328,24 +1329,55 @@ export const ProjectWorkspace: React.FC = () => {
                 <h2 className="text-lg font-medium tracking-tight">Agent Build & Execution</h2>
                 <p className="text-xs text-neutral-500">Trigger the multi-agent pipeline and monitor each agent's event stream.</p>
               </div>
-              <button
-                onClick={activeRun?.status === 'paused_for_approval' ? () => setActiveTab('plan') : runBuild}
-                disabled={(runIsLive && activeRun?.status !== 'paused_for_approval') || !project}
-                className={btnPrimary}
-              >
-                {activeRun?.status === 'paused_for_approval' ? (
-                  <CheckCircle2 className="h-4 w-4 text-amber-400" />
-                ) : runIsLive ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Play className="h-4 w-4" />
-                )}
-                {activeRun?.status === 'paused_for_approval'
-                  ? 'Review Plan (Approval Required)'
-                  : runIsLive
-                  ? 'Pipeline Running…'
-                  : 'Run Build Pipeline'}
-              </button>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 p-1 text-xs">
+                  <span className="px-2 text-neutral-400 font-mono text-[11px]">Targets:</span>
+                  {(['python', 'node'] as const).map(lang => {
+                    const isSelected = targetLanguages.includes(lang);
+                    return (
+                      <button
+                        key={lang}
+                        type="button"
+                        onClick={() => {
+                          setTargetLanguages(prev => {
+                            if (isSelected) {
+                              if (prev.length <= 1) return prev; // Keep at least one
+                              return prev.filter(l => l !== lang);
+                            } else {
+                              return [...prev, lang];
+                            }
+                          });
+                        }}
+                        className={`rounded px-2.5 py-1 font-mono uppercase transition-colors ${
+                          isSelected
+                            ? 'bg-blue-600/40 text-blue-200 border border-blue-500/30'
+                            : 'text-neutral-500 hover:text-neutral-300'
+                        }`}
+                      >
+                        {lang}
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  onClick={activeRun?.status === 'paused_for_approval' ? () => setActiveTab('plan') : runBuild}
+                  disabled={(runIsLive && activeRun?.status !== 'paused_for_approval') || !project}
+                  className={btnPrimary}
+                >
+                  {activeRun?.status === 'paused_for_approval' ? (
+                    <CheckCircle2 className="h-4 w-4 text-amber-400" />
+                  ) : runIsLive ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Play className="h-4 w-4" />
+                  )}
+                  {activeRun?.status === 'paused_for_approval'
+                    ? 'Review Plan (Approval Required)'
+                    : runIsLive
+                    ? 'Pipeline Running…'
+                    : 'Run Build Pipeline'}
+                </button>
+              </div>
             </div>
 
             {buildError && <ErrorBanner message={buildError} onDismiss={() => setBuildError('')} />}

@@ -412,7 +412,7 @@ async def run_code_agent(
             target_language=language,
             auth_scheme=_get_auth_scheme(spec),
             endpoint_group_json=fence_untrusted(
-                "ENDPOINT GROUP DATA", json.dumps(endpoint_group, indent=2)[:12000]
+                "ENDPOINT GROUP DATA", json.dumps(endpoint_group, indent=2)[:60000]
             ),
         )
 

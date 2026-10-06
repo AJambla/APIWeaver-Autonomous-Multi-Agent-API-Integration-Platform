@@ -132,7 +132,7 @@ async def run_doc_agent(
 
     # 3. Freeform document extraction via LLM
     text_content = extract_text(raw_bytes, filename, None)
-    user_prompt = fence_untrusted("DOCUMENT DATA", text_content[:8000])
+    user_prompt = fence_untrusted("DOCUMENT DATA", text_content[:64000])
 
     extracted_json, tokens = await client.generate_json(
         system_prompt=DOC_AGENT_SYSTEM_PROMPT,

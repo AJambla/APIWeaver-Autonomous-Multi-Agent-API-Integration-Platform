@@ -212,7 +212,7 @@ class FailureClassifier:
     async def classify(self, error: dict[str, Any], endpoint: dict[str, Any], history: list[dict] | None = None) -> dict[str, Any]:
         """Classify a test failure."""
         response_body = fence_untrusted(
-            "RESPONSE DATA", json.dumps(error.get("response_snapshot", {}), indent=2)[:2000]
+            "RESPONSE DATA", json.dumps(error.get("response_snapshot", {}), indent=2)[:10000]
         )
         endpoint_history = fence_untrusted("HISTORY DATA", json.dumps(history or [], indent=2))
 
