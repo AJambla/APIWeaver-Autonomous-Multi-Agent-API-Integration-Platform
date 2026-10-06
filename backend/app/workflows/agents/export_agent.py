@@ -66,7 +66,7 @@ class ExportAgent:
         normalized_spec = state.get("normalized_spec", {})
 
         if export_types is None:
-            export_types = [e.value for e in ExportType]
+            export_types = state.get("export_types") or [e.value for e in ExportType]
 
         artifacts = []
         status = "completed"

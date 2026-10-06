@@ -22,6 +22,7 @@ from app.models.auth_config import AuthConfig, SecretRef
 from app.models.enums import AuthScheme
 from app.services.sandbox_service import DockerSandboxExecutor, _safe_workspace_target
 from app.services.storage_service import storage_service
+from app.services.test_run_service import record_test_run_results
 from app.services.vault_service import create_vault_client
 from app.workflows.agents.code_agent import run_code_agent
 from app.workflows.llm import LLMClient, fence_untrusted
@@ -408,7 +409,19 @@ async def run_test_agent(
     spec = state.get("normalized_spec")
     generated_files = state.get("generated_files", [])
 
+    async def _record_failure(error: str) -> None:
+        if session_factory is None:
+            return
+        await record_test_run_results(
+            session_factory,
+            workflow_run_id=state.get("workflow_run_id"),
+            project_id=state.get("project_id"),
+            status="failed",
+            errors=[error],
+        )
+
     if not spec:
+        await _record_failure("Cannot run tests without a normalized API spec.")
         return {
             "current_node": "test_agent",
             "progress_percent": 50,
@@ -417,6 +430,7 @@ async def run_test_agent(
         }
 
     if not generated_files:
+        await _record_failure("No generated files to test.")
         return {
             "current_node": "test_agent",
             "progress_percent": 50,
@@ -570,6 +584,16 @@ async def run_test_agent(
             "pass_rate": passed / len(test_results) if test_results else 0,
             "repair_attempts": len(repair_attempts),
         }
+
+        if session_factory is not None:
+            await record_test_run_results(
+                session_factory,
+                workflow_run_id=state.get("workflow_run_id"),
+                project_id=state.get("project_id"),
+                test_suite=test_results,
+                summary=test_run_summary,
+                status="completed" if all_passed else "completed_with_failures",
+            )
 
         return {
             "test_suite": test_results,
