@@ -173,6 +173,14 @@ async def export_mcp(
         {"tools_generated": 0, "flagged_destructive": 0, "artifacts": []},
     )
 
+    exp = Export(
+        project_id=project.id,
+        export_type=ExportType.MCP.value,
+        status="completed",
+    )
+    session.add(exp)
+    await session.commit()
+
     return MCPExportResponse(
         mcp_manifest_url=f"/api/v1/projects/{project.id}/exports/mcp/manifest.json",
         tools_generated=mcp_artifact.get("tools_generated", 0),
@@ -190,7 +198,7 @@ async def list_exports(
     stmt = (
         select(Export)
         .where(Export.project_id == project.id)
-        .order_by(Export.id.desc())
+        .order_by(Export.created_at.desc())
         .limit(limit)
     )
     rows = list((await session.execute(stmt)).scalars().all())
