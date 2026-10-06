@@ -26,7 +26,6 @@ from app.services.sandbox_service import DockerSandboxExecutor, _safe_workspace_
 from app.services.storage_service import storage_service
 from app.services.test_run_service import record_test_run_results
 from app.services.vault_service import create_vault_client
-from app.workflows.agents.code_agent import run_code_agent
 from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.state import WorkflowState
 

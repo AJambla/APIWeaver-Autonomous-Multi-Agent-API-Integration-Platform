@@ -74,6 +74,7 @@ def _setup_langsmith_correlation() -> None:
 
     try:
         from langsmith import Client as LangSmithClient
+        from opentelemetry import trace
 
         client = LangSmithClient(api_key=langsmith_key)
 

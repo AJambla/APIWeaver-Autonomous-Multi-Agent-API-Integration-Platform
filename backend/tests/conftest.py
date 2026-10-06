@@ -337,9 +337,6 @@ async def auth_headers(client: AsyncClient) -> dict[str, str]:
     """A bearer token for a freshly registered org owner."""
     import uuid as _uuid
 
-    from app.core.config import get_settings
-
-    settings = get_settings()
     email = f"auth-{_uuid.uuid4().hex[:10]}@example.com"
     resp = await client.post(
         "/api/v1/auth/register",

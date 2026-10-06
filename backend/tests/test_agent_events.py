@@ -16,6 +16,7 @@ from app.models.enums import ProjectRole
 from app.models.spec import APISpec
 from app.models.workflow import AgentEvent, ToolCall, WorkflowRun
 from app.workflows.event_recorder import record_agent_event
+from app.workflows.llm import LLMClient
 from tests.conftest import (
     TEST_PASSWORD,
     add_org_member,
@@ -64,9 +65,6 @@ async def test_record_agent_event_persists_tool_calls(db: AsyncSession) -> None:
     assert calls[0].arguments == {"file_path": "client.py", "language": "python"}
     assert calls[1].duration_ms == 12
     assert calls[0].result == {"s3_key": "generated/x/1/client.py"}
-
-
-from app.workflows.llm import LLMClient
 
 
 async def test_plan_run_writes_events_visible_in_project_logs(

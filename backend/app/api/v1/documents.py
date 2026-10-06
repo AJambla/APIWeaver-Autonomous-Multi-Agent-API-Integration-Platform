@@ -30,6 +30,7 @@ from app.schemas.document import EndpointResponse, SpecResponse, UploadResponse
 from app.services import audit_service
 from app.services.event_publisher import EventPublisher
 from app.services.ingestion_service import ingest_document
+from app.services.storage_service import ObjectStorage
 from app.workflows.langgraph_pipeline import LangGraphOrchestrator
 from app.workflows.state import WorkflowState
 

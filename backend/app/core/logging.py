@@ -77,7 +77,7 @@ def _redact_value(value: Any, depth: int = 0) -> Any:
             key: REDACTED if _is_sensitive_key(str(key)) else _redact_value(item, depth + 1)
             for key, item in value.items()
         }
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return [_redact_value(item, depth + 1) for item in value]
     return value
 

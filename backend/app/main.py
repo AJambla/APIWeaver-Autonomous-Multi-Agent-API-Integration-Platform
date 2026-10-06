@@ -70,9 +70,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if settings.run_migrations_on_startup:
         import asyncio
+        from pathlib import Path
+
         from alembic import command
         from alembic.config import Config
-        from pathlib import Path
 
         def _run_upgrade() -> None:
             backend_dir = Path(__file__).resolve().parent.parent

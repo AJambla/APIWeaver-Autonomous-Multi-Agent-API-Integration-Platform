@@ -217,6 +217,7 @@ async def test_docs_and_spec_are_served_in_development(test_settings: Settings) 
 async def test_run_migrations_on_startup_triggers_upgrade(test_settings: Settings, monkeypatch) -> None:
     """When run_migrations_on_startup=True, lifespan executes alembic upgrade head."""
     from unittest.mock import AsyncMock, MagicMock
+
     from alembic import command
     from app.main import lifespan
 

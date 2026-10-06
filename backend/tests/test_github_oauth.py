@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+
 import pytest
 
 from app.api.v1.github import create_github_oauth_client
