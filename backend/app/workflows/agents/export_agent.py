@@ -62,7 +62,7 @@ class ExportAgent:
         project_id = state.get("project_id")
         generated_files = state.get("generated_files", [])
         test_run_summary = state.get("test_run_summary", {})
-        target_languages = state.get("target_languages", ["python"])
+        target_languages = state.get("target_languages") or ["python", "node"]
         normalized_spec = state.get("normalized_spec", {})
 
         if export_types is None:
@@ -300,7 +300,24 @@ async def {op_id}():
         dockerfile_key = f"exports/{project_id}/docker/Dockerfile"
         compose_key = f"exports/{project_id}/docker/docker-compose.yml"
 
-        dockerfile = '''FROM python:3.12-slim AS builder
+        if "python" not in target_languages and "node" in target_languages:
+            dockerfile = '''FROM node:22-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci || npm install
+COPY . .
+RUN npm run build || true
+
+FROM node:22-alpine
+WORKDIR /app
+COPY --from=builder /app ./
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \\
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+CMD ["npm", "start"]
+'''
+        else:
+            dockerfile = '''FROM python:3.12-slim AS builder
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -496,7 +513,7 @@ volumes:
                     "type": "github",
                     "status": "skipped",
                     "error": "No GitHub App installation found. Connect GitHub and install the app on your repository or organization.",
-                    "install_url": "https://github.com/apps/apiweaver/installations",
+                    "install_url": f"https://github.com/apps/{getattr(settings, 'github_app_slug', 'apiweaver')}/installations",
                 }
 
             installation_token = await github_client.get_installation_token(installation_id)

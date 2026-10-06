@@ -492,7 +492,7 @@ def create_apiweaver_graph(
         run_id = state.get("workflow_run_id", "")
         plan = state.get("execution_plan", {})
         phases = plan.get("phases", [])
-        target_langs = state.get("target_languages", ["python"])
+        target_langs = state.get("target_languages") or ["python", "node"]
         terminal_logger.log_start(
             "code_agent",
             run_id,
@@ -617,9 +617,10 @@ def create_apiweaver_graph(
                         select(CodeGenerationRun).where(CodeGenerationRun.workflow_run_id == run_uuid)
                     )
                     if existing_run is None:
+                        primary_lang = target_langs[0] if (target_langs and target_langs[0] in ("python", "node")) else "python"
                         existing_run = CodeGenerationRun(
                             workflow_run_id=run_uuid,
-                            target_language="python",
+                            target_language=primary_lang,
                             status="completed",
                         )
                         session.add(existing_run)

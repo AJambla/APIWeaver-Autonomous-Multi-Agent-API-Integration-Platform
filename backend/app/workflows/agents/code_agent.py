@@ -252,7 +252,7 @@ async def run_code_agent(
 
     spec = state.get("normalized_spec")
     execution_plan = state.get("execution_plan")
-    target_languages = state.get("target_languages", ["python"])
+    target_languages = state.get("target_languages") or ["python", "node"]
     generated_files = state.get("generated_files", [])
 
     if not spec:

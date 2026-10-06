@@ -468,7 +468,7 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             "Content-Type": "application/json",
         }
         payload = {
-            "model": "claude-3-5-sonnet-20241022",
+            "model": self.settings.anthropic_model,
             "system": system,
             "messages": [
                 {"role": "user", "content": f"{user}\n\nRespond ONLY with valid JSON."}
