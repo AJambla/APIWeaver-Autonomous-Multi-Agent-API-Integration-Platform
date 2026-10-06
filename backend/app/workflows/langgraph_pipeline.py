@@ -11,6 +11,7 @@ import datetime
 import uuid
 from typing import Any, Callable, Literal, cast
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -19,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.enums import WorkflowStatus
+from app.models.spec import APISpec, Endpoint
 from app.models.workflow import WorkflowCheckpoint, WorkflowRun
 from app.services.event_publisher import EventPublisher
 from app.services.ingestion_service import persist_endpoint_dependencies, persist_normalized_spec
@@ -316,7 +318,56 @@ def create_apiweaver_graph(
         await _assert_not_cancelled(state)
         check_budget(state)
         run_id = state.get("workflow_run_id", "")
-        endpoints = (state.get("normalized_spec") or {}).get("endpoints", [])
+        spec = dict(state.get("normalized_spec") or {})
+        endpoints = spec.get("endpoints", [])
+        if not endpoints and session_factory and state.get("project_id"):
+            try:
+                async with session_factory() as session:
+                    api_spec_record = await session.scalar(
+                        select(APISpec)
+                        .where(APISpec.project_id == uuid.UUID(str(state["project_id"])))
+                        .order_by(APISpec.created_at.desc())
+                        .limit(1)
+                    )
+                    if api_spec_record:
+                        endpoint_records = (
+                            await session.scalars(
+                                select(Endpoint)
+                                .where(Endpoint.api_spec_id == api_spec_record.id)
+                            )
+                        ).all()
+                        raw_data = api_spec_record.raw_normalized or {}
+                        hydrated_endpoints = [
+                            {
+                                "id": str(ep.id),
+                                "method": ep.method,
+                                "path": ep.path,
+                                "summary": ep.summary,
+                                "parameters": [
+                                    {
+                                        "name": p.name,
+                                        "location": p.location,
+                                        "type": p.type,
+                                        "required": p.required,
+                                    }
+                                    for p in getattr(ep, "parameters", [])
+                                ],
+                                "request_schema": ep.request_schema,
+                                "response_schemas": ep.response_schemas,
+                            }
+                            for ep in endpoint_records
+                        ]
+                        spec = {
+                            **raw_data,
+                            "title": api_spec_record.title or raw_data.get("title", "API Specification"),
+                            "base_url": api_spec_record.base_url or raw_data.get("base_url", ""),
+                            "endpoints": hydrated_endpoints if hydrated_endpoints else raw_data.get("endpoints", []),
+                        }
+                        state["normalized_spec"] = spec
+                        endpoints = spec.get("endpoints", [])
+            except Exception as e:
+                logger.warning("planner_spec_hydration_failed", error=str(e))
+
         terminal_logger.log_start(
             "planner_agent",
             run_id,
@@ -718,14 +769,26 @@ def create_apiweaver_graph(
         test_suite = state.get("test_suite", [])
         failed_tests = [r for r in test_suite if r.get("status") == "failed"]
 
-        target_file_path = "client.py"
+        primary_failure = failed_tests[0] if failed_tests else {}
+        error_context = f"{primary_failure.get('error', '')} {primary_failure.get('stack_trace', '')}"
+
+        # Detect actual failing file from stack trace or error message
+        target_file_path = None
         for f in repaired_files:
             fp = f.get("file_path", "")
-            if "client" in fp.lower():
+            base_name = fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            if base_name and (base_name in error_context or fp in error_context):
                 target_file_path = fp
                 break
 
-        primary_failure = failed_tests[0] if failed_tests else {}
+        if not target_file_path:
+            for f in repaired_files:
+                fp = f.get("file_path", "")
+                if "client" in fp.lower():
+                    target_file_path = fp
+                    break
+            else:
+                target_file_path = repaired_files[0].get("file_path", "client.py") if repaired_files else "client.py"
         failure_diagnosis = {
             "failed_tests_count": len(failed_tests),
             "method": primary_failure.get("method", "GET"),

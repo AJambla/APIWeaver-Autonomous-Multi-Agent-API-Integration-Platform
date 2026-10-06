@@ -22,8 +22,8 @@ export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(itemSchema: T) =
 
 export type PaginatedResponse<T> = z.infer<ReturnType<typeof PaginatedResponseSchema<T>>>;
 
-// {{ resource.title() }} Models
 {% for resource, endpoints in resources.items() %}
+// {{ resource.title() }} Models
 {% for ep in endpoints %}
 {% set method = ep.method.upper() %}
 {% set path = ep.path %}

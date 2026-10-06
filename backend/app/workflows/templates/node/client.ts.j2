@@ -170,10 +170,10 @@ export class {{ title.replace(' ', '').replace('-', '') }}Client {
     throw lastError || new APIWeaverError("Request failed after retries");
   }
 
-  // {{ resource.title() }} Endpoints
   {% for resource, endpoints in resources.items() %}
+  // {{ resource.title() }} Endpoints
   {% for ep in endpoints %}
-  {% set method = ep.method.toLowerCase() %}
+  {% set method = ep.method.lower() %}
   {% set path = ep.path %}
   {% set summary = ep.summary or path %}
   {% set op_id = ep.get('operationId', path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
@@ -187,7 +187,7 @@ export class {{ title.replace(' ', '').replace('-', '') }}Client {
     {% endif %}
     {% endfor %}
     {% if ep.get('request_schema') %}
-    , body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request
+    body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request,
     {% endif %}
   ): Promise<{ data: unknown; response: Response }> {
     /** {{ summary }}. */
@@ -209,7 +209,7 @@ export class {{ title.replace(' ', '').replace('-', '') }}Client {
     {% endif %}
     {% endfor %}
 
-    return this.request({{ method.toUpperCase() }}, url, {
+    return this.request("{{ method.upper() }}", url, {
       params,
       body: body,
     });
@@ -230,9 +230,9 @@ export async function {{ op_id }}(
   {% endif %}
   {% endfor %}
   {% if ep.get('request_schema') %}
-  , body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request
+  body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request,
   {% endif %}
-  , client?: {{ title.replace(' ', '').replace('-', '') }}Client
+  client?: {{ title.replace(' ', '').replace('-', '') }}Client
 ): Promise<{ data: unknown; response: Response }> {
   const c = client || new {{ title.replace(' ', '').replace('-', '') }}Client();
   return c.{{ op_id }}(

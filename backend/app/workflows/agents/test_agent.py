@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import time
 import traceback
@@ -88,9 +89,16 @@ class MockSandboxClient:
                 full_path = _safe_workspace_target(temp_dir, file_path)
                 if full_path is None:
                     logger.warning("sandbox_path_rejected", file=file_path)
-                    continue
                 full_path.parent.mkdir(parents=True, exist_ok=True)
-                full_path.write_bytes(content)
+                if file_path.endswith(".py"):
+                    try:
+                        text = content.decode("utf-8") if isinstance(content, bytes) else str(content)
+                        text = re.sub(r'^(from\s+)\.([a-zA-Z_][a-zA-Z0-9_]*\s+import)', r'\1\2', text, flags=re.MULTILINE)
+                        text = re.sub(r'^from\s+\.\s+import\s+([a-zA-Z_][a-zA-Z0-9_]*)', r'import \1', text, flags=re.MULTILINE)
+                        content = text.encode("utf-8")
+                    except Exception:
+                        pass
+                full_path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
 
                 # Add to sys.path if not already
                 if str(temp_dir) not in sys.path:

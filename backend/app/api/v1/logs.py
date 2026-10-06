@@ -56,6 +56,7 @@ async def get_project_logs(
     items = [
         {
             "id": str(row.id),
+            "workflow_run_id": str(row.workflow_run_id) if row.workflow_run_id else None,
             "event_type": row.event_type,
             "agent_name": row.agent_name,
             "payload": row.payload,

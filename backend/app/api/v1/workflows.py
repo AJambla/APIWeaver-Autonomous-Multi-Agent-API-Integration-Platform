@@ -61,6 +61,23 @@ async def trigger_workflow(
         .limit(1)
     )
 
+    # Supersede any active or paused runs for this project
+    stale_runs = (
+        await session.scalars(
+            select(WorkflowRun).where(
+                WorkflowRun.project_id == project.id,
+                WorkflowRun.status.in_([
+                    WorkflowStatus.RUNNING,
+                    WorkflowStatus.QUEUED,
+                    WorkflowStatus.PAUSED_FOR_APPROVAL,
+                ]),
+            )
+        )
+    ).all()
+    for stale in stale_runs:
+        stale.status = WorkflowStatus.CANCELLED
+        stale.error_details = {"reason": "superseded_by_new_trigger"}
+
     run = WorkflowRun(
         project_id=project.id,
         triggered_by=principal.user_id,
@@ -102,6 +119,9 @@ async def trigger_workflow(
         event_publisher=event_publisher,
         execution_mode=payload.execution_mode,
     )
+
+    # Commit before dispatching background worker so concurrent sessions see all persisted rows
+    await session.commit()
 
     if payload.execution_mode == "async":
         try:
@@ -235,10 +255,14 @@ async def approve_workflow_gate(
         resume_state = dict(latest_checkpoint.state_snapshot)
         resume_state["plan_approved"] = True
         resume_state["approval_notes"] = payload.notes
+        if not resume_state.get("target_languages") or resume_state.get("target_languages") == ["python"]:
+            resume_state["target_languages"] = ["python", "node"]
         if (resume_state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(resume_state.get("repair_attempts", [])) >= 3:
             resume_state["stages"] = ["export"]
         else:
             resume_state["stages"] = ["generate", "test", "export"]
+
+        await session.commit()
 
         engine_session_factory = async_sessionmaker(
             bind=session.bind, class_=AsyncSession, expire_on_commit=False
@@ -248,6 +272,8 @@ async def approve_workflow_gate(
             event_publisher=EventPublisher(redis_client),
         )
         background_tasks.add_task(orchestrator.run, run.id, resume_state)
+    else:
+        await session.commit()
 
     return ApproveWorkflowResponse(
         workflow_run_id=run.id,

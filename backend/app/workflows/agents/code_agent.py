@@ -35,6 +35,7 @@ the following endpoint group, following the project's style guide:
   CRITICAL CONSTRUCTOR REQUIREMENT: The main Client class __init__ MUST accept:
   def __init__(self, base_url: str | None = None, api_key: str | None = None, **kwargs: Any) -> None:
   Never omit api_key or **kwargs from __init__.
+  IMPORTANT IMPORT RULE: For Python sibling modules, always use top-level imports (e.g. `from models import *` or `import models`, NOT package-relative `from .models import *`) so modules can be imported directly when staged in sys.path without package parent context.
 - Node.js: TypeScript strict mode, Zod schemas, native fetch, ESM modules.
   Client constructor MUST accept an optional config object: constructor(config?: {{ baseUrl?: string; apiKey?: string; [key: string]: any }})
 

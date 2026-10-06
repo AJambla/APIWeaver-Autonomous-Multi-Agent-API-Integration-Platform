@@ -1288,9 +1288,23 @@ export const ProjectWorkspace: React.FC = () => {
                 <h2 className="text-lg font-medium tracking-tight">Agent Build & Execution</h2>
                 <p className="text-xs text-neutral-500">Trigger the multi-agent pipeline and monitor each agent's event stream.</p>
               </div>
-              <button onClick={runBuild} disabled={runIsLive || !project} className={btnPrimary}>
-                {runIsLive ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                {runIsLive ? 'Pipeline Running…' : 'Run Build Pipeline'}
+              <button
+                onClick={activeRun?.status === 'paused_for_approval' ? () => setActiveTab('plan') : runBuild}
+                disabled={(runIsLive && activeRun?.status !== 'paused_for_approval') || !project}
+                className={btnPrimary}
+              >
+                {activeRun?.status === 'paused_for_approval' ? (
+                  <CheckCircle2 className="h-4 w-4 text-amber-400" />
+                ) : runIsLive ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Play className="h-4 w-4" />
+                )}
+                {activeRun?.status === 'paused_for_approval'
+                  ? 'Review Plan (Approval Required)'
+                  : runIsLive
+                  ? 'Pipeline Running…'
+                  : 'Run Build Pipeline'}
               </button>
             </div>
 
@@ -1621,6 +1635,14 @@ export const ProjectWorkspace: React.FC = () => {
                 visibleLogs.map(ev => (
                   <div key={ev.id} className="flex items-start gap-3 border-b border-white/5 py-2 last:border-0">
                     <span className="shrink-0 text-neutral-500">[{formatEventTime(ev.created_at)}]</span>
+                    {ev.workflow_run_id && (
+                      <span
+                        className="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 font-mono text-[10px] text-blue-400"
+                        title={`Run ID: ${ev.workflow_run_id}`}
+                      >
+                        {ev.workflow_run_id.slice(0, 8)}
+                      </span>
+                    )}
                     <span className="shrink-0 rounded bg-white/10 px-2 py-0.5 text-[10px] text-neutral-300">{ev.agent_name || 'System'}</span>
                     <span className="shrink-0 rounded bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wider text-neutral-400">{ev.event_type}</span>
                     <span className="min-w-0 flex-1 break-words text-neutral-200">{eventMessage(ev.payload) || '—'}</span>
