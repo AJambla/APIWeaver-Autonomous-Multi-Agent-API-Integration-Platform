@@ -332,12 +332,20 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \\
 CMD ["python", "main.py"]
 '''
 
-        compose = '''version: "3.8"
+        is_node_only = "python" not in target_languages and "node" in target_languages
+        api_port = "3000" if is_node_only else "8000"
+        health_cmd = (
+            '["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]'
+            if is_node_only
+            else '["CMD", "curl", "-f", "http://localhost:8000/health"]'
+        )
+
+        compose = f'''version: "3.8"
 services:
   api:
     build: .
     ports:
-      - "8000:8000"
+      - "{api_port}:{api_port}"
     environment:
       - DATABASE_URL=postgresql://user:pass@db:5432/apiweaver
       - REDIS_URL=redis://redis:6379/0
@@ -347,7 +355,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: {health_cmd}
       interval: 30s
       timeout: 3s
       retries: 3
