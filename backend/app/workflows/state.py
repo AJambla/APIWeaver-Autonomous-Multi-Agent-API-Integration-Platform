@@ -33,6 +33,7 @@ class WorkflowState(TypedDict, total=False):
     generated_files: list[dict[str, Any]]
     test_suite: list[dict[str, Any]]
     test_run_summary: dict[str, Any] | None
+    repair_attempts: list[dict[str, Any]]
 
     # Export stage
     export_types: list[str] | None

@@ -31,6 +31,7 @@ the following endpoint group, following the project's style guide:
 
 - Python: PEP 8, type hints on all functions, Pydantic v2 models, httpx for
   HTTP, structured custom exceptions per error class, docstrings (Google style).
+  Use standard library, httpx, and pydantic ONLY. Do not import external packages like tenacity (implement retries using standard loops / asyncio.sleep).
 - Node.js: TypeScript strict mode, Zod schemas, native fetch, ESM modules.
 
 Always implement: retry with exponential backoff for 429/500/502/503,
@@ -57,8 +58,8 @@ Failure context:
 - Previous repair attempts (if any): {prior_attempts_summary}
 
 Produce a MINIMAL, targeted patch that addresses the specific failure. Do not
-rewrite unrelated code. Explain your diagnosis in ≤2 sentences in the
-`diagnosis` field, then return the corrected file content in full.
+rewrite unrelated code. Use standard library and httpx/pydantic only.
+Explain your diagnosis in ≤2 sentences in the `diagnosis` field, then return the corrected file content in full.
 
 Respond with JSON matching schema: {repair_output_schema}
 """
