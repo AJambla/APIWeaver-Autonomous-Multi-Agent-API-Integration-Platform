@@ -166,7 +166,9 @@ def test_settings(repo_root: Path) -> Iterator[Settings]:
     # Tests opt into the in-process sandbox explicitly; production defaults to
     # the Docker backend (audit finding C2).
     previous = os.environ.get("SANDBOX_BACKEND")
+    previous_env = os.environ.get("APP_ENV")
     os.environ["SANDBOX_BACKEND"] = "mock"
+    os.environ["APP_ENV"] = "development"
     try:
         yield Settings(
             database_url="sqlite+aiosqlite:///:memory:",
@@ -182,6 +184,10 @@ def test_settings(repo_root: Path) -> Iterator[Settings]:
             os.environ.pop("SANDBOX_BACKEND", None)
         else:
             os.environ["SANDBOX_BACKEND"] = previous
+        if previous_env is None:
+            os.environ.pop("APP_ENV", None)
+        else:
+            os.environ["APP_ENV"] = previous_env
 
 
 @pytest.fixture(autouse=True)
