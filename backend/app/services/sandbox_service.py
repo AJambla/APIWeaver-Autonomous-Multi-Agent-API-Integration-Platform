@@ -178,6 +178,8 @@ class MockSandboxClient:
 
 
 def create_sandbox_client(settings: Settings) -> SandboxClient:
+    if settings.sandbox_backend == "docker":
+        return DockerSandboxExecutor(settings)
     return MockSandboxClient()
 
 

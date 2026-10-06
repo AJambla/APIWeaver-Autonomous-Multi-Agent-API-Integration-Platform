@@ -367,7 +367,7 @@ export const ProjectWorkspace: React.FC = () => {
   const [menuCopied, setMenuCopied] = useState(false);
 
   /* --- plan tab --- */
-  const [dagPlan, setDagPlan] = useState('1. Parse OpenAPI schema & extract models\n2. Generate FastAPI routers & Pydantic validation\n3. Initialize Celery background tasks & storage service\n4. Execute self-healing test suite');
+  const [dagPlan, setDagPlan] = useState('');
   const [planDocOpen, setPlanDocOpen] = useState(false);
   const [planApproved, setPlanApproved] = useState(false);
   const [planBusy, setPlanBusy] = useState(false);
@@ -423,7 +423,13 @@ export const ProjectWorkspace: React.FC = () => {
       ]);
       setSpec(specRes);
       setEndpoints(Array.isArray(endpointsRes) ? endpointsRes : []);
-      if (graphRes) setGraph(graphRes);
+      if (graphRes) {
+        setGraph(graphRes);
+        if (graphRes.nodes && graphRes.nodes.length > 0) {
+          const lines = graphRes.nodes.map((n, i) => `${i + 1}. [${n.method}] ${n.path}${n.label ? ` - ${n.label}` : ''}`);
+          setDagPlan(lines.join('\n'));
+        }
+      }
       setLogs(logsRes?.data ?? []);
       setExports(Array.isArray(exportsRes) ? exportsRes : []);
       if (testRes) setTestSummary(testRes);
@@ -540,7 +546,15 @@ export const ProjectWorkspace: React.FC = () => {
   useEffect(() => {
     if (activeTab === 'plan' && id && (!graph || graph.edges.length === 0)) {
       apiFetch<DependencyGraph>(`/projects/${id}/dependency-graph`)
-        .then(g => { if (g) setGraph(g); })
+        .then(g => {
+          if (g) {
+            setGraph(g);
+            if (g.nodes && g.nodes.length > 0) {
+              const lines = g.nodes.map((n, i) => `${i + 1}. [${n.method}] ${n.path}${n.label ? ` - ${n.label}` : ''}`);
+              setDagPlan(lines.join('\n'));
+            }
+          }
+        })
         .catch(() => {});
     }
   }, [activeTab, id, graph]);
