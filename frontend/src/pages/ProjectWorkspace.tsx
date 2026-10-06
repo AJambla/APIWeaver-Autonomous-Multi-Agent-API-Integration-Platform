@@ -112,7 +112,7 @@ const NEXT_STAGES = [
   { title: 'Continue', desc: 'Move to the Topological Plan.' },
 ];
 
-const DEFAULT_SPEC = 'openapi: 3.0.0\ninfo:\n  title: Sample API\n  version: 1.0.0\npaths: {}';
+const DEFAULT_SPEC = 'openapi: 3.0.0\ninfo:\n  title: API Specification\n  version: 1.0.0\npaths: {}';
 
 const METHOD_STYLES: Record<string, string> = {
   GET: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',

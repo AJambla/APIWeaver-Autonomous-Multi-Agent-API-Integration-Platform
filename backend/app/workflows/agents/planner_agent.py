@@ -99,34 +99,10 @@ async def run_planner_agent(
         if method == "DELETE":
             destructive.append({"method": method, "path": path, "auto_test_safe": False})
 
-    # Prepare LLM fallback plan
-    fallback_plan = {
-        "summary": f"Execution plan for {spec.get('title', 'API')} ({len(endpoints)} endpoints)",
-        "resource_groups": [
-            {
-                "name": "Default Group",
-                "endpoints": [f"{ep.get('method')} {ep.get('path')}" for ep in endpoints],
-            }
-        ],
-        "phases": [
-            {
-                "phase_number": 1,
-                "name": "All Endpoints",
-                "endpoints": [f"{ep.get('method')} {ep.get('path')}" for ep in endpoints],
-            }
-        ],
-        "dependency_graph": {
-            "nodes": nodes,
-            "edges": edges,
-        },
-        "destructive_endpoints": destructive,
-    }
-
     user_prompt = fence_untrusted("SPEC DATA", json.dumps(spec, indent=2)[:8000])
     plan_json, tokens = await client.generate_json(
         system_prompt=PLANNER_SYSTEM_PROMPT,
         user_prompt=user_prompt,
-        fallback_json=fallback_plan,
     )
     total_tokens += tokens
 

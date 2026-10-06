@@ -214,16 +214,11 @@ class FailureClassifier:
             endpoint_history=endpoint_history,
         )
 
-        try:
-            classification_json, _ = await self.client.generate_json(
-                system_prompt="",
-                user_prompt=prompt,
-                fallback_json={"classification": "generated_code_bug", "confidence": 0.5, "reasoning": "Default fallback"},
-            )
-            return classification_json
-        except Exception as e:
-            logger.warning("failure_classification_failed", error=str(e))
-            return {"classification": "generated_code_bug", "confidence": 0.5, "reasoning": f"Classification failed: {e}"}
+        classification_json, _ = await self.client.generate_json(
+            system_prompt="",
+            user_prompt=prompt,
+        )
+        return classification_json
 
 
 async def generate_test_fixtures(spec: dict[str, Any], llm_client: LLMClient | None = None) -> dict[str, Any]:
@@ -250,24 +245,11 @@ async def generate_test_fixtures(spec: dict[str, Any], llm_client: LLMClient | N
             ),
         )
 
-        try:
-            fixture_json, _ = await client.generate_json(
-                system_prompt="You are a test fixture generator. Output only valid JSON.",
-                user_prompt=prompt,
-                fallback_json={
-                    "request": {"params": {}, "body": None},
-                    "expected_status": 200,
-                    "expected_response_shape": {},
-                },
-            )
-            fixtures[ep_key] = fixture_json
-        except Exception as e:
-            logger.warning("fixture_generation_failed", endpoint=ep_key, error=str(e))
-            fixtures[ep_key] = {
-                "request": {"params": {}, "body": None},
-                "expected_status": 200,
-                "expected_response_shape": {},
-            }
+        fixture_json, _ = await client.generate_json(
+            system_prompt="You are a test fixture generator. Output only valid JSON.",
+            user_prompt=prompt,
+        )
+        fixtures[ep_key] = fixture_json
 
     return fixtures
 
