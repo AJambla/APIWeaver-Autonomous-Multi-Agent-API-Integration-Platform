@@ -13,6 +13,7 @@ class HistoryItemResponse(ResponseModel):
     workflow_run_id: uuid.UUID
     status: str
     stages: list[str]
+    run_type: str | None = None
     started_at: datetime.datetime
     completed_at: datetime.datetime | None
     total_tokens: int

@@ -61,18 +61,38 @@ async def get_project_history(
         last = page_rows[-1]
         next_cursor = encode_cursor({"created_at": last.started_at.isoformat(), "id": str(last.id)})
 
-    items = [
-        HistoryItemResponse(
-            id=row.id,
-            workflow_run_id=row.id,
-            status=row.status,
-            stages=[],  # Would need to fetch from checkpoints or state
-            started_at=row.started_at or row.created_at,
-            completed_at=row.completed_at,
-            total_tokens=row.total_tokens_used,
+    run_ids = [row.id for row in page_rows]
+    latest_cp_by_run: dict[uuid.UUID, WorkflowCheckpoint] = {}
+    if run_ids:
+        from app.models.workflow import WorkflowCheckpoint
+        checkpoints_stmt = (
+            select(WorkflowCheckpoint)
+            .where(WorkflowCheckpoint.workflow_run_id.in_(run_ids))
+            .order_by(WorkflowCheckpoint.created_at.desc())
         )
-        for row in page_rows
-    ]
+        all_checkpoints = list((await session.execute(checkpoints_stmt)).scalars().all())
+        for cp in all_checkpoints:
+            if cp.workflow_run_id not in latest_cp_by_run:
+                latest_cp_by_run[cp.workflow_run_id] = cp
+
+    items = []
+    for row in page_rows:
+        cp = latest_cp_by_run.get(row.id)
+        snapshot = cp.state_snapshot if cp else {}
+        stages = snapshot.get("stages", []) if isinstance(snapshot, dict) else []
+        run_type = "export" if (stages == ["export"]) else "workflow"
+        items.append(
+            HistoryItemResponse(
+                id=row.id,
+                workflow_run_id=row.id,
+                status=row.status,
+                stages=stages,
+                run_type=run_type,
+                started_at=row.started_at or row.created_at,
+                completed_at=row.completed_at,
+                total_tokens=row.total_tokens_used,
+            )
+        )
 
     return HistoryResponse(
         data=items,
