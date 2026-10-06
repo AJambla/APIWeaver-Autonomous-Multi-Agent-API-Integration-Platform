@@ -405,10 +405,10 @@ export const ProjectWorkspace: React.FC = () => {
       ]);
       setProject(summary);
       if (history?.data?.length) {
-        const pausedRun = history.data.find(r => r.status === 'paused_for_approval');
         const inFlightRun = history.data.find(r => ['queued', 'running'].includes(r.status));
+        const pausedRun = history.data.find(r => r.status === 'paused_for_approval');
         const latestWorkflowRun = history.data.find(r => r.run_type !== 'export' || r.stages?.includes('plan'));
-        const chosenRun = pausedRun || inFlightRun || latestWorkflowRun || history.data[0];
+        const chosenRun = inFlightRun || pausedRun || latestWorkflowRun || history.data[0];
         setLatestRun(chosenRun);
       }
 
@@ -460,6 +460,10 @@ export const ProjectWorkspace: React.FC = () => {
     const latest = runEvents[runEvents.length - 1];
     if (!latest || !activeRunId) return;
     const payload = (latest.payload ?? {}) as Record<string, unknown>;
+    const isPaused =
+      (latest.event_type === 'workflow.completed' && payload.status === 'paused_for_approval') ||
+      latest.event_type === 'workflow.paused';
+
     setActiveRun(prev => {
       if (!prev) return prev;
       if (latest.event_type === 'workflow.started') {
@@ -476,11 +480,7 @@ export const ProjectWorkspace: React.FC = () => {
           progress_percent: typeof payload.progress_percent === 'number' ? payload.progress_percent : prev.progress_percent,
         };
       }
-      if (
-        (latest.event_type === 'workflow.completed' && payload.status === 'paused_for_approval') ||
-        latest.event_type === 'workflow.paused'
-      ) {
-        loadProjectData();
+      if (isPaused) {
         return {
           ...prev,
           status: 'paused_for_approval',
@@ -489,6 +489,10 @@ export const ProjectWorkspace: React.FC = () => {
       }
       return prev;
     });
+
+    if (isPaused) {
+      loadProjectData();
+    }
   }, [runEvents, activeRunId, loadProjectData]);
 
   /* A terminal stream event ends the watch: reconcile from REST, then detach. */
@@ -575,7 +579,19 @@ export const ProjectWorkspace: React.FC = () => {
         file ?? new File([specContent], 'openapi.yaml', { type: 'application/yaml' });
       const formData = new FormData();
       formData.append('file', payloadFile);
-      formData.append('format_hint', 'openapi');
+
+      // Omit hardcoded format_hint so backend content-sniffing inspects the payload directly.
+      // If content was pasted and clearly matches a format, optionally provide hint.
+      if (mode === 'paste') {
+        const snippet = specContent.slice(0, 1000);
+        if (snippet.includes('"swagger"') || snippet.includes('swagger:')) {
+          formData.append('format_hint', 'swagger');
+        } else if (snippet.includes('"info"') && snippet.includes('"item"')) {
+          formData.append('format_hint', 'postman');
+        } else if (snippet.includes('"openapi"') || snippet.includes('openapi:')) {
+          formData.append('format_hint', 'openapi');
+        }
+      }
 
       const result = await apiFetch<UploadResponse>(`/projects/${id}/upload`, {
         method: 'POST',
@@ -630,7 +646,10 @@ export const ProjectWorkspace: React.FC = () => {
       if (runId) {
         await apiFetch(`/workflows/${runId}/approve`, {
           method: 'POST',
-          body: JSON.stringify({ approved: true }),
+          body: JSON.stringify({
+            approved: true,
+            target_languages: ['python', 'node'],
+          }),
         });
         setActiveRunId(runId);
         setActiveRun(prev => (prev ? { ...prev, status: 'running' } : null));
@@ -1059,15 +1078,30 @@ export const ProjectWorkspace: React.FC = () => {
                 {phase === 'error' && <ErrorBanner message={uploadError || 'Unable to process specification.'} onDismiss={() => setPhase('idle')} />}
                 {phase === 'success' && uploadedMeta && (
                   <div className={`${cardCls} flex flex-wrap items-center gap-x-6 gap-y-2 p-4`}>
-                    <CheckCircle2 className="h-5 w-5 text-emerald-400" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">Specification uploaded successfully</div>
-                      <div className="truncate text-xs text-neutral-500">
-                        {uploadedMeta.name}
-                        {file ? ` · ${(file.size / 1024).toFixed(1)} KB` : ''} · {uploadedMeta.format}
-                      </div>
-                    </div>
-                    <StatusBadge status={validationState(spec?.confidence_score).status} label={validationState(spec?.confidence_score).label} />
+                    {uploadResult && uploadResult.endpoints_discovered === 0 && !spec ? (
+                      <>
+                        <AlertTriangle className="h-5 w-5 text-amber-400" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-amber-300">Document uploaded · Background AI extraction queued</div>
+                          <div className="truncate text-xs text-neutral-400">
+                            {uploadedMeta.name} · 0 endpoints discovered deterministically. The AI doc agent is processing freeform content.
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium">Specification uploaded successfully</div>
+                          <div className="truncate text-xs text-neutral-500">
+                            {uploadedMeta.name}
+                            {file ? ` · ${(file.size / 1024).toFixed(1)} KB` : ''} · {uploadedMeta.format}
+                            {uploadResult ? ` · ${uploadResult.endpoints_discovered} endpoint${uploadResult.endpoints_discovered === 1 ? '' : 's'}` : ''}
+                          </div>
+                        </div>
+                        <StatusBadge status={validationState(spec?.confidence_score).status} label={validationState(spec?.confidence_score).label} />
+                      </>
+                    )}
                   </div>
                 )}
               </div>

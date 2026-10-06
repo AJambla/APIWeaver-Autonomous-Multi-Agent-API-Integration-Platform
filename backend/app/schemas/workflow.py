@@ -35,6 +35,7 @@ class WorkflowRunResponse(ResponseModel):
 class ApproveWorkflowRequest(StrictModel):
     approved: bool = True
     notes: str | None = None
+    target_languages: list[str] | None = None
 
 
 class ApproveWorkflowResponse(ResponseModel):

@@ -254,8 +254,9 @@ async def approve_workflow_gate(
     if payload.approved:
         resume_state = dict(latest_checkpoint.state_snapshot)
         resume_state["plan_approved"] = True
-        resume_state["approval_notes"] = payload.notes
-        if not resume_state.get("target_languages") or resume_state.get("target_languages") == ["python"]:
+        if payload.target_languages:
+            resume_state["target_languages"] = payload.target_languages
+        elif not resume_state.get("target_languages") or resume_state.get("target_languages") == ["python"]:
             resume_state["target_languages"] = ["python", "node"]
         if (resume_state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(resume_state.get("repair_attempts", [])) >= 3:
             resume_state["stages"] = ["export"]

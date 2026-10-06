@@ -43,7 +43,7 @@ WINDOW_SECONDS = 60
 # per-org overrides exist it takes the Pro ceiling rather than being treated as unlimited,
 # so a misconfigured enterprise org still cannot exhaust the cluster.
 TIER_REQUESTS_PER_MINUTE: dict[str, int] = {
-    "free": 60,
+    "free": 120,
     "pro": 600,
     "enterprise": 600,
 }
@@ -199,6 +199,12 @@ async def enforce_org_rate_limit(
 ) -> None:
     """Per-organization, tier-scaled limiting for authenticated routes (`API.md §3`)."""
     if principal.organization_id is None:
+        return
+
+    path = request.url.path
+    # Critical workflow lifecycle control endpoints (approve, cancel) must never be locked out
+    # by background/workspace polling traffic.
+    if path.endswith("/approve") or path.endswith("/cancel"):
         return
 
     org = await session.scalar(

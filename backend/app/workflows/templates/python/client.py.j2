@@ -14,9 +14,12 @@ import httpx
 from pydantic import BaseModel
 
 try:
-    from .models import *
-except (ImportError, ValueError):
     from models import *
+except (ImportError, ValueError):
+    try:
+        from .models import *
+    except (ImportError, ValueError):
+        pass
 
 
 class APIWeaverError(Exception):
