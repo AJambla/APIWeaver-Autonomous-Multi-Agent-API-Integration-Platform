@@ -1069,7 +1069,7 @@ export const ProjectWorkspace: React.FC = () => {
                 <h2 className="text-lg font-medium tracking-tight">API Topology & Integration Plan</h2>
                 <p className="text-xs text-neutral-500">
                   {graph && graph.nodes.length > 0
-                    ? `${graph.nodes.length} endpoint${graph.nodes.length === 1 ? '' : 's'} · ${graph.edges.length} dependency${graph.edges.length === 1 ? '' : 'ies'} extracted from the specification`
+                    ? `${graph.nodes.length} endpoint${graph.nodes.length === 1 ? '' : 's'} · ${graph.edges.length} ${graph.edges.length === 1 ? 'dependency' : 'dependencies'} extracted from the specification`
                     : 'Generated from the uploaded specification'}
                 </p>
               </div>
