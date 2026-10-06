@@ -1,8 +1,9 @@
-"""Celery task that runs a full workflow via the Orchestrator."""
+"""Celery task that runs a full workflow via LangGraph."""
 
 from __future__ import annotations
 
 from typing import cast
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -12,13 +13,10 @@ from agent_worker.tasks.base import AsyncTask
 class RunWorkflow(AsyncTask):
     name = "agent_worker.tasks.run_workflow"
 
-    async def run_async(self, run_id: str, initial_state: dict, engine_type: str = "standard") -> dict:
+    async def run_async(self, run_id: str, initial_state: dict, *args, **kwargs) -> dict:
         from app.core.config import get_settings
-        from app.workflows.orchestrator import Orchestrator
         from app.workflows.langgraph_pipeline import LangGraphOrchestrator
         from app.workflows.state import WorkflowState
-        from app.models.workflow import WorkflowRun
-        from uuid import UUID
 
         settings = get_settings()
         engine = create_async_engine(settings.database_url)
@@ -26,13 +24,10 @@ class RunWorkflow(AsyncTask):
             bind=engine, class_=AsyncSession, expire_on_commit=False
         )
 
-        selected_engine = engine_type or getattr(settings, "default_workflow_engine", "standard")
-        if selected_engine == "langgraph":
-            orchestrator = LangGraphOrchestrator(session_factory=session_factory)
-        else:
-            orchestrator = Orchestrator(session_factory, execution_mode="sync")
-
+        orchestrator = LangGraphOrchestrator(session_factory=session_factory)
         result = await orchestrator.run(UUID(run_id), cast(WorkflowState, initial_state))
         await engine.dispose()
         return dict(result)
+
+
 run_workflow = RunWorkflow()

@@ -34,7 +34,6 @@ from app.schemas.workflow import (
 from app.services import audit_service
 from app.services.event_publisher import EventPublisher
 from app.workflows.langgraph_pipeline import LangGraphOrchestrator
-from app.workflows.orchestrator import Orchestrator
 from app.workflows.state import WorkflowState
 
 router = APIRouter(tags=["workflows"])
@@ -98,25 +97,18 @@ async def trigger_workflow(
     event_publisher = EventPublisher(redis_client)
     settings = get_settings()
 
-    selected_engine = payload.engine or getattr(settings, "default_workflow_engine", "standard")
-    if selected_engine == "langgraph":
-        runner_instance = LangGraphOrchestrator(
-            session_factory=engine_session_factory,
-            event_publisher=event_publisher,
-        )
-    else:
-        runner_instance = Orchestrator(
-            engine_session_factory,
-            event_publisher=event_publisher,
-            execution_mode=payload.execution_mode,
-        )
+    runner_instance = LangGraphOrchestrator(
+        session_factory=engine_session_factory,
+        event_publisher=event_publisher,
+        execution_mode=payload.execution_mode,
+    )
 
     if payload.execution_mode == "async":
         try:
             from agent_worker.celery_app import app as celery_app
             celery_app.send_task(
                 "agent_worker.tasks.run_workflow",
-                args=[str(run.id), initial_state, selected_engine],
+                args=[str(run.id), initial_state],
                 task_id=f"run_workflow:{run.id}",
             )
         except Exception as exc:
@@ -248,8 +240,8 @@ async def approve_workflow_gate(
         engine_session_factory = async_sessionmaker(
             bind=session.bind, class_=AsyncSession, expire_on_commit=False
         )
-        orchestrator = Orchestrator(
-            engine_session_factory,
+        orchestrator = LangGraphOrchestrator(
+            session_factory=engine_session_factory,
             event_publisher=EventPublisher(redis_client),
         )
         background_tasks.add_task(orchestrator.run, run.id, resume_state)
