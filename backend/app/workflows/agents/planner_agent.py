@@ -99,7 +99,7 @@ async def run_planner_agent(
         if method == "DELETE":
             destructive.append({"method": method, "path": path, "auto_test_safe": False})
 
-    user_prompt = fence_untrusted("SPEC DATA", json.dumps(spec, indent=2)[:8000])
+    user_prompt = fence_untrusted("SPEC DATA", json.dumps(spec, indent=2)[:100000])
     plan_json, tokens = await client.generate_json(
         system_prompt=PLANNER_SYSTEM_PROMPT,
         user_prompt=user_prompt,
