@@ -10,6 +10,7 @@ import pytest
 from app.services.chunker import chunk_text
 from app.services.document_parser import extract_text
 from app.services.qdrant_service import FakeQdrantClient, ScoredChunk
+from app.core.errors import DependencyUnavailableError
 from app.workflows.agents.doc_agent import _upsert_to_qdrant, run_doc_agent
 from app.workflows.llm import LLMClient
 from app.workflows.state import WorkflowState
@@ -160,10 +161,12 @@ class TestLLMClientEmbedding:
     @pytest.mark.asyncio
     async def test_generate_embedding_mock(self):
         client = LLMClient()
-        embedding = await client.generate_embedding("test text")
-        # Should return zero vector when no API key
-        assert len(embedding) == 1536
-        assert all(v == 0.0 for v in embedding)
+        if not client.settings.openai_api_key:
+            with pytest.raises(DependencyUnavailableError):
+                await client.generate_embedding("test text")
+        else:
+            embedding = await client.generate_embedding("test text")
+            assert len(embedding) == 1536
 
 
 class TestRunDocAgentWithQdrant:

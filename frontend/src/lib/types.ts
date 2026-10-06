@@ -121,6 +121,7 @@ export interface ToolCall {
 
 export interface AgentEventLog {
   id: string;
+  workflow_run_id?: string | null;
   event_type: string;
   agent_name: string | null;
   payload: Record<string, unknown> | null;

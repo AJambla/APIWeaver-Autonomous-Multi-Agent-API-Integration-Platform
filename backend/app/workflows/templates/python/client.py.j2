@@ -13,7 +13,10 @@ from urllib.parse import urljoin
 import httpx
 from pydantic import BaseModel
 
-from .models import *
+try:
+    from .models import *
+except (ImportError, ValueError):
+    from models import *
 
 
 class APIWeaverError(Exception):

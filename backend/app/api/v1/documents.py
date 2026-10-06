@@ -72,6 +72,23 @@ async def upload_document(
         format_hint=format_hint,
     )
 
+    # Supersede any active or paused runs for this project
+    stale_runs = (
+        await session.scalars(
+            select(WorkflowRun).where(
+                WorkflowRun.project_id == project.id,
+                WorkflowRun.status.in_([
+                    WorkflowStatus.RUNNING,
+                    WorkflowStatus.QUEUED,
+                    WorkflowStatus.PAUSED_FOR_APPROVAL,
+                ]),
+            )
+        )
+    ).all()
+    for stale in stale_runs:
+        stale.status = WorkflowStatus.CANCELLED
+        stale.error_details = {"reason": "superseded_by_new_upload"}
+
     # Create associated workflow run for parsing & planning pipeline
     run = WorkflowRun(
         project_id=project.id,
@@ -93,6 +110,26 @@ async def upload_document(
         user_agent=request.headers.get("user-agent"),
     )
 
+    normalized_spec_dict = None
+    if normalized:
+        endpoints_data = [
+            {
+                "method": ep.method,
+                "path": ep.path,
+                "summary": ep.summary,
+                "parameters": ep.parameters,
+                "request_schema": ep.request_schema,
+                "response_schemas": ep.response_schemas,
+            }
+            for ep in normalized.endpoints
+        ]
+        raw_dict = dict(normalized.raw_normalized or {})
+        raw_dict["title"] = normalized.title or raw_dict.get("title", "API Specification")
+        raw_dict["base_url"] = normalized.base_url or raw_dict.get("base_url", "")
+        raw_dict["format"] = normalized.format
+        raw_dict["endpoints"] = endpoints_data
+        normalized_spec_dict = raw_dict
+
     # Launch orchestrator in background
     initial_state: WorkflowState = {
         "project_id": str(project.id),
@@ -103,13 +140,18 @@ async def upload_document(
         "document_filename": file.filename,
         "format_hint": format_hint,
         "stages": ["plan"],
-        "normalized_spec": normalized.raw_normalized if normalized else None,
+        "target_languages": ["python", "node"],
+        "normalized_spec": normalized_spec_dict,
         "spec_persisted": api_spec is not None,
         "endpoints_discovered": len(normalized.endpoints) if normalized else 0,
         "generated_files": [],
         "test_suite": [],
         "errors": [],
     }
+
+    # Commit before dispatching background worker so concurrent sessions see all persisted rows
+    await session.commit()
+
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import tempfile
 import time
@@ -111,7 +112,9 @@ class MockSandboxClient:
         for path, content in workspace.items():
             if path.endswith(".py"):
                 try:
-                    exec(content, test_globals)
+                    flattened = re.sub(r'^(from\s+)\.([a-zA-Z_][a-zA-Z0-9_]*\s+import)', r'\1\2', content, flags=re.MULTILINE)
+                    flattened = re.sub(r'^from\s+\.\s+import\s+([a-zA-Z_][a-zA-Z0-9_]*)', r'import \1', flattened, flags=re.MULTILINE)
+                    exec(flattened, test_globals)
                 except Exception as e:
                     return SandboxResult(
                         exit_code=1,
@@ -517,6 +520,9 @@ class DockerSandboxExecutor:
                 logger.warning("sandbox_path_rejected", path=rel_path)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
+            if rel_path.endswith(".py"):
+                content = re.sub(r'^(from\s+)\.([a-zA-Z_][a-zA-Z0-9_]*\s+import)', r'\1\2', content, flags=re.MULTILINE)
+                content = re.sub(r'^from\s+\.\s+import\s+([a-zA-Z_][a-zA-Z0-9_]*)', r'import \1', content, flags=re.MULTILINE)
             target.write_text(content, encoding="utf-8")
 
         # Determine target language: explicit parameter or inferred from extensions
