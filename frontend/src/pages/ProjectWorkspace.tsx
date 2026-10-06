@@ -405,18 +405,20 @@ export const ProjectWorkspace: React.FC = () => {
       setProject(summary);
       if (history?.data?.length) setLatestRun(history.data[0]);
 
-      const [specRes, endpointsRes, graphRes, logsRes, exportsRes] = await Promise.all([
+      const [specRes, endpointsRes, graphRes, logsRes, exportsRes, testRes] = await Promise.all([
         apiFetch<ApiSpec>(`/projects/${id}/spec`).catch(() => null),
         apiFetch<SpecEndpoint[]>(`/projects/${id}/endpoints`).catch(() => [] as SpecEndpoint[]),
         apiFetch<DependencyGraph>(`/projects/${id}/dependency-graph`).catch(() => null),
         apiFetch<Page<AgentEventLog>>(`/projects/${id}/logs?limit=100`).catch(() => null),
         apiFetch<ExportRecord[]>(`/projects/${id}/exports`).catch(() => [] as ExportRecord[]),
+        apiFetch<TestRunSummary>(`/projects/${id}/test-runs/latest`).catch(() => null),
       ]);
       setSpec(specRes);
       setEndpoints(Array.isArray(endpointsRes) ? endpointsRes : []);
       if (graphRes) setGraph(graphRes);
       setLogs(logsRes?.data ?? []);
       setExports(Array.isArray(exportsRes) ? exportsRes : []);
+      if (testRes) setTestSummary(testRes);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -467,7 +469,11 @@ export const ProjectWorkspace: React.FC = () => {
           progress_percent: typeof payload.progress_percent === 'number' ? payload.progress_percent : prev.progress_percent,
         };
       }
-      if (latest.event_type === 'workflow.completed' && payload.status === 'paused_for_approval') {
+      if (
+        (latest.event_type === 'workflow.completed' && payload.status === 'paused_for_approval') ||
+        latest.event_type === 'workflow.paused'
+      ) {
+        loadProjectData();
         return {
           ...prev,
           status: 'paused_for_approval',
@@ -476,7 +482,7 @@ export const ProjectWorkspace: React.FC = () => {
       }
       return prev;
     });
-  }, [runEvents, activeRunId]);
+  }, [runEvents, activeRunId, loadProjectData]);
 
   /* A terminal stream event ends the watch: reconcile from REST, then detach. */
   useEffect(() => {
@@ -517,6 +523,24 @@ export const ProjectWorkspace: React.FC = () => {
       setActiveRunId(latestRun.workflow_run_id);
     }
   }, [activeTab, activeRunId, latestRun]);
+
+  /* Refresh dependency graph when Plan tab opens if missing or empty */
+  useEffect(() => {
+    if (activeTab === 'plan' && id && (!graph || graph.edges.length === 0)) {
+      apiFetch<DependencyGraph>(`/projects/${id}/dependency-graph`)
+        .then(g => { if (g) setGraph(g); })
+        .catch(() => {});
+    }
+  }, [activeTab, id, graph]);
+
+  /* Refresh test summary when Test tab opens if missing */
+  useEffect(() => {
+    if (activeTab === 'test' && id && !testSummary) {
+      apiFetch<TestRunSummary>(`/projects/${id}/test-runs/latest`)
+        .then(ts => { if (ts) setTestSummary(ts); })
+        .catch(() => {});
+    }
+  }, [activeTab, id, testSummary]);
 
   const stepCompleted = useMemo<Record<TabId, boolean>>(() => {
     const uploadDone = spec !== null;
@@ -595,13 +619,17 @@ export const ProjectWorkspace: React.FC = () => {
     setPlanBusy(true);
     setPlanError('');
     try {
-      if (latestRun && latestRun.status === 'paused_for_approval') {
-        await apiFetch(`/workflows/${latestRun.workflow_run_id}/approve`, {
+      const runId = activeRunId || latestRun?.workflow_run_id;
+      if (runId) {
+        await apiFetch(`/workflows/${runId}/approve`, {
           method: 'POST',
           body: JSON.stringify({ approved: true }),
         });
+        setActiveRunId(runId);
+        setActiveRun(prev => (prev ? { ...prev, status: 'running' } : null));
       }
       setPlanApproved(true);
+      await loadProjectData();
     } catch (err) {
       setPlanError(errorMessage(err));
     } finally {
@@ -882,9 +910,19 @@ export const ProjectWorkspace: React.FC = () => {
                 {project.endpoint_count} endpoint{project.endpoint_count === 1 ? '' : 's'} · created {relativeTime(project.created_at)} · updated {relativeTime(project.updated_at)}
               </p>
             </div>
-            {project.last_run_status && (
+            {(activeRun?.status || latestRun?.status || project.last_run_status) && (
               <div className="flex items-center gap-2 text-xs text-neutral-500">
-                <History className="h-3.5 w-3.5" /> last run: <StatusBadge status={project.last_run_status} />
+                <History className="h-3.5 w-3.5" />
+                {activeRun && ['queued', 'running', 'paused_for_approval'].includes(activeRun.status)
+                  ? 'current run:'
+                  : 'last run:'}{' '}
+                <StatusBadge
+                  status={
+                    activeRun && ['queued', 'running', 'paused_for_approval'].includes(activeRun.status)
+                      ? activeRun.status
+                      : (latestRun?.status || project.last_run_status!)
+                  }
+                />
               </div>
             )}
           </div>

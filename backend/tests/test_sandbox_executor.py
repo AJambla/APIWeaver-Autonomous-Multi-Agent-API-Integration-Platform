@@ -135,7 +135,7 @@ async def test_execute_test_enforces_quotas_and_parses_result():
     assert kwargs["cap_drop"] == ["ALL"]
     assert kwargs["user"] == "65534:65534"
     assert kwargs["network_disabled"] is True
-    bind = list(kwargs["binds"].values())[0]
+    bind = list((kwargs.get("volumes") or kwargs.get("binds", {})).values())[0]
     assert bind["mode"] == "ro"
     assert bind["bind"] == "/sandbox"
     assert container.removed is True
