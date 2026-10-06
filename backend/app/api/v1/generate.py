@@ -22,7 +22,7 @@ from app.schemas.generate import GenerateRequest as GenerateRequestAlias
 from app.schemas.generate import GenerateResponse as GenerateResponseAlias
 from app.services import audit_service
 from app.services.event_publisher import EventPublisher
-from app.workflows.orchestrator import Orchestrator
+from app.workflows.langgraph_pipeline import LangGraphOrchestrator
 from app.workflows.state import WorkflowState
 
 router = APIRouter(prefix="/projects", tags=["generate"])
@@ -71,8 +71,8 @@ async def trigger_generate(
     engine_session_factory = __import__("sqlalchemy.ext.asyncio", fromlist=["async_sessionmaker"]).async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = Orchestrator(
-        engine_session_factory,
+    orchestrator = LangGraphOrchestrator(
+        session_factory=engine_session_factory,
         event_publisher=EventPublisher(redis_client),
     )
     background_tasks.add_task(orchestrator.run, run.id, initial_state)

@@ -141,9 +141,6 @@ class Settings(BaseSettings):
     # In production, require Celery workers for async workflows rather than
     # silently running on API process BackgroundTasks (fail-loud queueing).
     require_celery_worker: bool = False
-    # Default workflow orchestration engine: "standard" (linear orchestrator)
-    # or "langgraph" (state graph with cyclic repairs and conditional edges).
-    default_workflow_engine: Literal["standard", "langgraph"] = "standard"
     # Auto-run database migrations on API boot (alembic upgrade head).
     # Useful for single-node / containerized setups without a separate k8s init-container.
     run_migrations_on_startup: bool = False

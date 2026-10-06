@@ -15,7 +15,6 @@ class TriggerWorkflowRequest(StrictModel):
     stages: list[str] = Field(default_factory=lambda: ["plan", "generate", "test", "export"])
     target_languages: list[str] = Field(default_factory=lambda: ["python", "node"])
     execution_mode: Literal["sync", "async"] = "sync"
-    engine: Literal["standard", "langgraph"] | None = None
 
 
 class TriggerWorkflowResponse(ResponseModel):

@@ -30,8 +30,7 @@ from app.schemas.document import EndpointResponse, SpecResponse, UploadResponse
 from app.services import audit_service
 from app.services.event_publisher import EventPublisher
 from app.services.ingestion_service import ingest_document
-from app.services.storage_service import ObjectStorage
-from app.workflows.orchestrator import Orchestrator
+from app.workflows.langgraph_pipeline import LangGraphOrchestrator
 from app.workflows.state import WorkflowState
 
 router = APIRouter(prefix="/projects", tags=["documents"])
@@ -114,8 +113,8 @@ async def upload_document(
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = Orchestrator(
-        engine_session_factory,
+    orchestrator = LangGraphOrchestrator(
+        session_factory=engine_session_factory,
         event_publisher=EventPublisher(redis_client),
     )
     background_tasks.add_task(orchestrator.run, run.id, initial_state)

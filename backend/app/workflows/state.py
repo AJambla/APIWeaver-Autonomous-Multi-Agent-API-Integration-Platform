@@ -44,3 +44,5 @@ class WorkflowState(TypedDict, total=False):
     status: str
     errors: list[str]
     total_tokens_used: int
+    token_budget: int | None
+    execution_mode: str | None
