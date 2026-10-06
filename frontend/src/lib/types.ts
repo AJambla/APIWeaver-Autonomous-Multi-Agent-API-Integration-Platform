@@ -94,6 +94,7 @@ export interface HistoryItem {
   workflow_run_id: string;
   status: string;
   stages: string[];
+  run_type?: string | null;
   started_at: string;
   completed_at: string | null;
   total_tokens: number;

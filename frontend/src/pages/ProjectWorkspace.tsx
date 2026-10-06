@@ -401,10 +401,16 @@ export const ProjectWorkspace: React.FC = () => {
     try {
       const [summary, history] = await Promise.all([
         apiFetch<ProjectSummary>(`/projects/${id}`),
-        apiFetch<Page<HistoryItem>>(`/projects/${id}/history?limit=1`).catch(() => null),
+        apiFetch<Page<HistoryItem>>(`/projects/${id}/history?limit=10`).catch(() => null),
       ]);
       setProject(summary);
-      if (history?.data?.length) setLatestRun(history.data[0]);
+      if (history?.data?.length) {
+        const pausedRun = history.data.find(r => r.status === 'paused_for_approval');
+        const inFlightRun = history.data.find(r => ['queued', 'running'].includes(r.status));
+        const latestWorkflowRun = history.data.find(r => r.run_type !== 'export' || r.stages?.includes('plan'));
+        const chosenRun = pausedRun || inFlightRun || latestWorkflowRun || history.data[0];
+        setLatestRun(chosenRun);
+      }
 
       const [specRes, endpointsRes, graphRes, logsRes, exportsRes, testRes] = await Promise.all([
         apiFetch<ApiSpec>(`/projects/${id}/spec`).catch(() => null),
@@ -478,7 +484,7 @@ export const ProjectWorkspace: React.FC = () => {
         return {
           ...prev,
           status: 'paused_for_approval',
-          progress_percent: typeof payload.progress_percent === 'number' ? payload.progress_percent : prev.progress_percent,
+          progress_percent: 50,
         };
       }
       return prev;
