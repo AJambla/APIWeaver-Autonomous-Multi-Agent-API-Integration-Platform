@@ -17,6 +17,7 @@ import pytest
 from app.workflows.agents.code_agent import _render_templates
 from app.workflows.agents.export_agent import ExportAgent
 from app.workflows.source_safety import (
+    DEFAULT_BASE_URL,
     derived_operation_id,
     safe_endpoint,
     to_base_url,
@@ -243,7 +244,7 @@ def test_display_names_and_urls_keep_benign_shapes():
     assert hostile_url.startswith("https://")
     for char in '"();\\\n':
         assert char not in hostile_url
-    assert to_base_url("ftp://host") == "https://api.example.com"
+    assert to_base_url("ftp://host") == DEFAULT_BASE_URL
 
 
 def test_methods_are_restricted_to_real_verbs():

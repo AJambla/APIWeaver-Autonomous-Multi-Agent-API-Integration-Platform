@@ -18,7 +18,7 @@ HTTP_METHODS = frozenset(
     {"get", "put", "post", "patch", "delete", "options", "head", "trace"}
 )
 
-DEFAULT_BASE_URL = "https://api.example.com"
+from app.core.constants import DEFAULT_BASE_URL
 
 # Quotes and backslashes end a literal, backticks and angle brackets end a template
 # string, and an asterisk would let a value close a block comment.
