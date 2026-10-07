@@ -159,6 +159,31 @@ class User(BaseModel):
                 assert "test_suite" in result
                 assert "test_run_summary" in result
 
+    @pytest.mark.asyncio
+    async def test_create_sandbox_node_sdk(self):
+        """Verify _create_sandbox supports node when target_languages includes node."""
+        from app.workflows.agents.test_agent import _create_sandbox
+        from app.services.sandbox_service import DockerSandboxExecutor
+
+        state = {
+            "project_id": "test-p",
+            "target_languages": ["node"],
+            "environment": "sandbox",
+        }
+        generated_files = [
+            {"file_path": "client.ts", "content_s3_key": "s3/client.ts", "language": "node"}
+        ]
+        with patch("app.workflows.agents.test_agent.get_settings") as mock_settings:
+            mock_s = mock_settings.return_value
+            mock_s.sandbox_backend = "docker"
+            mock_s.sandbox_network_enabled = False
+            mock_s.sandbox_node_image = "node:22-alpine"
+            with patch("app.workflows.agents.test_agent.storage_service.download", new=AsyncMock(return_value=b"export class Client {}")):
+                executor = await _create_sandbox(state, generated_files, {"base_url": "http://api.test"})
+                assert isinstance(executor, DockerSandboxExecutor)
+                assert executor._language == "node"
+                await executor.cleanup()
+
 
 class TestTestingAPI:
     """Integration tests for the Testing API."""
