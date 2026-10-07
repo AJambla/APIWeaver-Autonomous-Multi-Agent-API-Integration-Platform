@@ -973,6 +973,9 @@ def create_apiweaver_graph(
             attempts.append({
                 "attempt_number": attempt_number,
                 "target_file": target_file_path,
+                "method": failure_diagnosis["method"],
+                "path": failure_diagnosis["path"],
+                "classification": failure_diagnosis["classification"],
                 "diff_summary": diff_summary,
                 "error": primary_failure.get("error"),
                 "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
@@ -990,6 +993,9 @@ def create_apiweaver_graph(
             attempts.append({
                 "attempt_number": attempt_number,
                 "target_file": target_file_path,
+                "method": failure_diagnosis["method"],
+                "path": failure_diagnosis["path"],
+                "classification": failure_diagnosis["classification"],
                 "diff_summary": f"Repair synthesis failed: {exc}",
                 "error": str(exc),
                 "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
