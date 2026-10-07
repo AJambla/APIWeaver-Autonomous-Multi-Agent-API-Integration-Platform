@@ -352,7 +352,7 @@ async def cancel_workflow_run(
     )
 
     try:
-        from app.services.agent_event_service import record_agent_event
+        from app.workflows.event_recorder import record_agent_event
         await record_agent_event(
             session,
             workflow_run_id=run.id,
