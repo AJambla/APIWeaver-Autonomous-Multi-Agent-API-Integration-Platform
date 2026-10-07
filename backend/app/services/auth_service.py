@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import re
+import secrets
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -147,7 +148,15 @@ async def register(
     """Create a user, their organization, and an `owner` membership."""
     normalized_email = email.strip().lower()
 
-    organization = Organization(name=organization_name, slug=slugify(organization_name))
+    base_slug = slugify(organization_name)
+    slug = base_slug
+    existing = await session.execute(
+        select(Organization.id).where(Organization.slug == slug)
+    )
+    if existing.scalar_one_or_none() is not None:
+        slug = f"{base_slug[:90]}-{secrets.token_hex(3)}"
+
+    organization = Organization(name=organization_name, slug=slug)
     user = User(
         email=normalized_email,
         password_hash=hash_password(password),
