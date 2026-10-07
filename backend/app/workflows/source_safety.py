@@ -105,6 +105,23 @@ def to_ts_type(value: Any) -> str:
     return _TS_TYPES.get(_as_str(value).strip().lower(), "unknown")
 
 
+# Spec type names mapped to standard Python types.
+_PY_TYPES = {
+    "string": "str",
+    "integer": "int",
+    "number": "float",
+    "boolean": "bool",
+    "array": "list[Any]",
+    "object": "dict[str, Any]",
+    "null": "None",
+}
+
+
+def to_py_type(value: Any) -> str:
+    """Translate a spec type name into a Python type expression."""
+    return _PY_TYPES.get(_as_str(value).strip().lower(), "Any")
+
+
 def to_literal(value: Any) -> str:
     """A complete string literal (`json.dumps` output is a valid Python and JS literal)."""
     return json.dumps(str(value))
@@ -117,12 +134,14 @@ def derived_operation_id(method: str, path: str) -> str:
 
 def safe_parameter(param: dict[str, Any]) -> dict[str, Any]:
     """Parameter whose fields are safe for argument names and annotations."""
+    loc = to_identifier(param.get("location"), fallback="query")
+    req = bool(param.get("required")) or (loc == "path")
     return {
         **param,
         "name": to_identifier(param.get("name"), fallback="param"),
         "type": to_type_name(param.get("type")),
-        "location": to_identifier(param.get("location"), fallback="query"),
-        "required": bool(param.get("required")),
+        "location": loc,
+        "required": req,
     }
 
 
@@ -131,13 +150,22 @@ def safe_endpoint(endpoint: dict[str, Any]) -> dict[str, Any]:
     method = to_http_method(endpoint.get("method", "GET"))
     path = to_path(endpoint.get("path", "/"))
     declared = endpoint.get("operationId") or derived_operation_id(method, path)
+    raw_params = [
+        safe_parameter(p) for p in endpoint.get("parameters") or [] if isinstance(p, dict)
+    ]
+    # Sort parameters so required parameters precede optional parameters:
+    # 1. path parameters (always required)
+    # 2. required query parameters
+    # 3. optional query parameters
+    sorted_params = sorted(
+        raw_params,
+        key=lambda p: 0 if p.get("location") == "path" else (1 if p.get("required") else 2),
+    )
     return {
         **endpoint,
         "method": method,
         "path": path,
         "summary": to_text(endpoint.get("summary"), fallback=path),
         "operationId": to_identifier(declared, fallback="endpoint"),
-        "parameters": [
-            safe_parameter(p) for p in endpoint.get("parameters") or [] if isinstance(p, dict)
-        ],
+        "parameters": sorted_params,
     }

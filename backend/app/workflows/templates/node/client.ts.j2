@@ -179,15 +179,14 @@ export class {{ title.replace(' ', '').replace('-', '') }}Client {
   {% set op_id = ep.get('operationId', path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
 
   async {{ op_id }}(
-    {% for param in ep.get('parameters', []) %}
-    {% if param.location == 'path' %}
+    {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
     {{ param.name }}: {{ param.type | ts_type }},
-    {% elif param.location == 'query' %}
+    {% endfor %}
+    {% for param in ep.get('parameters', []) if param.location == 'query' and not param.required %}
     {{ param.name }}?: {{ param.type | ts_type }},
-    {% endif %}
     {% endfor %}
     {% if ep.get('request_schema') %}
-    body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request,
+    body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | Record<string, unknown>,
     {% endif %}
   ): Promise<{ data: unknown; response: Response }> {
     /** {{ summary }}. */
@@ -226,22 +225,24 @@ export class {{ title.replace(' ', '').replace('-', '') }}Client {
 {% for ep in endpoints %}
 {% set op_id = ep.get('operationId', ep.path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
 export async function {{ op_id }}(
-  {% for param in ep.get('parameters', []) %}
-  {% if param.location == 'path' or (param.location == 'query' and param.required) %}
+  {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
   {{ param.name }}: {{ param.type | ts_type }},
-  {% endif %}
+  {% endfor %}
+  {% for param in ep.get('parameters', []) if param.location == 'query' and not param.required %}
+  {{ param.name }}?: {{ param.type | ts_type }},
   {% endfor %}
   {% if ep.get('request_schema') %}
-  body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request,
+  body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | Record<string, unknown>,
   {% endif %}
   client?: {{ title.replace(' ', '').replace('-', '') }}Client
 ): Promise<{ data: unknown; response: Response }> {
   const c = client || new {{ title.replace(' ', '').replace('-', '') }}Client();
   return c.{{ op_id }}(
-    {% for param in ep.get('parameters', []) %}
-    {% if param.location == 'path' or (param.location == 'query' and param.required) %}
+    {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
     {{ param.name }},
-    {% endif %}
+    {% endfor %}
+    {% for param in ep.get('parameters', []) if param.location == 'query' and not param.required %}
+    {{ param.name }},
     {% endfor %}
     {% if ep.get('request_schema') %}
     body,

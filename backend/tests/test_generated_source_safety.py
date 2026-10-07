@@ -127,6 +127,51 @@ async def test_benign_python_templates_still_generate_a_working_client():
     ast.parse(client)
 
 
+async def test_python_client_template_ordering_and_types_hazards():
+    spec = {
+        "title": "Hazard API",
+        "base_url": "https://api.example.com/v1",
+        "endpoints": [
+            {
+                "method": "GET",
+                "path": "/items/{item_id}",
+                "summary": "Get item",
+                "operationId": "getItem",
+                "parameters": [
+                    {"name": "filter", "location": "query", "type": "string", "required": False},
+                    {"name": "limit", "location": "query", "type": "integer", "required": False},
+                    {"name": "active", "location": "query", "type": "boolean", "required": False},
+                    {"name": "tags", "location": "query", "type": "array", "required": False},
+                    {"name": "item_id", "location": "path", "type": "string", "required": True},
+                ],
+                "request_schema": None,
+            },
+            {
+                "method": "POST",
+                "path": "/items",
+                "summary": "Create item",
+                "operationId": "createItem",
+                "parameters": [],
+                "request_schema": {"type": "object", "properties": {"name": {"type": "string"}}},
+            },
+        ],
+    }
+    files = await render("python", spec)
+    client_code = files["client.py"]
+    models_code = files["models.py"]
+    ast.parse(client_code)
+    ast.parse(models_code)
+    assert "ItemsPOSTItemsRequest" in models_code
+    assert "limit: Optional[int] = None" in client_code
+    assert "active: Optional[bool] = None" in client_code
+    assert "tags: Optional[list[Any]] = None" in client_code
+
+    ts_files = await render("node", spec)
+    ts_client = ts_files["client.ts"]
+    assert "item_id: string" in ts_client
+    assert "filter?: string" in ts_client
+
+
 async def export_router(spec: dict[str, Any]) -> str:
     captured: dict[str, bytes] = {}
 
