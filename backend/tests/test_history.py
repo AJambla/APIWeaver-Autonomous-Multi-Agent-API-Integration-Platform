@@ -171,3 +171,66 @@ async def test_rollback_requires_confirmation(client: AsyncClient, db) -> None:
         headers=headers,
     )
     assert res.status_code == 200
+
+
+async def test_rollback_restores_active_generated_files(client: AsyncClient, db, monkeypatch) -> None:
+    """When rolling back to an artifact version, load_generated_files returns that version's files."""
+    import json
+    from app.services.workflow_input_service import load_generated_files
+
+    project_id, headers = await _setup_project_with_runs(client)
+
+    # In-memory store for fake storage_service
+    s3_store = {
+        "artifacts/v1/manifest.json": json.dumps({
+            "version_number": 1,
+            "generated_files": [{"file_path": "client.py", "language": "python", "content_s3_key": "v1/client.py"}],
+        }).encode("utf-8"),
+        "artifacts/v2/manifest.json": json.dumps({
+            "version_number": 2,
+            "generated_files": [{"file_path": "client.py", "language": "python", "content_s3_key": "v2/client.py"}],
+        }).encode("utf-8"),
+    }
+
+    async def fake_download(k):
+        return s3_store[k]
+
+    from app.services import storage_service as st_mod
+    monkeypatch.setattr(st_mod.storage_service, "download", fake_download)
+
+    async with db as session:
+        v1 = ArtifactVersion(
+            project_id=uuid.UUID(project_id),
+            artifact_type="sdk",
+            version_number=1,
+            diff_ref="artifacts/v1/manifest.json",
+            is_active=False,
+        )
+        v2 = ArtifactVersion(
+            project_id=uuid.UUID(project_id),
+            artifact_type="sdk",
+            version_number=2,
+            diff_ref="artifacts/v2/manifest.json",
+            is_active=True,
+        )
+        session.add_all([v1, v2])
+        await session.commit()
+        await session.refresh(v1)
+        await session.refresh(v2)
+
+        # Initially v2 is active
+        files_v2 = await load_generated_files(session, uuid.UUID(project_id))
+        assert files_v2[0]["content_s3_key"] == "v2/client.py"
+
+    # Roll back to v1
+    res = await client.post(
+        f"/api/v1/projects/{project_id}/versions/{v1.id}/rollback",
+        json={"confirm": True},
+        headers=headers,
+    )
+    assert res.status_code == 200
+
+    # Now load_generated_files must return v1's files!
+    async with db as session:
+        files_after = await load_generated_files(session, uuid.UUID(project_id))
+        assert files_after[0]["content_s3_key"] == "v1/client.py"
