@@ -29,6 +29,12 @@ class BaseSchema(BaseModel):
 {% set summary = ep.summary or path %}
 {% set op_id = ep.get('operationId', path.replace('/', '_').replace('{', '').replace('}', '')) %}
 
+{% if ep.get('request_schema') %}
+class {{ resource.title().replace('-', '') }}{{ method }}{{ path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request(BaseSchema):
+    """{{ summary }} request model."""
+    pass
+
+{% endif %}
 class {{ resource.title().replace('-', '') }}{{ method }}{{ path.split('/')[-1].replace('{', '').replace('}', '').title() }}Response(BaseSchema):
     """{{ summary }} response model."""
     pass

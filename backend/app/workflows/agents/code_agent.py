@@ -21,6 +21,7 @@ from app.workflows.source_safety import (
     to_base_url,
     to_display_name,
     to_identifier,
+    to_py_type,
     to_ts_type,
 )
 from app.workflows.state import WorkflowState
@@ -378,8 +379,9 @@ async def _render_templates(
 
     env = Environment(loader=FileSystemLoader(TEMPLATE_DIR / language))
 
-    # A spec type name is not a TypeScript type, so templates translate through it.
+    # A spec type name is not a TypeScript or Python type, so templates translate through them.
     env.filters["ts_type"] = to_ts_type
+    env.filters["py_type"] = to_py_type
 
     title = to_display_name(spec.get("title"), fallback="API Client")
     base_url = to_base_url(spec.get("base_url"))
@@ -727,6 +729,9 @@ async def run_code_agent(
         all_files: dict[str, str] = dict(existing_lang_files)
         for fp, tmpl_content in template_files.items():
             if fp not in all_files:
+                if fp.endswith(".py") and not _source_is_parseable(fp, tmpl_content):
+                    logger.error("template_syntax_error_phase1", file=fp)
+                    raise SyntaxError(f"Rendered template {fp} has syntax error on initial phase")
                 all_files[fp] = tmpl_content
             elif fp.endswith(".py"):
                 all_files[fp] = _merge_python_code(all_files[fp], tmpl_content, fp)

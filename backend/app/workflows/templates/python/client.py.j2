@@ -161,15 +161,14 @@ class {{ title.replace(' ', '').replace('-', '') }}Client:
 
     async def {{ op_id }}(
         self,
-        {% for param in ep.get('parameters', []) %}
-        {% if param.location == 'path' %}
-        {{ param.name }}: {{ 'str' if param.type == 'string' else param.type }},
-        {% elif param.location == 'query' %}
-        {{ param.name }}: {{ 'str' if param.type == 'string' else param.type }} = None,
-        {% endif %}
+        {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
+        {{ param.name }}: {{ param.type | py_type }},
+        {% endfor %}
+        {% for param in ep.get('parameters', []) if param.location == 'query' and not param.required %}
+        {{ param.name }}: Optional[{{ param.type | py_type }}] = None,
         {% endfor %}
         {% if ep.get('request_schema') %}
-        body: Optional[{{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request] = None,
+        body: Optional[{{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | dict[str, Any]] = None,
         {% endif %}
     ) -> httpx.Response:
         """{{ summary }}."""
@@ -190,7 +189,11 @@ class {{ title.replace(' ', '').replace('-', '') }}Client:
         {% endif %}
         {% endfor %}
 
-        json_body = body.model_dump(exclude_none=True) if body else None
+        {% if ep.get('request_schema') %}
+        json_body = body.model_dump(exclude_none=True) if hasattr(body, "model_dump") else (body if body is not None else None)
+        {% else %}
+        json_body = None
+        {% endif %}
 
         return await self._request("{{ method.upper() }}", url, params=params, json=json_body)
 
@@ -203,23 +206,25 @@ class {{ title.replace(' ', '').replace('-', '') }}Client:
 {% for ep in endpoints %}
 {% set op_id = ep.get('operationId', ep.path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
 async def {{ op_id }}(
-    {% for param in ep.get('parameters', []) %}
-    {% if param.location == 'path' or (param.location == 'query' and param.required) %}
-    {{ param.name }}: {{ 'str' if param.type == 'string' else param.type }},
-    {% endif %}
+    {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
+    {{ param.name }}: {{ param.type | py_type }},
+    {% endfor %}
+    {% for param in ep.get('parameters', []) if param.location == 'query' and not param.required %}
+    {{ param.name }}: Optional[{{ param.type | py_type }}] = None,
     {% endfor %}
     {% if ep.get('request_schema') %}
-    body: Optional[{{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request] = None,
+    body: Optional[{{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | dict[str, Any]] = None,
     {% endif %}
     *, client: Optional[{{ title.replace(' ', '').replace('-', '') }}Client] = None,
 ) -> httpx.Response:
     """{{ ep.summary or ep.path }}."""
     async with (client or {{ title.replace(' ', '').replace('-', '') }}Client()) as c:
         return await c.{{ op_id }}(
-            {% for param in ep.get('parameters', []) %}
-            {% if param.location == 'path' or (param.location == 'query' and param.required) %}
+            {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
             {{ param.name }}={{ param.name }},
-            {% endif %}
+            {% endfor %}
+            {% for param in ep.get('parameters', []) if param.location == 'query' and not param.required %}
+            {{ param.name }}={{ param.name }},
             {% endfor %}
             {% if ep.get('request_schema') %}
             body=body,
