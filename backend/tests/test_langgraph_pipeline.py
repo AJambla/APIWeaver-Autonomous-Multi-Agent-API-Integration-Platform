@@ -33,6 +33,17 @@ def test_graph_compilation():
     assert "finalize" in node_names
 
 
+def test_workflow_state_channels_preserved():
+    """Verify channels like environment, spec_persisted, endpoints_discovered are declared and preserved."""
+    builder = create_apiweaver_graph()
+    graph = builder.compile()
+    channels = set(graph.channels.keys())
+    assert "environment" in channels
+    assert "spec_persisted" in channels
+    assert "endpoints_discovered" in channels
+    assert "github_repo_name" in channels
+
+
 def test_route_after_planner():
     """Test routing decisions after the planning stage."""
     # 1. Plan only -> finalize
