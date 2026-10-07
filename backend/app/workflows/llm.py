@@ -415,11 +415,11 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
                 {"role": "user", "content": user},
             ],
             "response_format": {"type": "json_object"},
-            "temperature": 0.1,
+            "temperature": self.settings.llm_temperature,
         }
         async def send() -> tuple[dict[str, Any], int]:
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AsyncClient(timeout=self.settings.llm_request_timeout) as client:
                     res = await client.post(url, json=payload, headers=headers)
                     res.raise_for_status()
             except httpx.HTTPStatusError as exc:
@@ -489,7 +489,7 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
         }
         async def send() -> list[float]:
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=self.settings.llm_request_timeout) as client:
                     res = await client.post(url, json=payload, headers=headers)
                     if res.status_code == 400 and "dimensions" in payload:
                         # Fallback for providers that reject the 'dimensions' parameter
@@ -526,11 +526,11 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
                 {"role": "user", "content": f"{user}\n\nRespond ONLY with valid JSON."}
             ],
             "max_tokens": self.settings.llm_max_tokens,
-            "temperature": 0.1,
+            "temperature": self.settings.llm_temperature,
         }
         async def send() -> tuple[dict[str, Any], int]:
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AsyncClient(timeout=self.settings.llm_request_timeout) as client:
                     res = await client.post(url, json=payload, headers=headers)
                     res.raise_for_status()
             except httpx.HTTPStatusError as exc:
