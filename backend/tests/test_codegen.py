@@ -277,3 +277,33 @@ class TestCodeGeneratorAPI:
             assert own.status_code == 200, own.text
             assert own.json()["file_path"] == "mine.py"
             assert own.json()["content"] == "secret bytes"
+
+    def test_merge_python_code_preserves_methods(self):
+        """Verify _merge_python_code accumulates methods from multiple phases."""
+        from app.workflows.agents.code_agent import _merge_python_code
+
+        phase1_code = (
+            "import httpx\n\n"
+            "class Client:\n"
+            "    def __init__(self, base_url: str | None = None) -> None:\n"
+            "        self.base_url = base_url\n\n"
+            "    async def list_pets(self) -> httpx.Response:\n"
+            "        return await self._request('GET', '/pets')\n"
+        )
+        phase2_code = (
+            "import pydantic\n\n"
+            "class Pet(pydantic.BaseModel):\n"
+            "    name: str\n\n"
+            "class Client:\n"
+            "    def __init__(self, base_url: str | None = None, api_key: str | None = None) -> None:\n"
+            "        self.base_url = base_url\n"
+            "        self.api_key = api_key\n\n"
+            "    async def create_pet(self, data: dict) -> httpx.Response:\n"
+            "        return await self._request('POST', '/pets', json=data)\n"
+        )
+        merged = _merge_python_code(phase1_code, phase2_code)
+        assert "async def list_pets" in merged
+        assert "async def create_pet" in merged
+        assert "class Pet" in merged
+        assert "import httpx" in merged
+        assert "import pydantic" in merged

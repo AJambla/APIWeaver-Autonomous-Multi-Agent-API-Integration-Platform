@@ -383,12 +383,19 @@ def create_apiweaver_graph(
                             )
                         ).all()
                         raw_data = api_spec_record.raw_normalized or {}
+                        raw_eps_by_key = {
+                            (str(ep.get("method", "")).upper(), ep.get("path", "")): ep
+                            for ep in (raw_data.get("endpoints") or [])
+                            if isinstance(ep, dict)
+                        }
                         hydrated_endpoints = [
                             {
                                 "id": str(ep.id),
                                 "method": ep.method,
                                 "path": ep.path,
-                                "summary": ep.summary,
+                                "summary": ep.summary or raw_eps_by_key.get((str(ep.method).upper(), ep.path), {}).get("summary"),
+                                "operation_id": getattr(ep, "operation_id", None) or raw_eps_by_key.get((str(ep.method).upper(), ep.path), {}).get("operation_id") or raw_eps_by_key.get((str(ep.method).upper(), ep.path), {}).get("operationId"),
+                                "operationId": getattr(ep, "operation_id", None) or raw_eps_by_key.get((str(ep.method).upper(), ep.path), {}).get("operationId") or raw_eps_by_key.get((str(ep.method).upper(), ep.path), {}).get("operation_id"),
                                 "parameters": [
                                     {
                                         "name": p.name,
@@ -397,9 +404,9 @@ def create_apiweaver_graph(
                                         "required": p.required,
                                     }
                                     for p in getattr(ep, "parameters", [])
-                                ],
-                                "request_schema": ep.request_schema,
-                                "response_schemas": ep.response_schemas,
+                                ] if getattr(ep, "parameters", None) else raw_eps_by_key.get((str(ep.method).upper(), ep.path), {}).get("parameters", []),
+                                "request_schema": ep.request_schema if ep.request_schema is not None else raw_eps_by_key.get((str(ep.method).upper(), ep.path), {}).get("request_schema"),
+                                "response_schemas": ep.response_schemas if ep.response_schemas else raw_eps_by_key.get((str(ep.method).upper(), ep.path), {}).get("response_schemas", {}),
                             }
                             for ep in endpoint_records
                         ]
@@ -720,6 +727,7 @@ def create_apiweaver_graph(
                                     content_s3_key=s3_key,
                                     language=lang,
                                     file_type=file_type_val,
+                                    size_bytes=gf.get("size_bytes", 0),
                                 )
                             )
                             existing_entries.add(entry_key)
@@ -929,8 +937,21 @@ def create_apiweaver_graph(
             })
         except Exception as exc:
             terminal_logger.log_failure("repair_agent", run_id, exc)
-            await _emit_thought(state, "repair_agent", f"Repair synthesis failed: {exc}", level="error", action="repair_failed")
-            raise
+            await _emit_thought(
+                state,
+                "repair_agent",
+                f"Repair attempt #{attempt_number}/3 encountered provider error ({exc}). Recording attempt outcome.",
+                level="warn",
+                action="repair_failed",
+            )
+            attempts.append({
+                "attempt_number": attempt_number,
+                "target_file": target_file_path,
+                "diff_summary": f"Repair synthesis failed: {exc}",
+                "error": str(exc),
+                "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+                "outcome": "failed",
+            })
 
         tokens_after = total_tokens
 
@@ -939,9 +960,9 @@ def create_apiweaver_graph(
             run_id,
             tokens_before=tokens_before,
             tokens_after=tokens_after,
-            details=f"Self-healing repair #{attempt_number}/3 applied to {target_file_path}; re-routing back to test_agent",
+            details=f"Self-healing repair #{attempt_number}/3 processed for {target_file_path}; re-routing back to test_agent",
         )
-        await _emit_thought(state, "repair_agent", f"Repair #{attempt_number}/3 patch applied to {target_file_path}. Re-testing in sandbox...", level="info", action="repair_applied")
+        await _emit_thought(state, "repair_agent", f"Repair #{attempt_number}/3 cycle complete for {target_file_path}. Evaluating test suite...", level="info", action="repair_applied")
 
         updates: dict[str, Any] = {
             "generated_files": repaired_files,
@@ -1041,6 +1062,28 @@ def create_apiweaver_graph(
             },
         )
         await _save_checkpoint({**state, **updates}, "export_agent")
+
+        if session_factory and state.get("project_id"):
+            try:
+                async with session_factory() as session:
+                    from app.models.export import Export
+                    for art in artifacts:
+                        exp_type = art.get("type")
+                        if not exp_type:
+                            continue
+                        primary_k = art.get("s3_key")
+                        if not primary_k and art.get("artifacts") and isinstance(art["artifacts"], list) and art["artifacts"]:
+                            primary_k = art["artifacts"][0].get("s3_key")
+                        exp_row = Export(
+                            project_id=uuid.UUID(str(state["project_id"])),
+                            export_type=exp_type,
+                            status="failed" if art.get("status") == "failed" else "completed",
+                            s3_key=primary_k,
+                        )
+                        session.add(exp_row)
+                    await session.commit()
+            except Exception as e:
+                logger.warning("pipeline_export_records_save_failed", error=str(e))
 
         return updates
 
@@ -1328,6 +1371,8 @@ class LangGraphOrchestrator:
                     run_obj = await session.get(WorkflowRun, workflow_run_id)
                     if run_obj:
                         run_obj.status = WorkflowStatus.FAILED
+                        run_obj.current_node = current.get("current_node") or "failed"
+                        run_obj.progress_percent = current.get("progress_percent") or 75
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
                         await session.commit()
 

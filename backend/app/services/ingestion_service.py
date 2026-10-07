@@ -192,6 +192,7 @@ async def persist_normalized_spec(
             api_spec_id=api_spec.id,
             method=endpoint.get("method", "GET"),
             path=endpoint.get("path", "/"),
+            operation_id=endpoint.get("operation_id") or endpoint.get("operationId"),
             summary=endpoint.get("summary"),
             request_schema=endpoint.get("request_schema"),
             response_schemas=endpoint.get("response_schemas", {}),

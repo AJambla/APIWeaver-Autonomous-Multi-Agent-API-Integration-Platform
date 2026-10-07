@@ -68,6 +68,7 @@ class Export(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     export_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    s3_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     github_export: Mapped[GitHubExport | None] = relationship(
         back_populates="export", cascade="all, delete-orphan", uselist=False

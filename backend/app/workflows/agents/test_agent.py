@@ -504,7 +504,9 @@ async def _create_sandbox(
         if not isinstance(file_meta, dict):
             continue
         lang = file_meta.get("language")
-        if lang not in target_languages and lang not in ("python", "node"):
+        # DockerSandboxExecutor executes the Python test suite; only load Python files
+        # so Node.js files (or shared filenames) cannot collide or overwrite Python files.
+        if lang != "python":
             continue
         try:
             raw = await storage_service.download(file_meta["content_s3_key"])

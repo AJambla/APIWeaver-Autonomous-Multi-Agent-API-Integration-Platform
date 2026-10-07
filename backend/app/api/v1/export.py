@@ -141,6 +141,13 @@ async def _execute_export_run(
                 export.status = "failed"
                 continue
             export.status = "failed" if artifact.get("status") == "failed" else "completed"
+            primary_key = None
+            if artifact.get("s3_key"):
+                primary_key = artifact.get("s3_key")
+            elif artifact.get("artifacts") and isinstance(artifact["artifacts"], list) and artifact["artifacts"]:
+                primary_key = artifact["artifacts"][0].get("s3_key")
+            if primary_key:
+                export.s3_key = primary_key
         await session.commit()
     return state
 
@@ -229,14 +236,19 @@ async def download_export(
     if export is None or export.project_id != project.id:
         raise NotFoundError("Export record not found.")
 
-    candidate_keys = [
+    candidate_keys = []
+    if export.s3_key:
+        candidate_keys.append(export.s3_key)
+    candidate_keys.extend([
         f"exports/{project.id}/{export.export_type}/python/sdk-python.zip",
         f"exports/{project.id}/{export.export_type}/node/sdk-node.zip",
+        f"exports/{project.id}/{export.export_type}/python/package.json",
+        f"exports/{project.id}/{export.export_type}/node/package.json",
         f"exports/{project.id}/{export.export_type}/python/client.py",
         f"exports/{project.id}/{export.export_type}/node/client.ts",
         f"exports/{project.id}/{export.export_type}/Dockerfile",
         f"exports/{project.id}/{export.export_type}/package.json",
-    ]
+    ])
 
     content: bytes | None = None
     matched_key: str | None = None
