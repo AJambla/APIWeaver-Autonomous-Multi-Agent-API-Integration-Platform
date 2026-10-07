@@ -107,6 +107,12 @@ async def trigger_export(
         "test_suite": test_suite,
         "test_run_summary": test_run_summary,
         "export_types": export_types,
+        "github_repo_name": payload.github_repo_name,
+        "github_org": payload.github_org,
+        "github_private": payload.github_private,
+        "github_branch": payload.github_branch,
+        "github_commit_message": payload.github_commit_message,
+        "docker_image_name": payload.docker_image_name,
         "errors": [],
     }
 
@@ -184,15 +190,20 @@ async def export_mcp(
         {"tools_generated": 0, "flagged_destructive": 0, "artifacts": []},
     )
 
+    mcp_failed = mcp_artifact.get("status") == "failed"
     manifest_s3_key = f"exports/{project.id}/mcp/manifest.json"
     exp = Export(
         project_id=project.id,
         export_type=ExportType.MCP.value,
-        status="completed",
-        s3_key=manifest_s3_key,
+        status="failed" if mcp_failed else "completed",
+        s3_key=manifest_s3_key if not mcp_failed else None,
     )
     session.add(exp)
     await session.commit()
+
+    if mcp_failed:
+        from app.core.errors import AppError
+        raise AppError(mcp_artifact.get("error") or "MCP export packaging failed.", status_code=500)
 
     return MCPExportResponse(
         mcp_manifest_url=f"/api/v1/projects/{project.id}/exports/mcp/manifest.json",

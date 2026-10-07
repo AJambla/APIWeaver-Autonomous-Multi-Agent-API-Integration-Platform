@@ -123,6 +123,7 @@ class RepairOutcome(StrEnum):
 class ExportType(StrEnum):
     SDK = "sdk"
     CLIENT = "client"
+    FASTAPI = "fastapi"
     DOCKER = "docker"
     GITHUB = "github"
     MCP = "mcp"

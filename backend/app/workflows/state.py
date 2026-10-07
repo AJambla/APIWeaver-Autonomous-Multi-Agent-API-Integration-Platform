@@ -45,6 +45,8 @@ class WorkflowState(TypedDict, total=False):
     github_org: str | None
     github_private: bool | None
     github_branch: str | None
+    github_commit_message: str | None
+    docker_image_name: str | None
 
     # Pipeline tracking
     current_node: str
