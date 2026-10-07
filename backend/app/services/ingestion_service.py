@@ -66,14 +66,22 @@ async def ingest_document(
     try:
         normalized = normalize(content, filename, format_hint)
     except UnprocessableEntityError as exc:
-        logger.warning(
-            "deterministic_normalization_failed",
-            filename=filename,
-            format_hint=format_hint,
-            error=str(exc),
-        )
-        # Freeform document - store Document + DocumentVersion only
-        normalized = None
+        if format_hint is not None:
+            # If a format hint was passed and failed, attempt pure content-sniffing without the hint
+            try:
+                normalized = normalize(content, filename, None)
+            except UnprocessableEntityError:
+                normalized = None
+        else:
+            normalized = None
+
+        if normalized is None:
+            logger.warning(
+                "deterministic_normalization_failed",
+                filename=filename,
+                format_hint=format_hint,
+                error=str(exc),
+            )
 
     checksum = hashlib.sha256(content).hexdigest()
     exists = await session.scalar(
