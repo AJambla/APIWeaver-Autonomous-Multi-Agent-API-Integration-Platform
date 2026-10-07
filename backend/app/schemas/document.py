@@ -22,6 +22,7 @@ class EndpointResponse(ResponseModel):
     id: uuid.UUID
     method: str
     path: str
+    operation_id: str | None = None
     summary: str | None
     deprecated: bool
     confidence_score: float | None = None

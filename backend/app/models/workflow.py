@@ -69,6 +69,10 @@ class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     estimated_cost_usd: Mapped[decimal.Decimal] = mapped_column(
         Numeric(10, 4), nullable=False, server_default=text("0"), default=decimal.Decimal("0")
     )
+    current_node: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    progress_percent: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, server_default=text("0"), default=0
+    )
 
     checkpoints: Mapped[list[WorkflowCheckpoint]] = relationship(
         back_populates="workflow_run", cascade="all, delete-orphan"

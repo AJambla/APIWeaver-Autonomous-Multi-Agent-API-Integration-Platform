@@ -118,6 +118,8 @@ async def upload_document(
                 "method": ep.method,
                 "path": ep.path,
                 "summary": ep.summary,
+                "operation_id": ep.operation_id,
+                "operationId": ep.operation_id,
                 "parameters": ep.parameters,
                 "request_schema": ep.request_schema,
                 "response_schemas": ep.response_schemas,
@@ -187,7 +189,11 @@ async def get_spec(
     return SpecResponse.model_validate(spec)
 
 
-@router.get("/{id}/endpoints", response_model=list[EndpointResponse])
+@router.get(
+    "/{id}/endpoints",
+    response_model=list[EndpointResponse],
+    response_model_exclude_none=True,
+)
 async def list_endpoints(
     project: Project = Depends(require_project_permission(Permission.SPEC_READ)),
     session: AsyncSession = Depends(get_db),

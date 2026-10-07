@@ -8,18 +8,21 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+from decimal import Decimal
 import uuid
 from typing import Any, Literal, cast
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.enums import WorkflowStatus
+from app.models.metrics import UsageMetric
 from app.models.spec import APISpec, Endpoint
+from app.models.versioning import ArtifactVersion
 from app.models.workflow import WorkflowCheckpoint, WorkflowRun
 from app.services.event_publisher import EventPublisher
 from app.services.ingestion_service import persist_endpoint_dependencies, persist_normalized_spec
@@ -140,8 +143,8 @@ def route_after_testing(state: WorkflowState) -> str:
     if len(repair_attempts) < 3:
         return "repair_agent"
 
-    # Exhausted repair attempts: route to finalize as terminal failed state
-    return "finalize"
+    # Exhausted repair attempts: escalate to human approval gate
+    return "approval_gate"
 
 
 # --- Graph Factory ------------------------------------------------------------------
@@ -233,12 +236,21 @@ def create_apiweaver_graph(
         try:
             async with session_factory() as session:
                 serializable = {k: v for k, v in dict(state).items() if k != "raw_document_bytes"}
+                run_uuid = uuid.UUID(str(state["workflow_run_id"]))
                 checkpoint = WorkflowCheckpoint(
-                    workflow_run_id=uuid.UUID(str(state["workflow_run_id"])),
+                    workflow_run_id=run_uuid,
                     node_name=node_name,
                     state_snapshot=serializable,
                 )
                 session.add(checkpoint)
+
+                run_obj = await session.get(WorkflowRun, run_uuid)
+                if run_obj:
+                    run_obj.current_node = node_name
+                    if "progress_percent" in state and state["progress_percent"] is not None:
+                        run_obj.progress_percent = int(state["progress_percent"])
+                    if "total_tokens_used" in state and state["total_tokens_used"] is not None:
+                        run_obj.total_tokens_used = int(state["total_tokens_used"])
                 await session.commit()
         except Exception as exc:
             logger.warning("langgraph_checkpoint_save_failed", error=str(exc))
@@ -1227,6 +1239,12 @@ class LangGraphOrchestrator:
     ) -> None:
         self.session_factory = session_factory
         self.event_publisher = event_publisher
+        if qdrant_client is None:
+            try:
+                from app.services.qdrant_service import HttpQdrantClient
+                qdrant_client = HttpQdrantClient(get_settings())
+            except Exception as e:
+                logger.warning("failed_to_initialize_qdrant_client", error=str(e))
         self.qdrant_client = qdrant_client
         self.checkpointer = checkpointer or MemorySaver()
         self.execution_mode = execution_mode
@@ -1329,7 +1347,54 @@ class LangGraphOrchestrator:
                             final_status = WorkflowStatus.CANCELLED
                         else:
                             run_obj.status = final_status
-                            run_obj.total_tokens_used = result_state.get("total_tokens_used", 0)
+                            total_tokens = result_state.get("total_tokens_used", 0)
+                            run_obj.total_tokens_used = total_tokens
+                            run_obj.current_node = result_state.get("current_node", "completed")
+                            run_obj.progress_percent = result_state.get(
+                                "progress_percent", 100 if final_status == WorkflowStatus.COMPLETED else 50
+                            )
+
+                            cost_usd = Decimal(str(round(total_tokens * 0.000003, 4)))
+                            run_obj.estimated_cost_usd = cost_usd
+
+                            if total_tokens > 0:
+                                try:
+                                    metric = UsageMetric(
+                                        organization_id=run_obj.organization_id,
+                                        metric_name="token_cost_usd",
+                                        value=cost_usd,
+                                    )
+                                    session.add(metric)
+                                except Exception as metric_err:
+                                    logger.warning("failed_to_record_usage_metric", error=str(metric_err))
+
+                            if final_status == WorkflowStatus.COMPLETED and result_state.get("generated_files"):
+                                try:
+                                    await session.execute(
+                                        update(ArtifactVersion)
+                                        .where(
+                                            ArtifactVersion.project_id == run_obj.project_id,
+                                            ArtifactVersion.artifact_type == "sdk",
+                                            ArtifactVersion.is_active == True,  # noqa: E712
+                                        )
+                                        .values(is_active=False)
+                                    )
+                                    curr_max_v = await session.scalar(
+                                        select(func.max(ArtifactVersion.version_number)).where(
+                                            ArtifactVersion.project_id == run_obj.project_id,
+                                            ArtifactVersion.artifact_type == "sdk",
+                                        )
+                                    ) or 0
+                                    new_ver = ArtifactVersion(
+                                        project_id=run_obj.project_id,
+                                        artifact_type="sdk",
+                                        version_number=curr_max_v + 1,
+                                        is_active=True,
+                                    )
+                                    session.add(new_ver)
+                                except Exception as ver_err:
+                                    logger.warning("failed_to_record_artifact_version", error=str(ver_err))
+
                             if final_status in (WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED):
                                 run_obj.completed_at = datetime.datetime.now(datetime.UTC)
                         await session.commit()

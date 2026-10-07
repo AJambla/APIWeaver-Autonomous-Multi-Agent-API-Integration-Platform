@@ -113,7 +113,7 @@ class Settings(BaseSettings):
     sandbox_max_memory: str = "256Mi"
     sandbox_timeout_seconds: int = 300
     sandbox_pids_limit: int = 64
-    sandbox_network_enabled: bool = False
+    sandbox_network_enabled: bool = True
     sandbox_read_only_rootfs: bool = True
 
     # --- Observability (recommended) ------------------------------------------
