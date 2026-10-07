@@ -42,6 +42,22 @@ terminal_logger = LangGraphAgentLogger()
 
 DEFAULT_TOKEN_BUDGET = 1_000_000
 
+MODEL_PRICING_PER_TOKEN: dict[str, float] = {
+    "gpt-4o-mini": 0.0000003,
+    "gpt-4o": 0.000005,
+    "gpt-4-turbo": 0.00001,
+    "claude-3-5-sonnet": 0.000003,
+    "claude-3-5-sonnet-20241022": 0.000003,
+    "claude-3-haiku": 0.00000025,
+}
+DEFAULT_TOKEN_PRICE = 0.000003
+
+
+def calculate_token_cost_usd(tokens: int, model: str | None = None) -> Decimal:
+    """Calculate estimated cost in USD based on per-model pricing."""
+    price = MODEL_PRICING_PER_TOKEN.get(model or "", DEFAULT_TOKEN_PRICE)
+    return Decimal(str(round(tokens * price, 6)))
+
 
 class WorkflowCancelledError(Exception):
     """Raised when an in-flight workflow run has been cancelled by the user or admin."""
@@ -1396,7 +1412,7 @@ class LangGraphOrchestrator:
                                 "progress_percent", 100 if final_status == WorkflowStatus.COMPLETED else 50
                             )
 
-                            cost_usd = Decimal(str(round(total_tokens * 0.000003, 4)))
+                            cost_usd = calculate_token_cost_usd(total_tokens, get_settings().llm_model)
                             run_obj.estimated_cost_usd = cost_usd
 
                             if total_tokens > 0:
@@ -1479,18 +1495,38 @@ class LangGraphOrchestrator:
                 details="Workflow execution cancelled by user; pipeline stopped.",
             )
             current["status"] = WorkflowStatus.CANCELLED
+            total_tokens = current.get("total_tokens_used", 0)
+            cost_usd = calculate_token_cost_usd(total_tokens, get_settings().llm_model)
             if self.session_factory:
                 async with self.session_factory() as session:
                     run_obj = await session.get(WorkflowRun, workflow_run_id)
-                    if run_obj and run_obj.status != WorkflowStatus.CANCELLED:
-                        run_obj.status = WorkflowStatus.CANCELLED
+                    if run_obj:
+                        if run_obj.status != WorkflowStatus.CANCELLED:
+                            run_obj.status = WorkflowStatus.CANCELLED
+                        run_obj.total_tokens_used = total_tokens
+                        run_obj.estimated_cost_usd = cost_usd
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
+                        if total_tokens > 0:
+                            try:
+                                org_id = current.get("organization_id")
+                                if not org_id:
+                                    project_row = await session.get(Project, run_obj.project_id)
+                                    org_id = project_row.organization_id if project_row else None
+                                if org_id:
+                                    metric = UsageMetric(
+                                        organization_id=uuid.UUID(str(org_id)),
+                                        metric_name="token_cost_usd",
+                                        value=cost_usd,
+                                    )
+                                    session.add(metric)
+                            except Exception as metric_err:
+                                logger.warning("failed_to_record_usage_metric", error=str(metric_err))
                         await session.commit()
             await self._record_event(
                 workflow_run_id,
                 agent_name="orchestrator",
                 event_type="workflow_finished",
-                payload={"status": "cancelled", "reason": "user_cancelled"},
+                payload={"status": "cancelled", "reason": "user_cancelled", "total_tokens": total_tokens, "cost_usd": str(cost_usd)},
             )
             return cast(WorkflowState, current)
 
@@ -1498,15 +1534,34 @@ class LangGraphOrchestrator:
             logger.error("langgraph_execution_failed", run_id=run_id_str, error=str(exc))
             current["status"] = WorkflowStatus.FAILED
             current.setdefault("errors", []).append(str(exc))
+            total_tokens = current.get("total_tokens_used", 0)
+            cost_usd = calculate_token_cost_usd(total_tokens, get_settings().llm_model)
 
             if self.session_factory:
                 async with self.session_factory() as session:
                     run_obj = await session.get(WorkflowRun, workflow_run_id)
                     if run_obj:
                         run_obj.status = WorkflowStatus.FAILED
+                        run_obj.total_tokens_used = total_tokens
+                        run_obj.estimated_cost_usd = cost_usd
                         run_obj.current_node = current.get("current_node") or "failed"
                         run_obj.progress_percent = current.get("progress_percent") or 75
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
+                        if total_tokens > 0:
+                            try:
+                                org_id = current.get("organization_id")
+                                if not org_id:
+                                    project_row = await session.get(Project, run_obj.project_id)
+                                    org_id = project_row.organization_id if project_row else None
+                                if org_id:
+                                    metric = UsageMetric(
+                                        organization_id=uuid.UUID(str(org_id)),
+                                        metric_name="token_cost_usd",
+                                        value=cost_usd,
+                                    )
+                                    session.add(metric)
+                            except Exception as metric_err:
+                                logger.warning("failed_to_record_usage_metric", error=str(metric_err))
                     try:
                         project = await session.get(
                             Project, uuid.UUID(str(current.get("project_id")))

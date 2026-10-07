@@ -167,3 +167,60 @@ async def test_langgraph_orchestrator_pauses_for_approval(monkeypatch):
     assert result.get("current_node") == "completed"
     assert result.get("execution_plan") is not None
     assert not result.get("generated_files")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_costs_and_metrics(session_factory, db) -> None:
+    """Cancelled runs must compute estimated_cost_usd and persist UsageMetric."""
+    from app.models.metrics import UsageMetric
+    from app.models.organization import Organization
+    from app.models.project import Project
+    from app.models.workflow import WorkflowRun
+    from app.workflows.langgraph_pipeline import WorkflowCancelledError, calculate_token_cost_usd
+    from sqlalchemy import select
+
+    org_id = uuid.uuid4()
+    proj_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+
+    async with db as session:
+        org = Organization(id=org_id, name="Cost Org", slug=f"cost-org-{uuid.uuid4().hex[:6]}")
+        proj = Project(id=proj_id, name="Cost Proj", organization_id=org_id)
+        run = WorkflowRun(id=run_id, project_id=proj_id, status=WorkflowStatus.RUNNING)
+        session.add_all([org, proj, run])
+        await session.commit()
+
+    orchestrator = LangGraphOrchestrator(session_factory=session_factory)
+
+    # State with tokens used before cancellation
+    initial_state: WorkflowState = {
+        "project_id": str(proj_id),
+        "organization_id": str(org_id),
+        "workflow_run_id": str(run_id),
+        "total_tokens_used": 5000,
+        "stages": ["plan"],
+    }
+
+    # Simulate cancellation being raised during execution
+    async def _cancelling_app(*args, **kwargs):
+        raise WorkflowCancelledError("Cancelled by user")
+
+    orchestrator.graph.ainvoke = _cancelling_app
+
+    res = await orchestrator.run(run_id, initial_state)
+    assert res["status"] == WorkflowStatus.CANCELLED
+
+    async with db as session:
+        refreshed_run = await session.get(WorkflowRun, run_id)
+        assert refreshed_run.status == WorkflowStatus.CANCELLED
+        assert refreshed_run.total_tokens_used == 5000
+        assert refreshed_run.estimated_cost_usd > 0
+
+        metric = await session.scalar(
+            select(UsageMetric).where(
+                UsageMetric.organization_id == org_id,
+                UsageMetric.metric_name == "token_cost_usd",
+            )
+        )
+        assert metric is not None
+        assert metric.value == refreshed_run.estimated_cost_usd
