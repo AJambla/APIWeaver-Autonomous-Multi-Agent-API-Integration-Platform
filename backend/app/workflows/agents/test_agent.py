@@ -57,7 +57,7 @@ Parameters: {parameters}
 Return a JSON object with:
 {{
   "request": {{ ... }},  // Example request data matching the schema
-  "expected_status": 200,
+  "expected_status": <integer status code matching primary success response schema, e.g. 200, 201, 204>,
   "expected_response_shape": {{ ... }}  // Expected response structure
 }}
 """
@@ -238,25 +238,45 @@ class MockSandboxClient:
             result["latency_ms"] = int((time.perf_counter() - start) * 1000)
 
             # Capture response
-            status_code = getattr(response, "status_code", 200)
+            status_code = getattr(response, "status_code", None)
+            if status_code is None and isinstance(response, dict):
+                status_code = response.get("status_code") or response.get("status")
             result["status_code"] = status_code
             result["response_snapshot"] = {
                 "status_code": status_code,
                 "headers": dict(getattr(response, "headers", {})),
-                "body": response.json() if hasattr(response, "json") else getattr(response, "text", None),
+                "body": response.json() if hasattr(response, "json") else getattr(response, "text", response if isinstance(response, dict) else None),
             }
 
             # Validate response
-            expected_status = fixture.get("expected_status", 200)
-            is_success_code = 200 <= status_code < 300
-            expected_is_2xx = isinstance(expected_status, int) and 200 <= expected_status < 300
-            if expected_is_2xx:
-                if not is_success_code:
-                    result["status"] = "failed"
-                    result["error"] = f"Expected 2xx status, got {status_code}"
-            elif status_code != expected_status:
+            expected_status = fixture.get("expected_status") if isinstance(fixture, dict) else None
+            if expected_status is None:
+                resp_schemas = endpoint.get("response_schemas") or endpoint.get("responses") or {}
+                if isinstance(resp_schemas, dict):
+                    for code_str in resp_schemas.keys():
+                        try:
+                            c = int(code_str)
+                            if 200 <= c < 300:
+                                expected_status = c
+                                break
+                        except (ValueError, TypeError):
+                            pass
+                if expected_status is None:
+                    expected_status = 201 if method == "POST" else (204 if method == "DELETE" else 200)
+
+            if status_code is None:
                 result["status"] = "failed"
-                result["error"] = f"Expected status {expected_status}, got {status_code}"
+                result["error"] = f"Response object has no status_code (got {type(response).__name__})"
+            else:
+                is_success_code = 200 <= status_code < 300
+                expected_is_2xx = isinstance(expected_status, int) and 200 <= expected_status < 300
+                if expected_is_2xx:
+                    if not is_success_code:
+                        result["status"] = "failed"
+                        result["error"] = f"Expected 2xx status, got {status_code}"
+                elif status_code != expected_status:
+                    result["status"] = "failed"
+                    result["error"] = f"Expected status {expected_status}, got {status_code}"
 
             close_fn = getattr(client, "close", None)
             if close_fn:
@@ -391,7 +411,30 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
             name = p.get("name")
             if not name:
                 continue
-            p_type = str(p.get("type", "string")).lower()
+
+            # Prioritize spec example, default, or enum
+            if "example" in p:
+                params[name] = p["example"]
+                continue
+            if "default" in p:
+                params[name] = p["default"]
+                continue
+            if p.get("enum") and isinstance(p["enum"], list) and p["enum"]:
+                params[name] = p["enum"][0]
+                continue
+
+            p_schema = p.get("schema") if isinstance(p.get("schema"), dict) else {}
+            if "example" in p_schema:
+                params[name] = p_schema["example"]
+                continue
+            if "default" in p_schema:
+                params[name] = p_schema["default"]
+                continue
+            if p_schema.get("enum") and isinstance(p_schema["enum"], list) and p_schema["enum"]:
+                params[name] = p_schema["enum"][0]
+                continue
+
+            p_type = str(p.get("type", p_schema.get("type", "string"))).lower()
             if p_type in ("integer", "int"):
                 val: Any = 1
             elif p_type in ("number", "float"):
@@ -399,20 +442,35 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
             elif p_type in ("boolean", "bool"):
                 val = True
             elif p_type == "array":
-                val = ["available"] if name == "status" else ["test"]
+                items_spec = p.get("items") or p_schema.get("items") or {}
+                item_val = "test"
+                if isinstance(items_spec, dict):
+                    if "example" in items_spec:
+                        item_val = items_spec["example"]
+                    elif items_spec.get("enum") and isinstance(items_spec["enum"], list) and items_spec["enum"]:
+                        item_val = items_spec["enum"][0]
+                val = [item_val]
             else:
-                val = "available" if name == "status" else f"test_{name}"
+                val = f"test_{name}"
             params[name] = val
 
     def _mock_schema(schema: dict[str, Any], depth: int = 0) -> Any:
         if depth > 3 or not isinstance(schema, dict):
             return {}
+
+        if "example" in schema:
+            return schema["example"]
+        if "default" in schema:
+            return schema["default"]
+        if schema.get("enum") and isinstance(schema["enum"], list) and schema["enum"]:
+            return schema["enum"][0]
+
         ref = schema.get("$ref")
         if ref and isinstance(ref, str):
             ref_name = ref.split("/")[-1]
             if ref_name in defs and isinstance(defs[ref_name], dict):
                 return _mock_schema(defs[ref_name], depth + 1)
-            return {"id": 1, "name": "test"}
+            return {"name": ref_name.lower()}
 
         s_type = schema.get("type")
         if s_type == "object" or "properties" in schema:
@@ -430,7 +488,7 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
             return 1.0
         elif s_type in ("boolean", "bool"):
             return True
-        return "test"
+        return schema.get("example", "test")
 
     body = None
     req_schema = ep.get("request_schema")
@@ -438,14 +496,8 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
         body = _mock_schema(req_schema)
 
     expected_status = 200
-    method = str(ep.get("method") or "GET").upper()
-    if method == "POST":
-        expected_status = 201
-    elif method == "DELETE":
-        expected_status = 204
-
-    resp_schemas = ep.get("response_schemas")
-    if isinstance(resp_schemas, dict):
+    resp_schemas = ep.get("response_schemas") or ep.get("responses")
+    if isinstance(resp_schemas, dict) and resp_schemas:
         for code_str in resp_schemas.keys():
             try:
                 code_int = int(code_str)
@@ -454,6 +506,12 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
                     break
             except (ValueError, TypeError):
                 pass
+    else:
+        method = str(ep.get("method") or "GET").upper()
+        if method == "POST":
+            expected_status = 201
+        elif method == "DELETE":
+            expected_status = 204
 
     return {
         "request": {
@@ -645,26 +703,30 @@ async def _create_sandbox(
         exec_py = DockerSandboxExecutor(settings)
         if hasattr(exec_py, "_network_enabled"):
             exec_py._network_enabled = network_enabled
-        await exec_py.load(
-            project_id=state.get("project_id"),
-            files=python_files,
-            base_url=spec_dict.get("base_url"),
-            api_key=_credential_from_auth(auth),
-            language="python",
-        )
+        load_kw: dict[str, Any] = {
+            "project_id": state.get("project_id"),
+            "files": python_files,
+            "base_url": spec_dict.get("base_url"),
+            "api_key": _credential_from_auth(auth),
+        }
+        if "language" in inspect.signature(exec_py.load).parameters:
+            load_kw["language"] = "python"
+        await exec_py.load(**load_kw)
         executors["python"] = exec_py
 
     if "node" in target_languages and node_files:
         exec_node = DockerSandboxExecutor(settings)
         if hasattr(exec_node, "_network_enabled"):
             exec_node._network_enabled = network_enabled
-        await exec_node.load(
-            project_id=state.get("project_id"),
-            files=node_files,
-            base_url=spec_dict.get("base_url"),
-            api_key=_credential_from_auth(auth),
-            language="node",
-        )
+        load_kw_node: dict[str, Any] = {
+            "project_id": state.get("project_id"),
+            "files": node_files,
+            "base_url": spec_dict.get("base_url"),
+            "api_key": _credential_from_auth(auth),
+        }
+        if "language" in inspect.signature(exec_node.load).parameters:
+            load_kw_node["language"] = "node"
+        await exec_node.load(**load_kw_node)
         executors["node"] = exec_node
 
     if not executors:

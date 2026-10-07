@@ -159,9 +159,9 @@ class MockSandboxClient:
             )
         except FileNotFoundError:
             return SandboxResult(
-                exit_code=0,
+                exit_code=127,
                 stdout="",
-                stderr="Node.js not available — syntax check skipped (mock mode)",
+                stderr="Node.js not available — syntax check cannot be performed",
                 duration_ms=int((time.perf_counter() - start) * 1000),
             )
         except subprocess.TimeoutExpired:
@@ -735,6 +735,21 @@ class DockerSandboxExecutor:
             if not isinstance(params_data, dict):
                 params_data = {}
 
+            exp_status = fixture.get("expected_status") if isinstance(fixture, dict) else None
+            if exp_status is None:
+                resp_sc = endpoint.get("response_schemas") or endpoint.get("responses")
+                if isinstance(resp_sc, dict):
+                    for cs in resp_sc.keys():
+                        try:
+                            ci = int(cs)
+                            if 200 <= ci < 300:
+                                exp_status = ci
+                                break
+                        except (ValueError, TypeError):
+                            pass
+                if exp_status is None:
+                    exp_status = 201 if method == "POST" else (204 if method == "DELETE" else 200)
+
             payload = {
                 "module_name": self._client_module,
                 "client_file": self._client_file,
@@ -744,7 +759,7 @@ class DockerSandboxExecutor:
                     "params": params_data,
                     "body": request_data.get("body"),
                 },
-                "expected_status": fixture.get("expected_status", 200),
+                "expected_status": exp_status,
                 "base_url": self._base_url,
             }
             (self._workspace / "payload.json").write_text(json.dumps(payload), encoding="utf-8")

@@ -577,3 +577,49 @@ def test_docker_sandbox_custom_docker_host(monkeypatch):
     assert client == "custom_client_instance"
     assert captured_hosts == ["tcp://docker-dind:2375"]
 
+
+@pytest.mark.asyncio
+async def test_node_syntax_check_reports_failure_when_node_unavailable(monkeypatch):
+    """Verify _run_node_test returns non-zero exit code when node executable is not found."""
+    import subprocess
+    from app.services.sandbox_service import MockSandboxClient as ServiceMockSandboxClient
+
+    def _mock_subprocess_run(*args, **kwargs):
+        raise FileNotFoundError("node not found")
+
+    monkeypatch.setattr(subprocess, "run", _mock_subprocess_run)
+    client = ServiceMockSandboxClient()
+    res = await client._run_node_test("console.log('hi')", time.perf_counter())
+    assert res.exit_code != 0
+    assert "not available" in res.stderr
+
+
+def test_deterministic_fixtures_use_spec_examples_and_enums():
+    """Verify _generate_deterministic_fixture uses spec example/default/enum instead of petstore literals."""
+    from app.workflows.agents.test_agent import _generate_deterministic_fixture
+
+    ep = {
+        "method": "POST",
+        "path": "/widgets/{widget_id}",
+        "parameters": [
+            {"name": "widget_id", "location": "path", "type": "string", "example": "wdg_123"},
+            {"name": "mode", "location": "query", "type": "string", "default": "fast"},
+            {"name": "status", "location": "query", "type": "string", "enum": ["active", "paused"]},
+        ],
+        "request_schema": {
+            "type": "object",
+            "properties": {
+                "sku": {"type": "string", "example": "SKU-999"},
+                "count": {"type": "integer", "default": 42},
+            },
+        },
+        "response_schemas": {"201": {"type": "object"}},
+    }
+    fixture = _generate_deterministic_fixture(ep)
+    assert fixture["request"]["params"]["widget_id"] == "wdg_123"
+    assert fixture["request"]["params"]["mode"] == "fast"
+    assert fixture["request"]["params"]["status"] == "active"
+    assert fixture["request"]["body"]["sku"] == "SKU-999"
+    assert fixture["request"]["body"]["count"] == 42
+    assert fixture["expected_status"] == 201
+
