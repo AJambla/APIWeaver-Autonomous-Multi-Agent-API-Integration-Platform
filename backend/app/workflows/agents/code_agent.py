@@ -27,6 +27,103 @@ from app.workflows.state import WorkflowState
 logger = get_logger(__name__)
 
 
+def _language_for_path(file_path: str) -> str:
+    """Language the pipeline stores a generated file under, from its extension."""
+    return "python" if file_path.endswith(".py") else "node"
+
+
+def _source_is_parseable(file_path: str, content: str) -> bool:
+    """Cheap validity gate. Only Python can be checked here; other languages pass."""
+    if not content or not content.strip():
+        return False
+    if file_path.endswith(".py"):
+        try:
+            ast.parse(content)
+            return True
+        except (SyntaxError, ValueError, MemoryError, RecursionError):
+            return False
+    return True
+
+
+def _coerce_file_content(raw: Any, file_path: str) -> str | None:
+    """Turn one LLM file value into source text.
+
+    The generators are told to answer `file_path -> source`, but the model sometimes
+    echoes the storage envelope (`{"content": ..., "language": ..., "file_type": ...}`)
+    as the value. Pull the source out of it instead of writing the envelope to disk.
+    """
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("content", "code", "source", "file_content", "text"):
+            value = raw.get(key)
+            if isinstance(value, str):
+                return value
+    logger.warning(
+        "llm_file_content_unusable",
+        file_path=file_path,
+        returned_type=type(raw).__name__,
+    )
+    return None
+
+
+def _defined_names(file_path: str, content: str) -> set[str]:
+    """Top-level and method names declared in a Python file (empty if unparseable)."""
+    if not file_path.endswith(".py") or not content.strip():
+        return set()
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return set()
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+
+def _keep_parseable(existing_code: str, new_code: str, file_path: str = "") -> str:
+    """Choose between two candidates when an AST merge could not run.
+
+    Unparseable new code must not replace parseable existing code: that is how a file
+    carrying every operation so far lost them. Non-Python files keep the previous
+    behaviour of preferring the new code.
+    """
+    if not file_path.endswith(".py"):
+        return new_code or existing_code
+
+    existing_ok = _source_is_parseable(file_path, existing_code)
+    new_ok = _source_is_parseable(file_path, new_code)
+    if existing_ok and not new_ok:
+        logger.warning("merge_rejects_unparseable_python", file_path=file_path)
+        return existing_code
+    if new_ok and not existing_ok:
+        return new_code
+    return existing_code or new_code
+
+
+def _split_consistency_key(file_key: str) -> tuple[str | None, str]:
+    """Split the pass's `language/path` key, tolerating a bare path answer."""
+    head, sep, rest = file_key.partition("/")
+    if sep and head in ("python", "node"):
+        return head, rest
+    return None, file_key
+
+
+def _consistency_payload(files: dict[str, str], budget: int = 60000) -> str:
+    """Serialise whole files up to `budget` characters; omit rather than truncate."""
+    included: dict[str, str] = {}
+    used = 0
+    for key, body in files.items():
+        cost = len(key) + len(body) + 8
+        if used + cost > budget:
+            logger.warning("consistency_file_omitted", file_key=key, chars=len(body))
+            continue
+        included[key] = body
+        used += cost
+    return json.dumps(included, indent=2)
+
+
 def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -> str:
     """Merge new Python code into existing code via AST, preserving all methods and models."""
     if not existing_code.strip():
@@ -38,7 +135,7 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
         tree_orig = ast.parse(existing_code)
         tree_new = ast.parse(new_code)
     except Exception:
-        return new_code or existing_code
+        return _keep_parseable(existing_code, new_code, file_path)
 
     try:
         # Merge imports
@@ -91,7 +188,7 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
         return ast.unparse(tree_orig)
     except Exception as exc:
         logger.warning("python_ast_merge_failed", file_path=file_path, error=str(exc))
-        return new_code or existing_code
+        return _keep_parseable(existing_code, new_code, file_path)
 
 
 def _merge_ts_code(existing_code: str, new_code: str, file_path: str = "") -> str:
@@ -403,7 +500,7 @@ async def run_code_agent(
             (
                 f for f in generated_files
                 if isinstance(f, dict) and f.get("file_path") == target_file
-                and (f.get("language") == "python" if target_file.endswith(".py") else True)
+                and f.get("language") == _language_for_path(target_file)
             ),
             None,
         )
@@ -460,8 +557,17 @@ async def run_code_agent(
         )
         total_tokens += tokens
 
-        corrected_content = repair_json.get("corrected_content", "")
+        corrected_content = _coerce_file_content(
+            repair_json.get("corrected_content", ""), target_file
+        )
         diagnosis = repair_json.get("diagnosis", "No diagnosis provided")
+
+        if not corrected_content or not _source_is_parseable(target_file, corrected_content):
+            raise ValueError(
+                f"Repair of {target_file} returned "
+                f"{'no usable content' if not corrected_content else 'unparseable content'}; "
+                "keeping the previous version."
+            )
 
         # Upload corrected file to S3
         s3_key = f"generated/{state['project_id']}/{uuid.uuid4()}/{target_file}"
@@ -505,9 +611,7 @@ async def run_code_agent(
 
         if all_files:
             consistency_prompt = CONSISTENCY_SYSTEM_PROMPT.format(
-                files_json=fence_untrusted(
-                    "FILE CONTENTS", json.dumps(all_files, indent=2)[:15000]
-                )
+                files_json=fence_untrusted("FILE CONTENTS", _consistency_payload(all_files))
             )
 
             consistency_json, tokens = await client.generate_json(
@@ -517,17 +621,51 @@ async def run_code_agent(
             total_tokens += tokens
 
             # Apply consistency fixes
-            for file_key, corrected_content in consistency_json.items():
-                if corrected_content:
-                    pure_path = file_key.split("/", 1)[-1] if "/" in file_key else file_key
-                    s3_key = f"generated/{state['project_id']}/{uuid.uuid4()}/{pure_path}"
-                    encoded_b = corrected_content.encode("utf-8")
-                    await storage_service.upload(s3_key, encoded_b)
-                    for f in new_generated_files:
-                        if isinstance(f, dict) and f.get("file_path") == pure_path:
-                            f["content_s3_key"] = s3_key
-                            f["size_bytes"] = len(encoded_b)
-                            break
+            for file_key, raw_content in consistency_json.items():
+                language, pure_path = _split_consistency_key(file_key)
+                corrected_content = _coerce_file_content(raw_content, pure_path)
+                if not corrected_content:
+                    continue
+
+                matches = [
+                    f
+                    for f in new_generated_files
+                    if isinstance(f, dict)
+                    and f.get("file_path") == pure_path
+                    and (language is None or f.get("language") == language)
+                ]
+                if len(matches) != 1:
+                    logger.warning(
+                        "consistency_target_unresolved",
+                        file_key=file_key,
+                        candidates=len(matches),
+                    )
+                    continue
+                target = matches[0]
+
+                if not _source_is_parseable(pure_path, corrected_content):
+                    logger.warning("consistency_rejects_unparseable", file_key=file_key)
+                    continue
+
+                original = all_files.get(
+                    f"{target.get('language') or 'sdk'}/{pure_path}", ""
+                )
+                dropped = _defined_names(pure_path, original) - _defined_names(
+                    pure_path, corrected_content
+                )
+                if dropped:
+                    logger.warning(
+                        "consistency_rejects_dropped_declarations",
+                        file_key=file_key,
+                        dropped=sorted(dropped)[:12],
+                    )
+                    continue
+
+                s3_key = f"generated/{state['project_id']}/{uuid.uuid4()}/{pure_path}"
+                encoded_b = corrected_content.encode("utf-8")
+                await storage_service.upload(s3_key, encoded_b)
+                target["content_s3_key"] = s3_key
+                target["size_bytes"] = len(encoded_b)
 
         return {
             "generated_files": new_generated_files,
@@ -592,7 +730,10 @@ async def run_code_agent(
                 all_files[fp] = _merge_ts_code(all_files[fp], tmpl_content, fp)
 
         # Merge LLM-generated files
-        for fp, llm_content in llm_files.items():
+        for fp, raw_llm_content in llm_files.items():
+            llm_content = _coerce_file_content(raw_llm_content, fp)
+            if llm_content is None:
+                continue
             if fp not in all_files:
                 all_files[fp] = llm_content
             elif fp.endswith(".py"):
@@ -622,6 +763,21 @@ async def run_code_agent(
                 file_type = "ci_cd"
             else:
                 file_type = "sdk"
+
+            prior_content = existing_lang_files.get(file_path, "")
+            if (
+                file_path.endswith(".py")
+                and not _source_is_parseable(file_path, content)
+                and _source_is_parseable(file_path, prior_content)
+            ):
+                logger.warning(
+                    "upload_rejects_unparseable_python",
+                    file_path=file_path,
+                    phase_number=current_phase.get("phase_number") if current_phase else None,
+                    rejected_chars=len(content),
+                    kept_chars=len(prior_content),
+                )
+                content = prior_content
 
             encoded_b = content.encode("utf-8") if isinstance(content, str) else content
             size_bytes = len(encoded_b)
