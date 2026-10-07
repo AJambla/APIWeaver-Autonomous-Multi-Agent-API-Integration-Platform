@@ -21,6 +21,7 @@ from app.workflows.source_safety import (
     to_base_url,
     to_display_name,
     to_identifier,
+    to_ts_type,
 )
 from app.workflows.state import WorkflowState
 
@@ -376,6 +377,9 @@ async def _render_templates(
     from jinja2 import Environment, FileSystemLoader
 
     env = Environment(loader=FileSystemLoader(TEMPLATE_DIR / language))
+
+    # A spec type name is not a TypeScript type, so templates translate through it.
+    env.filters["ts_type"] = to_ts_type
 
     title = to_display_name(spec.get("title"), fallback="API Client")
     base_url = to_base_url(spec.get("base_url"))

@@ -181,9 +181,9 @@ export class {{ title.replace(' ', '').replace('-', '') }}Client {
   async {{ op_id }}(
     {% for param in ep.get('parameters', []) %}
     {% if param.location == 'path' %}
-    {{ param.name }}: {{ 'string' if param.type == 'string' else param.type }},
+    {{ param.name }}: {{ param.type | ts_type }},
     {% elif param.location == 'query' %}
-    {{ param.name }}?: {{ 'string' if param.type == 'string' else param.type }},
+    {{ param.name }}?: {{ param.type | ts_type }},
     {% endif %}
     {% endfor %}
     {% if ep.get('request_schema') %}
@@ -211,7 +211,9 @@ export class {{ title.replace(' ', '').replace('-', '') }}Client {
 
     return this.request("{{ method.upper() }}", url, {
       params,
+      {% if ep.get('request_schema') %}
       body: body,
+      {% endif %}
     });
   }
 
@@ -226,7 +228,7 @@ export class {{ title.replace(' ', '').replace('-', '') }}Client {
 export async function {{ op_id }}(
   {% for param in ep.get('parameters', []) %}
   {% if param.location == 'path' or (param.location == 'query' and param.required) %}
-  {{ param.name }}: {{ 'string' if param.type == 'string' else param.type }},
+  {{ param.name }}: {{ param.type | ts_type }},
   {% endif %}
   {% endfor %}
   {% if ep.get('request_schema') %}
