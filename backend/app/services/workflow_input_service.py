@@ -9,18 +9,22 @@ work while the API still answers 202.
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from sqlalchemy.orm import selectinload
 
+from app.core.logging import get_logger
 from app.models.codegen import CodeGenerationRun, GeneratedFile
 from app.models.spec import APISpec, Endpoint, EndpointParameter
 from app.models.testing import TestResult, TestRun
+from app.models.versioning import ArtifactVersion
 from app.models.workflow import WorkflowRun
+
+logger = get_logger(__name__)
 
 
 def endpoint_labels(
@@ -96,11 +100,27 @@ async def load_normalized_spec(
 async def load_generated_files(
     session: AsyncSession, project_id: uuid.UUID
 ) -> list[dict[str, Any]]:
-    """Files from the most recent workflow run that generated any.
+    """Files from the active artifact version (supporting rollback), or the most recent run that generated any."""
+    active_ver = await session.scalar(
+        select(ArtifactVersion)
+        .where(
+            ArtifactVersion.project_id == project_id,
+            ArtifactVersion.artifact_type == "sdk",
+            ArtifactVersion.is_active == True,  # noqa: E712
+        )
+        .order_by(ArtifactVersion.version_number.desc())
+        .limit(1)
+    )
+    if active_ver and active_ver.diff_ref:
+        try:
+            from app.services.storage_service import storage_service
+            raw = await storage_service.download(active_ver.diff_ref)
+            manifest = json.loads(raw.decode("utf-8"))
+            if isinstance(manifest, dict) and "generated_files" in manifest:
+                return manifest["generated_files"]
+        except Exception as e:
+            logger.warning("failed_to_load_active_artifact_manifest", error=str(e), diff_ref=active_ver.diff_ref)
 
-    Mirrors the shape the code agent leaves in workflow state, which is what the
-    testing and export agents read.
-    """
     workflow_run_id = await session.scalar(
         select(CodeGenerationRun.workflow_run_id)
         .join(WorkflowRun, CodeGenerationRun.workflow_run_id == WorkflowRun.id)

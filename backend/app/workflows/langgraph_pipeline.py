@@ -28,6 +28,7 @@ from app.models.workflow import WorkflowCheckpoint, WorkflowRun
 from app.services.event_publisher import EventPublisher
 from app.services.ingestion_service import persist_endpoint_dependencies, persist_normalized_spec
 from app.services.qdrant_service import QdrantClient
+from app.services.storage_service import storage_service
 from app.workflows.agents.doc_agent import run_doc_agent
 from app.workflows.agents.export_agent import ExportAgent
 from app.workflows.agents.planner_agent import run_planner_agent
@@ -1433,10 +1434,29 @@ class LangGraphOrchestrator:
                                             ArtifactVersion.artifact_type == "sdk",
                                         )
                                     ) or 0
+                                    new_ver_num = curr_max_v + 1
+                                    diff_ref_key = f"artifacts/{run_obj.project_id}/v{new_ver_num}/manifest.json"
+                                    manifest_data = {
+                                        "version_number": new_ver_num,
+                                        "workflow_run_id": str(workflow_run_id),
+                                        "project_id": str(run_obj.project_id),
+                                        "generated_files": result_state.get("generated_files", []),
+                                        "export_manifest": result_state.get("export_manifest"),
+                                    }
+                                    try:
+                                        await storage_service.upload(
+                                            diff_ref_key,
+                                            json.dumps(manifest_data).encode("utf-8"),
+                                        )
+                                    except Exception as store_err:
+                                        logger.warning("failed_to_upload_artifact_manifest", error=str(store_err))
+                                        diff_ref_key = None
+
                                     new_ver = ArtifactVersion(
                                         project_id=run_obj.project_id,
                                         artifact_type="sdk",
-                                        version_number=curr_max_v + 1,
+                                        version_number=new_ver_num,
+                                        diff_ref=diff_ref_key,
                                         is_active=True,
                                     )
                                     session.add(new_ver)

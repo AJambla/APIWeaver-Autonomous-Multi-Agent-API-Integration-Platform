@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import redis.asyncio as aioredis
@@ -14,6 +15,7 @@ from app.core.errors import NotFoundError
 from app.models.codegen import CodeGenerationRun, GeneratedFile
 from app.models.enums import ActorType, WorkflowStatus
 from app.models.project import Project
+from app.models.versioning import ArtifactVersion
 from app.models.workflow import WorkflowRun
 from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
@@ -104,15 +106,36 @@ async def list_generated_files(
     project: Project = Depends(require_project_permission(Permission.CODE_READ)),
     session: AsyncSession = Depends(get_db),
 ) -> list[FileResponse]:
-    """List generated files for a project."""
+    active_ver = await session.scalar(
+        select(ArtifactVersion)
+        .where(
+            ArtifactVersion.project_id == project.id,
+            ArtifactVersion.artifact_type == "sdk",
+            ArtifactVersion.is_active == True,  # noqa: E712
+        )
+        .order_by(ArtifactVersion.version_number.desc())
+        .limit(1)
+    )
+    active_run_id = None
+    if active_ver and active_ver.diff_ref:
+        try:
+            from app.services.storage_service import storage_service
+            raw = await storage_service.download(active_ver.diff_ref)
+            manifest = json.loads(raw.decode("utf-8"))
+            if manifest.get("workflow_run_id"):
+                active_run_id = uuid.UUID(manifest["workflow_run_id"])
+        except Exception:
+            pass
+
     stmt = (
         select(GeneratedFile, WorkflowRun.created_at.label("workflow_created_at"))
         .join(CodeGenerationRun, GeneratedFile.code_generation_run_id == CodeGenerationRun.id)
         .join(WorkflowRun, CodeGenerationRun.workflow_run_id == WorkflowRun.id)
         .where(WorkflowRun.project_id == project.id)
-        .order_by(WorkflowRun.created_at.desc(), GeneratedFile.id.asc())
-        .limit(limit)
     )
+    if active_run_id:
+        stmt = stmt.where(WorkflowRun.id == active_run_id)
+    stmt = stmt.order_by(WorkflowRun.created_at.desc(), GeneratedFile.id.asc()).limit(limit)
 
     rows = (await session.execute(stmt)).all()
     return [
