@@ -32,6 +32,7 @@ class GitHubAppClient:
         self.settings = settings
         self.app_id = settings.github_app_id
         self._private_key: str | None = None
+        self.timeout = getattr(settings, "github_timeout_seconds", 30.0)
 
     def _load_private_key(self) -> str:
         if self._private_key is not None:
@@ -59,7 +60,7 @@ class GitHubAppClient:
         """Get an installation access token for the given installation ID."""
         jwt_token = self._generate_jwt()
         url = f"{GITHUB_API_BASE}/app/installations/{installation_id}/access_tokens"
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 url,
                 headers={

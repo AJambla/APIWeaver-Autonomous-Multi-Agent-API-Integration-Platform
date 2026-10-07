@@ -43,25 +43,34 @@ class HttpVaultClient:
     def __init__(self, settings: Settings) -> None:
         self.vault_addr = settings.vault_addr.rstrip("/")
         self.vault_token = settings.vault_token or "root"
+        self.vault_mount = getattr(settings, "vault_mount_path", "secret").strip("/")
         self._headers = {"X-Vault-Token": self.vault_token}
 
     def _kv_url(self, path: str) -> str:
         clean_path = validate_vault_path(path)
-        if clean_path.startswith("secret/data/"):
+        mount = self.vault_mount
+        if clean_path.startswith(f"{mount}/data/") or clean_path.startswith("secret/data/"):
             return f"{self.vault_addr}/v1/{clean_path}"
+        if clean_path.startswith(f"{mount}/"):
+            sub = clean_path[len(f"{mount}/"):]
+            return f"{self.vault_addr}/v1/{mount}/data/{sub}"
         if clean_path.startswith("secret/"):
             sub = clean_path[len("secret/"):]
-            return f"{self.vault_addr}/v1/secret/data/{sub}"
-        return f"{self.vault_addr}/v1/secret/data/{clean_path}"
+            return f"{self.vault_addr}/v1/{mount}/data/{sub}"
+        return f"{self.vault_addr}/v1/{mount}/data/{clean_path}"
 
     def _kv_delete_url(self, path: str) -> str:
         clean_path = validate_vault_path(path)
-        if clean_path.startswith("secret/metadata/"):
+        mount = self.vault_mount
+        if clean_path.startswith(f"{mount}/metadata/") or clean_path.startswith("secret/metadata/"):
             return f"{self.vault_addr}/v1/{clean_path}"
+        if clean_path.startswith(f"{mount}/"):
+            sub = clean_path[len(f"{mount}/"):]
+            return f"{self.vault_addr}/v1/{mount}/metadata/{sub}"
         if clean_path.startswith("secret/"):
             sub = clean_path[len("secret/"):]
-            return f"{self.vault_addr}/v1/secret/metadata/{sub}"
-        return f"{self.vault_addr}/v1/secret/metadata/{clean_path}"
+            return f"{self.vault_addr}/v1/{mount}/metadata/{sub}"
+        return f"{self.vault_addr}/v1/{mount}/metadata/{clean_path}"
 
     async def write_secret(self, path: str, data: dict[str, Any]) -> None:
         url = self._kv_url(path)

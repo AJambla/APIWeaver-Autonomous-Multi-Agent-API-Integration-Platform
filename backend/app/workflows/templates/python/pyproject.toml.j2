@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "{{ title.lower().replace(' ', '-').replace('_', '-') }}-client"
-version = "0.1.0"
+version = "{{ version | default('0.1.0') }}"
 description = "Auto-generated {{ title }} API client for Python"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = {text = "{{ license | default('MIT') }}"}
 authors = [
-    {name = "APIWeaver", email = "support@apiweaver.dev"}
+    {name = "{{ author_name | default('APIWeaver') }}", email = "{{ author_email | default('support@apiweaver.dev') }}"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

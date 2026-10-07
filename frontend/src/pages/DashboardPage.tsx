@@ -49,8 +49,8 @@ export const DashboardPage: React.FC = () => {
     apiFetch<Page<Project>>(`/projects?limit=100&organization_id=${organizationId}`)
       .then(({ data }) => {
         setProjects(data);
-        // Enrich cards with real per-project summary counts.
-        Promise.allSettled(data.slice(0, 30).map(p => apiFetch<ProjectSummary>(`/projects/${p.id}`))).then(results => {
+        // Enrich visible cards with real per-project summary counts without exhausting rate limit.
+        Promise.allSettled(data.slice(0, 6).map(p => apiFetch<ProjectSummary>(`/projects/${p.id}`))).then(results => {
           setSummaries(
             Object.fromEntries(
               results

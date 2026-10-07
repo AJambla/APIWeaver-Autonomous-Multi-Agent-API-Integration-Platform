@@ -266,8 +266,8 @@ def create_apiweaver_graph(
                     raise WorkflowCancelledError(f"Workflow {run_id} cancelled by user.")
         except WorkflowCancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("check_cancellation_failed", error=str(exc))
 
     # 1. Document Ingestion Node
     async def doc_agent_node(state: WorkflowState) -> dict[str, Any]:
@@ -1086,10 +1086,12 @@ def create_apiweaver_graph(
                         primary_k = art.get("s3_key")
                         if not primary_k and art.get("artifacts") and isinstance(art["artifacts"], list) and art["artifacts"]:
                             primary_k = art["artifacts"][0].get("s3_key")
+                        raw_art_status = art.get("status")
+                        art_status = raw_art_status if raw_art_status in ("failed", "skipped") else "completed"
                         exp_row = Export(
                             project_id=uuid.UUID(str(state["project_id"])),
                             export_type=exp_type,
-                            status="failed" if art.get("status") == "failed" else "completed",
+                            status=art_status,
                             s3_key=primary_k,
                         )
                         session.add(exp_row)
@@ -1136,8 +1138,8 @@ def create_apiweaver_graph(
 
         updates: dict[str, Any] = {
             "status": final_status,
-            "progress_percent": 100 if final_status == WorkflowStatus.COMPLETED else (30 if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else 90),
-            "current_node": "completed",
+            "progress_percent": 100 if final_status == WorkflowStatus.COMPLETED else (30 if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else int(state.get("progress_percent") or 0)),
+            "current_node": "completed" if final_status == WorkflowStatus.COMPLETED else ("approval_gate" if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else "failed"),
         }
 
         if event_publisher and run_id:

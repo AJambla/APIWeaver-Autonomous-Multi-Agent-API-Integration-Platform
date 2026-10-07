@@ -57,7 +57,7 @@ export const AgentsPage: React.FC = () => {
     let cancelled = false;
     apiFetch<Page<Project>>(`/projects?limit=25&organization_id=${organizationId}`)
       .then(async ({ data }) => {
-        const results = await Promise.allSettled(data.map(p => apiFetch<ProjectSummary>(`/projects/${p.id}`)));
+        const results = await Promise.allSettled(data.slice(0, 5).map(p => apiFetch<ProjectSummary>(`/projects/${p.id}`)));
         if (!cancelled)
           setSummaries(results.filter(r => r.status === 'fulfilled').map(r => r.value));
       })

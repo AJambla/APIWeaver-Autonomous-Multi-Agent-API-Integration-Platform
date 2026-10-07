@@ -302,6 +302,13 @@ async def _render_templates(
         resource = to_identifier(parts[0], fallback="root") if parts else "root"
         resources.setdefault(resource, []).append(ep)
 
+    info = spec.get("info") or {}
+    license_info = info.get("license") or {}
+    license_name = license_info.get("name") if isinstance(license_info, dict) else (license_info if isinstance(license_info, str) else "MIT")
+    contact_info = info.get("contact") or {}
+    author_name = contact_info.get("name") if isinstance(contact_info, dict) else "APIWeaver"
+    author_email = contact_info.get("email") if isinstance(contact_info, dict) else "support@apiweaver.dev"
+
     context = {
         "title": title,
         "base_url": base_url,
@@ -309,12 +316,16 @@ async def _render_templates(
         "resources": resources,
         "auth_schemes": [auth_scheme],
         "phase": phase,
+        "version": str(spec.get("version") or info.get("version") or "0.1.0"),
+        "license": license_name or "MIT",
+        "author_name": author_name or "APIWeaver",
+        "author_email": author_email or "support@apiweaver.dev",
     }
 
     files = {}
     template_files = {
-        "python": ["models.py.j2", "client.py.j2", "__init__.py.j2", "pyproject.toml.j2"],
-        "node": ["types.ts.j2", "client.ts.j2", "index.ts.j2", "package.json.j2", "tsconfig.json.j2"],
+        "python": ["models.py.j2", "client.py.j2", "__init__.py.j2", "pyproject.toml.j2", "README.md.j2"],
+        "node": ["types.ts.j2", "client.ts.j2", "index.ts.j2", "package.json.j2", "tsconfig.json.j2", "README.md.j2"],
     }
 
     for tmpl_name in template_files.get(language, []):
@@ -567,8 +578,8 @@ async def run_code_agent(
                     existing_lang_files[f["file_path"]] = (
                         raw_b.decode("utf-8") if isinstance(raw_b, bytes) else str(raw_b)
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("existing_file_download_failed", file=f.get("file_path"), error=str(e))
 
         # Smart merge: start with existing files or template files
         all_files: dict[str, str] = dict(existing_lang_files)
