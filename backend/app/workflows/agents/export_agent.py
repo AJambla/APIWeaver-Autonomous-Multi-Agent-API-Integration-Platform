@@ -197,11 +197,31 @@ class ExportAgent:
                 file_paths = {f.get("file_path", "") for f in lang_files}
                 if "README.md" not in file_paths:
                     zf.writestr("README.md", f"# {spec_title} {language.capitalize()} SDK\n\nAuto-generated client by APIWeaver.\n")
+                client_cls = to_identifier(to_display_name(spec_title).replace(" ", ""), fallback="APIClient") + "Client"
                 if language == "python" and not any(p.startswith("tests/") for p in file_paths):
                     zf.writestr("tests/__init__.py", "")
-                    zf.writestr("tests/test_client.py", "# Smoke test\ndef test_smoke():\n    pass\n")
+                    py_test = f'''"""Unit test suite for {spec_title} Python SDK."""
+import pytest
+from client import {client_cls}
+
+def test_client_initialization():
+    """Verify that {client_cls} initializes properly with valid configuration."""
+    client = {client_cls}(base_url="{normalized_spec.get('base_url') or 'https://api.example.com'}")
+    assert client.base_url.rstrip("/") == "{str(normalized_spec.get('base_url') or 'https://api.example.com').rstrip('/')}"
+'''
+                    zf.writestr("tests/test_client.py", py_test)
                 elif language == "node" and not any(p.startswith("tests/") or p.endswith(".test.ts") for p in file_paths):
-                    zf.writestr("tests/client.test.ts", "import { describe, it, expect } from 'vitest';\ndescribe('client', () => {\n  it('smoke', () => {\n    expect(true).toBe(true);\n  });\n});\n")
+                    ts_test = f'''import {{ describe, it, expect }} from "vitest";
+import {{ {client_cls} }} from "../client";
+
+describe("{client_cls}", () => {{
+  it("initializes with configuration", () => {{
+    const client = new {client_cls}({{ baseUrl: "{normalized_spec.get('base_url') or 'https://api.example.com'}" }});
+    expect(client).toBeDefined();
+  }});
+}});
+'''
+                    zf.writestr("tests/client.test.ts", ts_test)
 
                 zf.writestr("package_metadata.json", json.dumps(package_metadata, indent=2))
             zip_bytes = zip_buffer.getvalue()
@@ -344,7 +364,7 @@ async def {op_id}():
     # Forward or mock response for {method.upper()} {path}
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.request("{method.upper()}", f"{{TARGET_BASE_URL}}{path}")
+            resp = await client.request("{method.upper()}", TARGET_BASE_URL + {to_literal(path)})
             if resp.status_code < 400:
                 return resp.json() if resp.content else {{"status": "ok"}}
     except Exception:
@@ -371,6 +391,7 @@ async def {op_id}():
         dockerfile_key = f"exports/{project_id}/docker/Dockerfile"
         compose_key = f"exports/{project_id}/docker/docker-compose.yml"
 
+        docker_image_name = kwargs.get("docker_image_name") or f"apiweaver-{project_id}-api"
         if "python" not in target_languages and "node" in target_languages:
             dockerfile = '''FROM node:22-alpine AS builder
 WORKDIR /app
@@ -388,6 +409,12 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \\
 CMD ["npm", "start"]
 '''
             index_js = '''import http from "node:http";
+
+try {
+  const client = await import("./client.js").catch(() => null);
+  if (client) console.log("Successfully loaded generated client SDK.");
+} catch {}
+
 const server = http.createServer((req, res) => {
   if (req.url === "/health" || req.url === "/healthz") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -412,10 +439,18 @@ COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/pytho
 COPY . .
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \\
-  CMD curl -f http://localhost:8000/health || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 CMD ["python", "main.py"]
 '''
             main_py = '''from http.server import HTTPServer, BaseHTTPRequestHandler
+import sys
+
+# Validate generated SDK imports
+try:
+    import client
+    print("Successfully loaded generated client SDK.")
+except ImportError:
+    pass
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -435,63 +470,30 @@ if __name__ == "__main__":
     server = HTTPServer(("0.0.0.0", 8000), HealthHandler)
     server.serve_forever()
 '''
+            reqs = "httpx>=0.27.0\npydantic>=2.0.0\n"
             await storage_service.upload(f"exports/{project_id}/docker/main.py", main_py.encode())
+            await storage_service.upload(f"exports/{project_id}/docker/requirements.txt", reqs.encode())
 
         is_node_only = "python" not in target_languages and "node" in target_languages
         api_port = "3000" if is_node_only else "8000"
         health_cmd = (
             '["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]'
             if is_node_only
-            else '["CMD", "curl", "-f", "http://localhost:8000/health"]'
+            else '["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen(\'http://localhost:8000/health\')"]'
         )
 
         compose = f'''version: "3.8"
 services:
   api:
     build: .
+    image: {docker_image_name}
     ports:
       - "{api_port}:{api_port}"
-    environment:
-      - DATABASE_URL=postgresql://${{POSTGRES_USER:-apiweaver}}:${{POSTGRES_PASSWORD:-apiweaver}}@db:5432/${{POSTGRES_DB:-apiweaver}}
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     healthcheck:
       test: {health_cmd}
       interval: 30s
       timeout: 3s
       retries: 3
-
-  db:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_USER=${{POSTGRES_USER:-apiweaver}}
-      - POSTGRES_PASSWORD=${{POSTGRES_PASSWORD:-apiweaver}}
-      - POSTGRES_DB=${{POSTGRES_DB:-apiweaver}}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${{POSTGRES_USER:-apiweaver}} -d $${{POSTGRES_DB:-apiweaver}}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  postgres_data:
-  redis_data:
 '''
 
         await storage_service.upload(dockerfile_key, dockerfile.encode())
@@ -596,7 +598,20 @@ volumes:
         github_commit_message: str = "Generated by APIWeaver",
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Create GitHub repo and push files + CI/CD workflows via GitHub API."""
+        github_repo_name = kwargs.get("github_repo_name") or github_repo_name
+        github_org = kwargs.get("github_org") or github_org
+        github_private = kwargs.get("github_private", github_private)
+        github_branch = kwargs.get("github_branch") or github_branch
+        github_commit_message = kwargs.get("github_commit_message") or github_commit_message
+
+        if not generated_files:
+            logger.warning("github_export_no_files", project_id=project_id)
+            return {
+                "type": "github",
+                "status": "failed",
+                "error": "No generated files available for GitHub export",
+            }
+
         settings = get_settings()
 
         if not settings.github_app_id:
@@ -754,11 +769,56 @@ volumes:
                 flagged_destructive += 1
 
         manifest_key = f"exports/{project_id}/mcp/manifest.json"
+        server_key = f"exports/{project_id}/mcp/server.py"
+
+        server_code = '''"""Model Context Protocol (MCP) stdio server generated by APIWeaver."""
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+async def main():
+    manifest_path = Path(__file__).parent / "manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {"tools": []}
+    tools = manifest.get("tools", [])
+
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            req = json.loads(line)
+            method = req.get("method")
+            msg_id = req.get("id")
+            if method == "initialize":
+                res = {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "apiweaver-mcp-server", "version": "1.0.0"},
+                    },
+                }
+            elif method == "tools/list":
+                res = {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": tools}}
+            else:
+                res = {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+            sys.stdout.write(json.dumps(res) + "\\n")
+            sys.stdout.flush()
+        except Exception as e:
+            err = {"jsonrpc": "2.0", "id": None, "error": {"code": -32603, "message": str(e)}}
+            sys.stdout.write(json.dumps(err) + "\\n")
+            sys.stdout.flush()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+'''
 
         await storage_service.upload(
             manifest_key,
             json.dumps({"tools": tools, "flagged_destructive": flagged_destructive}).encode(),
         )
+        await storage_service.upload(server_key, server_code.encode())
 
         return {
             "type": "mcp",
@@ -766,6 +826,7 @@ volumes:
             "flagged_destructive": flagged_destructive,
             "artifacts": [
                 {"name": "mcp_manifest.json", "s3_key": manifest_key},
+                {"name": "server.py", "s3_key": server_key},
             ],
         }
 
@@ -780,6 +841,22 @@ volumes:
         openapi_key = f"exports/{project_id}/docs/openapi.json"
         markdown_key = f"exports/{project_id}/docs/reference.md"
 
+        raw_schemas = (
+            normalized_spec.get("components", {}).get("schemas", {})
+            or normalized_spec.get("definitions", {})
+        )
+
+        def _migrate_refs(val: Any) -> Any:
+            if isinstance(val, dict):
+                return {k: _migrate_refs(v) for k, v in val.items()}
+            elif isinstance(val, list):
+                return [_migrate_refs(v) for v in val]
+            elif isinstance(val, str) and val.startswith("#/definitions/"):
+                return val.replace("#/definitions/", "#/components/schemas/")
+            return val
+
+        converted_schemas = _migrate_refs(raw_schemas)
+
         doc_version = str(normalized_spec.get("version") or (normalized_spec.get("info") or {}).get("version") or "1.0.0")
         openapi_spec = {
             "openapi": "3.1.0",
@@ -789,29 +866,48 @@ volumes:
             },
             "paths": {},
             "components": {
-                "schemas": normalized_spec.get("components", {}).get("schemas", {})
-                or normalized_spec.get("definitions", {})
+                "schemas": converted_schemas,
             },
         }
 
         for ep in normalized_spec.get("endpoints", []):
             method = ep.get("method", "get").lower()
             path = ep.get("path", "/")
+            params = []
+            for p in ep.get("parameters", []):
+                if isinstance(p, dict):
+                    loc = p.get("in") or p.get("location", "query")
+                    param_def = {
+                        "name": p.get("name", "param"),
+                        "in": loc,
+                        "required": p.get("required", loc == "path"),
+                        "description": p.get("description", ""),
+                    }
+                    if "schema" in p:
+                        param_def["schema"] = _migrate_refs(p["schema"])
+                    else:
+                        param_def["schema"] = {"type": p.get("type", "string")}
+                    params.append(param_def)
+
+            responses = {
+                str(code): {
+                    "description": schema.get("description", "Response") if isinstance(schema, dict) else "Response",
+                    "content": {"application/json": {"schema": _migrate_refs(schema)}},
+                }
+                for code, schema in (ep.get("response_schemas") or {}).items()
+            }
+            if not responses:
+                responses = {"200": {"description": "Successful operation"}}
+
             op_data = {
                 "summary": ep.get("summary"),
                 "operationId": ep.get("operationId"),
-                "parameters": ep.get("parameters", []),
-                "responses": {
-                    code: {
-                        "description": schema.get("description", "") if isinstance(schema, dict) else "",
-                        "content": {"application/json": {"schema": schema}},
-                    }
-                    for code, schema in (ep.get("response_schemas") or {}).items()
-                },
+                "parameters": params,
+                "responses": responses,
             }
             if ep.get("request_schema"):
                 op_data["requestBody"] = {
-                    "content": {"application/json": {"schema": ep.get("request_schema")}}
+                    "content": {"application/json": {"schema": _migrate_refs(ep.get("request_schema"))}}
                 }
             openapi_spec["paths"].setdefault(path, {})[method] = op_data
 
@@ -835,6 +931,16 @@ volumes:
             markdown_lines.extend([f"### {method} {path}", "", summary, ""])
 
         markdown_lines.extend(["", "## Models", "", "Auto-generated models for request/response schemas.", ""])
+        if converted_schemas:
+            for s_name, s_def in converted_schemas.items():
+                markdown_lines.extend([
+                    f"### {s_name}",
+                    "",
+                    f"```json\n{json.dumps(s_def, indent=2)}\n```",
+                    "",
+                ])
+        else:
+            markdown_lines.extend(["No complex data models defined.", ""])
 
         await storage_service.upload(openapi_key, json.dumps(openapi_spec).encode())
         await storage_service.upload(markdown_key, "\n".join(markdown_lines).encode())
@@ -911,7 +1017,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm ci
+      - run: npm ci || npm install
       - run: npm run lint
 
   test:
@@ -921,7 +1027,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm ci
+      - run: npm ci || npm install
       - run: npm run test
 
   build:
@@ -932,7 +1038,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm ci
+      - run: npm ci || npm install
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with:

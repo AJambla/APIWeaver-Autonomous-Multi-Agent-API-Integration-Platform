@@ -38,7 +38,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["{{ title.lower().replace(' ', '_').replace('-', '_') }}*"]
+include = ["*"]
 
 [tool.ruff]
 target-version = "py310"
@@ -59,4 +59,4 @@ strict = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "."]

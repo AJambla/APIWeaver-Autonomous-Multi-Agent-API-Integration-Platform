@@ -12,9 +12,10 @@
     }
   },
   "scripts": {
+    "start": "node dist/index.js",
     "build": "tsc",
     "test": "vitest run",
-    "lint": "eslint . --ext .ts",
+    "lint": "eslint .",
     "prepublishOnly": "npm run build && npm run test"
   },
   "keywords": ["api", "client", "typescript", "{{ title.lower().replace(' ', '-') }}"],
