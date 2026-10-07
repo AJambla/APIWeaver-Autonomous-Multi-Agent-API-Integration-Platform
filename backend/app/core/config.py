@@ -71,8 +71,8 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     anthropic_model: str = "claude-3-5-sonnet-20241022"
     embedding_model: str = "text-embedding-3-small"
-    llm_max_retry_delay_seconds: float = 60.0
-    llm_max_retry_after_seconds: float = 60.0
+    llm_max_retry_delay_seconds: float = 8.0
+    llm_max_retry_after_seconds: float = 10.0
     llm_temperature: float = 0.1
     llm_request_timeout: float = 60.0
     llm_max_tokens: int = 4096

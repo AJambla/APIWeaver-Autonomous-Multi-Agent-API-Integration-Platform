@@ -23,6 +23,7 @@ from app.services.vault_service import create_vault_client
 from app.workflows.llm import LLMClient
 from app.workflows.source_safety import (
     derived_operation_id,
+    to_base_url,
     to_display_name,
     to_http_method,
     to_identifier,
@@ -181,6 +182,9 @@ class ExportAgent:
             import io
             import zipfile
             zip_buffer = io.BytesIO()
+            normalized_spec = kwargs.get("normalized_spec") or {}
+            if not isinstance(normalized_spec, dict):
+                normalized_spec = {}
             spec_title = normalized_spec.get("title", "API Client")
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                 for f in lang_files:
