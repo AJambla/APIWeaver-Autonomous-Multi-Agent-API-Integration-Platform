@@ -568,8 +568,18 @@ class DockerSandboxExecutor:
 
     async def execute_test(self, endpoint: dict[str, Any], fixture: dict[str, Any]) -> dict[str, Any]:
         """Run one endpoint test in a fresh container; returns the mock result shape."""
-        method = endpoint.get("method", "GET").upper()
-        path = endpoint.get("path", "/")
+        if isinstance(endpoint, list):
+            endpoint = endpoint[0] if endpoint and isinstance(endpoint[0], dict) else {}
+        elif not isinstance(endpoint, dict):
+            endpoint = {}
+
+        if isinstance(fixture, list):
+            fixture = fixture[0] if fixture and isinstance(fixture[0], dict) else {}
+        elif not isinstance(fixture, dict):
+            fixture = {}
+
+        method = str(endpoint.get("method") or "GET").upper()
+        path = str(endpoint.get("path") or "/")
 
         result = {
             "endpoint_id": endpoint.get("id"),
@@ -587,29 +597,37 @@ class DockerSandboxExecutor:
             result["error"] = "Sandbox workspace not prepared"
             return result
 
-        op_id = endpoint.get(
-            "operationId",
-            path.replace("/", "_").replace("{", "").replace("}", "").replace("-", "_"),
-        )
-        request_data = fixture.get("request", {}) or {}
-        payload = {
-            "module_name": self._client_module,
-            "client_file": self._client_file,
-            "language": self._language,
-            "op_id": op_id,
-            "request": {
-                "params": request_data.get("params", {}) or {},
-                "body": request_data.get("body"),
-            },
-            "expected_status": fixture.get("expected_status", 200),
-            "base_url": self._base_url,
-        }
-        (self._workspace / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
-
         docker_client = self._get_docker_client()
         started = time.perf_counter()
         container = None
         try:
+            op_id = endpoint.get(
+                "operationId",
+                path.replace("/", "_").replace("{", "").replace("}", "").replace("-", "_"),
+            )
+            request_data = fixture.get("request", {}) or {}
+            if isinstance(request_data, list):
+                request_data = request_data[0] if request_data and isinstance(request_data[0], dict) else {}
+            elif not isinstance(request_data, dict):
+                request_data = {}
+
+            params_data = request_data.get("params", {}) or {}
+            if not isinstance(params_data, dict):
+                params_data = {}
+
+            payload = {
+                "module_name": self._client_module,
+                "client_file": self._client_file,
+                "language": self._language,
+                "op_id": op_id,
+                "request": {
+                    "params": params_data,
+                    "body": request_data.get("body"),
+                },
+                "expected_status": fixture.get("expected_status", 200),
+                "base_url": self._base_url,
+            }
+            (self._workspace / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
             environment = {
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "APIWEAVER_PAYLOAD_PATH": "/sandbox/payload.json",

@@ -39,14 +39,17 @@ class NormalizedSpec:
 
 def _sniff_content(content: bytes, filename: str = "") -> str | None:
     """Sniff API document format directly from payload content."""
+    clean = content
+    if clean.startswith(b"\xef\xbb\xbf"):
+        clean = clean[3:]
     parsed: Any = None
     # Try JSON first
     try:
-        parsed = json.loads(content)
+        parsed = json.loads(clean)
     except (json.JSONDecodeError, UnicodeDecodeError):
         # Try YAML
         try:
-            parsed = yaml.safe_load(content)
+            parsed = yaml.safe_load(clean)
         except Exception:
             parsed = None
 
@@ -57,6 +60,13 @@ def _sniff_content(content: bytes, filename: str = "") -> str | None:
             return DocumentFormat.OPENAPI
         if "info" in parsed and "item" in parsed:
             return DocumentFormat.POSTMAN
+
+    # Suffix/filename fallback check
+    lower_name = filename.lower()
+    if "swagger" in lower_name:
+        return DocumentFormat.SWAGGER
+    if "postman" in lower_name:
+        return DocumentFormat.POSTMAN
 
     return None
 
@@ -115,9 +125,21 @@ def _normalize_openapi(data: dict[str, Any], document_format: str) -> Normalized
     version_key = "openapi" if document_format == DocumentFormat.OPENAPI else "swagger"
     version = str(data.get(version_key, ""))
     if document_format == DocumentFormat.OPENAPI and not version.startswith("3."):
-        raise UnprocessableEntityError("Only OpenAPI 3.x documents are supported.")
-    if document_format == DocumentFormat.SWAGGER and not version.startswith("2."):
-        raise UnprocessableEntityError("Only Swagger 2.0 documents are supported.")
+        # Check if the document is actually a Swagger 2.0 document mislabeled as openapi
+        swagger_version = str(data.get("swagger", ""))
+        if swagger_version.startswith("2."):
+            document_format = DocumentFormat.SWAGGER
+            version = swagger_version
+        else:
+            raise UnprocessableEntityError("Only OpenAPI 3.x documents are supported.")
+    elif document_format == DocumentFormat.SWAGGER and not version.startswith("2."):
+        # Check if the document is actually an OpenAPI 3.x document mislabeled as swagger
+        openapi_version = str(data.get("openapi", ""))
+        if openapi_version.startswith("3."):
+            document_format = DocumentFormat.OPENAPI
+            version = openapi_version
+        else:
+            raise UnprocessableEntityError("Only Swagger 2.0 documents are supported.")
 
     info = data.get("info") if isinstance(data.get("info"), dict) else {}
     endpoints: list[NormalizedEndpoint] = []

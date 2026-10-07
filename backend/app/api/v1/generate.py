@@ -99,7 +99,7 @@ async def trigger_generate(
 
 @router.get("/{id}/files", response_model=list[FileResponse])
 async def list_generated_files(
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=200, ge=1, le=500),
     cursor: str | None = Query(default=None),
     project: Project = Depends(require_project_permission(Permission.CODE_READ)),
     session: AsyncSession = Depends(get_db),
@@ -110,7 +110,7 @@ async def list_generated_files(
         .join(CodeGenerationRun, GeneratedFile.code_generation_run_id == CodeGenerationRun.id)
         .join(WorkflowRun, CodeGenerationRun.workflow_run_id == WorkflowRun.id)
         .where(WorkflowRun.project_id == project.id)
-        .order_by(GeneratedFile.id)
+        .order_by(WorkflowRun.created_at.desc(), GeneratedFile.id.asc())
         .limit(limit)
     )
 

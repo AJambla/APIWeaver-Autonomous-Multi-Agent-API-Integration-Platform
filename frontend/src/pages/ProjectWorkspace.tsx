@@ -601,10 +601,14 @@ export const ProjectWorkspace: React.FC = () => {
       const formData = new FormData();
       formData.append('file', payloadFile);
 
-      // Omit hardcoded format_hint so backend content-sniffing inspects the payload directly.
-      // If content was pasted and clearly matches a format, optionally provide hint.
-      if (mode === 'paste') {
-        const snippet = specContent.slice(0, 1000);
+      // Content-sniffing: inspect snippet from uploaded file or pasted content to pass accurate hint
+      try {
+        let snippet = '';
+        if (mode === 'paste') {
+          snippet = specContent.slice(0, 2000);
+        } else if (file) {
+          snippet = await file.slice(0, 2048).text();
+        }
         if (snippet.includes('"swagger"') || snippet.includes('swagger:')) {
           formData.append('format_hint', 'swagger');
         } else if (snippet.includes('"info"') && snippet.includes('"item"')) {
@@ -612,6 +616,8 @@ export const ProjectWorkspace: React.FC = () => {
         } else if (snippet.includes('"openapi"') || snippet.includes('openapi:')) {
           formData.append('format_hint', 'openapi');
         }
+      } catch {
+        // Fall back to backend content-sniffing
       }
 
       const result = await apiFetch<UploadResponse>(`/projects/${id}/upload`, {
