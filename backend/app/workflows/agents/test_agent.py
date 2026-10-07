@@ -542,12 +542,43 @@ async def _resolve_target_auth(
     return {"scheme": scheme, "config": config_json or {}, "credentials": secret}
 
 
+class MultiLanguageSandboxExecutor:
+    """Executes endpoint tests across multiple language sandbox executors."""
+
+    def __init__(self, executors: dict[str, DockerSandboxExecutor]) -> None:
+        self._executors = executors
+
+    async def execute_test(self, endpoint: dict[str, Any], fixture: dict[str, Any]) -> dict[str, Any]:
+        last_result = None
+        for lang, executor in self._executors.items():
+            result = await executor.execute_test(endpoint, fixture)
+            if result.get("status") != "passed":
+                if result.get("error"):
+                    result["error"] = f"[{lang}] {result['error']}"
+                return result
+            last_result = result
+        return last_result or {
+            "endpoint_id": endpoint.get("id"),
+            "method": str(endpoint.get("method") or "GET").upper(),
+            "path": str(endpoint.get("path") or "/"),
+            "status": "passed",
+            "latency_ms": 0,
+        }
+
+    async def cleanup(self) -> None:
+        for executor in self._executors.values():
+            try:
+                await executor.cleanup()
+            except Exception as e:
+                logger.warning("sandbox_cleanup_failed", error=str(e))
+
+
 async def _create_sandbox(
     state: WorkflowState,
     generated_files: list[dict[str, Any]],
     spec: dict[str, Any] | list[Any],
     auth: dict[str, Any] | None = None,
-) -> MockSandboxClient | DockerSandboxExecutor:
+) -> MockSandboxClient | DockerSandboxExecutor | MultiLanguageSandboxExecutor:
     """Build the sandbox backend selected by settings (mock by default).
 
     Live credentials are only handed to the Docker executor — the mock backend
@@ -579,20 +610,25 @@ async def _create_sandbox(
     if not isinstance(target_languages, list):
         target_languages = ["python", "node"]
 
-    files: dict[str, str] = {}
+    python_files: dict[str, str] = {}
+    node_files: dict[str, str] = {}
     for file_meta in generated_files:
         if not isinstance(file_meta, dict):
             continue
         lang = file_meta.get("language")
-        # DockerSandboxExecutor executes the Python test suite; only load Python files
-        # so Node.js files (or shared filenames) cannot collide or overwrite Python files.
-        if lang != "python":
-            continue
+        fp = file_meta.get("file_path", "")
+        if not lang:
+            if fp.endswith(".py"):
+                lang = "python"
+            elif fp.endswith((".ts", ".js", ".mjs", ".json")):
+                lang = "node"
         try:
             raw = await storage_service.download(file_meta["content_s3_key"])
-            files[file_meta["file_path"]] = (
-                raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            )
+            content_str = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            if lang == "python" or fp.endswith(".py"):
+                python_files[fp] = content_str
+            if lang == "node" or fp.endswith((".ts", ".js", ".mjs", ".json")):
+                node_files[fp] = content_str
         except Exception as e:
             logger.warning(
                 "sandbox_file_download_failed", file=file_meta.get("file_path"), error=str(e)
@@ -602,16 +638,52 @@ async def _create_sandbox(
         state.get("environment") == "live"
         or getattr(settings, "sandbox_network_enabled", False)
     )
-    executor = DockerSandboxExecutor(settings)
-    if hasattr(executor, "_network_enabled"):
-        executor._network_enabled = network_enabled
-    await executor.load(
-        project_id=state.get("project_id"),
-        files=files,
-        base_url=spec_dict.get("base_url"),
-        api_key=_credential_from_auth(auth),
-    )
-    return executor
+
+    executors: dict[str, DockerSandboxExecutor] = {}
+
+    if "python" in target_languages and python_files:
+        exec_py = DockerSandboxExecutor(settings)
+        if hasattr(exec_py, "_network_enabled"):
+            exec_py._network_enabled = network_enabled
+        await exec_py.load(
+            project_id=state.get("project_id"),
+            files=python_files,
+            base_url=spec_dict.get("base_url"),
+            api_key=_credential_from_auth(auth),
+            language="python",
+        )
+        executors["python"] = exec_py
+
+    if "node" in target_languages and node_files:
+        exec_node = DockerSandboxExecutor(settings)
+        if hasattr(exec_node, "_network_enabled"):
+            exec_node._network_enabled = network_enabled
+        await exec_node.load(
+            project_id=state.get("project_id"),
+            files=node_files,
+            base_url=spec_dict.get("base_url"),
+            api_key=_credential_from_auth(auth),
+            language="node",
+        )
+        executors["node"] = exec_node
+
+    if not executors:
+        all_files = {**python_files, **node_files}
+        single = DockerSandboxExecutor(settings)
+        if hasattr(single, "_network_enabled"):
+            single._network_enabled = network_enabled
+        await single.load(
+            project_id=state.get("project_id"),
+            files=all_files,
+            base_url=spec_dict.get("base_url"),
+            api_key=_credential_from_auth(auth),
+        )
+        return single
+
+    if len(executors) == 1:
+        return next(iter(executors.values()))
+
+    return MultiLanguageSandboxExecutor(executors)
 
 
 async def run_test_agent(
