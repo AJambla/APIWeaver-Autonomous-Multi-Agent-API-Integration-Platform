@@ -295,6 +295,7 @@ async def generate_test_fixtures(spec: dict[str, Any] | list[Any], llm_client: L
             ),
         )
 
+        defs = spec.get("definitions") or (spec.get("components") or {}).get("schemas") or {}
         try:
             fixture_json, _ = await client.generate_json(
                 system_prompt="You are a test fixture generator. Output only valid JSON.",
@@ -306,11 +307,82 @@ async def generate_test_fixtures(spec: dict[str, Any] | list[Any], llm_client: L
                 fixture_json = {}
         except Exception as exc:
             logger.warning("fixture_generation_failed", endpoint=ep_key, error=str(exc))
-            fixture_json = {"request": {}, "expected_status": 200}
+            fixture_json = _generate_deterministic_fixture(ep, defs)
+
+        if not fixture_json.get("request") and (req_schema or params):
+            fixture_json = _generate_deterministic_fixture(ep, defs)
 
         fixtures[ep_key] = fixture_json
 
     return fixtures
+
+
+def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Deterministically synthesize request params and body from endpoint schema."""
+    defs = definitions or {}
+    params: dict[str, Any] = {}
+    raw_params = ep.get("parameters", [])
+    if isinstance(raw_params, list):
+        for p in raw_params:
+            if not isinstance(p, dict):
+                continue
+            name = p.get("name")
+            if not name:
+                continue
+            p_type = str(p.get("type", "string")).lower()
+            if p_type in ("integer", "int"):
+                val: Any = 1
+            elif p_type in ("number", "float"):
+                val = 1.0
+            elif p_type in ("boolean", "bool"):
+                val = True
+            elif p_type == "array":
+                val = ["available"] if name == "status" else ["test"]
+            else:
+                val = "available" if name == "status" else f"test_{name}"
+            params[name] = val
+
+    def _mock_schema(schema: dict[str, Any], depth: int = 0) -> Any:
+        if depth > 3 or not isinstance(schema, dict):
+            return {}
+        ref = schema.get("$ref")
+        if ref and isinstance(ref, str):
+            ref_name = ref.split("/")[-1]
+            if ref_name in defs and isinstance(defs[ref_name], dict):
+                return _mock_schema(defs[ref_name], depth + 1)
+            return {"id": 1, "name": "test"}
+
+        s_type = schema.get("type")
+        if s_type == "object" or "properties" in schema:
+            obj: dict[str, Any] = {}
+            for prop_name, prop_spec in schema.get("properties", {}).items():
+                if isinstance(prop_spec, dict):
+                    obj[prop_name] = _mock_schema(prop_spec, depth + 1)
+            return obj
+        elif s_type == "array":
+            items = schema.get("items", {})
+            return [_mock_schema(items, depth + 1)] if isinstance(items, dict) else []
+        elif s_type in ("integer", "int"):
+            return 1
+        elif s_type in ("number", "float"):
+            return 1.0
+        elif s_type in ("boolean", "bool"):
+            return True
+        return "test"
+
+    body = None
+    req_schema = ep.get("request_schema")
+    if isinstance(req_schema, dict) and req_schema:
+        body = _mock_schema(req_schema)
+
+    return {
+        "request": {
+            "params": params,
+            "body": body,
+        },
+        "expected_status": 200,
+        "is_fallback": True,
+    }
 
 
 # The generated-client contract accepts a single credential string (api_key);

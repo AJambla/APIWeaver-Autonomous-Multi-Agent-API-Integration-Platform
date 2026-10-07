@@ -64,7 +64,10 @@ export const SpecDetailPage: React.FC = () => {
 
   const raw = (spec?.raw_normalized || null) as NormalizedSpec | null;
 
-  const schemas = useMemo(() => Object.keys(raw?.components?.schemas || {}), [raw]);
+  const schemas = useMemo(() => {
+    const schemasObj = raw?.components?.schemas ?? raw?.definitions ?? {};
+    return Object.keys(schemasObj);
+  }, [raw]);
 
   const issues = useMemo(() => {
     const list: Array<{ kind: string; detail: string }> = [];

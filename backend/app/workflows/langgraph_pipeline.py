@@ -140,8 +140,8 @@ def route_after_testing(state: WorkflowState) -> str:
     if len(repair_attempts) < 3:
         return "repair_agent"
 
-    # Exhausted repair attempts: escalate to human
-    return "approval_gate"
+    # Exhausted repair attempts: route to finalize as terminal failed state
+    return "finalize"
 
 
 # --- Graph Factory ------------------------------------------------------------------
@@ -525,7 +525,20 @@ def create_apiweaver_graph(
                         phase_number=phase_num,
                     )
 
-                generated_files.extend(phase_result.get("generated_files", []))
+                for nf in phase_result.get("generated_files", []):
+                    idx = next(
+                        (
+                            i
+                            for i, f in enumerate(generated_files)
+                            if f.get("file_path") == nf.get("file_path")
+                            and f.get("language") == nf.get("language")
+                        ),
+                        None,
+                    )
+                    if idx is not None:
+                        generated_files[idx] = nf
+                    else:
+                        generated_files.append(nf)
                 total_tokens = phase_result.get("total_tokens_used", total_tokens)
                 if total_tokens >= budget:
                     raise RuntimeError(f"token_budget_exceeded: {total_tokens}/{budget}")
@@ -624,14 +637,16 @@ def create_apiweaver_graph(
                         session.add(existing_run)
                         await session.flush()
 
-                    existing_paths = set((await session.execute(
-                        select(GeneratedFile.file_path).where(GeneratedFile.code_generation_run_id == existing_run.id)
-                    )).scalars().all())
+                    existing_entries = set((await session.execute(
+                        select(GeneratedFile.language, GeneratedFile.file_path).where(GeneratedFile.code_generation_run_id == existing_run.id)
+                    )).all())
 
                     for gf in generated_files:
                         fp = gf.get("file_path", "")
+                        lang = gf.get("language") or ("python" if fp.endswith(".py") else "node")
                         s3_key = gf.get("content_s3_key", "")
-                        if fp and s3_key and fp not in existing_paths:
+                        entry_key = (lang, fp)
+                        if fp and s3_key and entry_key not in existing_entries:
                             file_type_val = GeneratedFileType.SDK.value
                             if "test" in fp.lower():
                                 file_type_val = GeneratedFileType.TEST.value
@@ -645,11 +660,11 @@ def create_apiweaver_graph(
                                     code_generation_run_id=existing_run.id,
                                     file_path=fp,
                                     content_s3_key=s3_key,
-                                    language=gf.get("language") or ("python" if fp.endswith(".py") else "node"),
+                                    language=lang,
                                     file_type=file_type_val,
                                 )
                             )
-                            existing_paths.add(fp)
+                            existing_entries.add(entry_key)
                     await session.commit()
             except Exception as exc:
                 logger.warning("codegen_files_persist_failed", error=str(exc))
@@ -956,7 +971,12 @@ def create_apiweaver_graph(
         run_id = state.get("workflow_run_id", "")
         current_status = state.get("status")
 
-        if current_status == WorkflowStatus.PAUSED_FOR_APPROVAL:
+        if (state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(state.get("repair_attempts", [])) >= 3:
+            final_status = WorkflowStatus.FAILED
+            state.setdefault("errors", []).append(
+                f"Self-healing repair loop exhausted (3/3 attempts failed). {(state.get('test_run_summary') or {}).get('failed')} test(s) failed."
+            )
+        elif current_status == WorkflowStatus.PAUSED_FOR_APPROVAL:
             final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
         elif (
             state.get("execution_plan")
@@ -965,11 +985,6 @@ def create_apiweaver_graph(
             and (state.get("document_id") or "generate" in state.get("stages", []))
         ):
             final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
-        elif (state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(state.get("repair_attempts", [])) >= 3:
-            final_status = WorkflowStatus.FAILED
-            state.setdefault("errors", []).append(
-                f"Self-healing repair loop exhausted (3/3 attempts failed). {(state.get('test_run_summary') or {}).get('failed')} test(s) failed."
-            )
         elif (state.get("test_run_summary") or {}).get("failed", 0) > 0 and "export" not in state.get("stages", []):
             final_status = WorkflowStatus.FAILED
         elif state.get("errors"):
@@ -1193,7 +1208,7 @@ class LangGraphOrchestrator:
                         else:
                             run_obj.status = final_status
                             run_obj.total_tokens_used = result_state.get("total_tokens_used", 0)
-                            if final_status == WorkflowStatus.COMPLETED:
+                            if final_status in (WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED):
                                 run_obj.completed_at = datetime.datetime.now(datetime.UTC)
                         await session.commit()
 

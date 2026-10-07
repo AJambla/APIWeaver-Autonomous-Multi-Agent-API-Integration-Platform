@@ -210,6 +210,9 @@ async def _main() -> int:
     payload_path = os.environ.get("APIWEAVER_PAYLOAD_PATH", "/sandbox/payload.json")
     if "/sandbox" not in sys.path:
         sys.path.insert(0, "/sandbox")
+    for root, dirs, _ in os.walk("/sandbox"):
+        if root not in sys.path:
+            sys.path.insert(0, root)
     payload_dir = os.path.dirname(payload_path)
     if payload_dir and payload_dir not in sys.path:
         sys.path.insert(0, payload_dir)
@@ -217,7 +220,13 @@ async def _main() -> int:
     with open(payload_path, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
 
-    module = importlib.import_module(payload["module_name"])
+    module_name = payload["module_name"]
+    try:
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError:
+        base_name = module_name.split(".")[-1]
+        module = importlib.import_module(base_name)
+
     client_class = None
     for attr_name in dir(module):
         attr = getattr(module, attr_name)
@@ -252,16 +261,56 @@ async def _main() -> int:
         except TypeError:
             client = client_class()
 
-    operation = getattr(client, payload["op_id"], None)
+    op_id = payload["op_id"]
+    operation = None
+    if hasattr(client, op_id):
+        operation = getattr(client, op_id)
+    else:
+        import re
+        snake = re.sub(r'(?<!^)(?=[A-Z])', '_', op_id).lower().replace('__', '_')
+        if hasattr(client, snake):
+            operation = getattr(client, snake)
+        else:
+            parts = op_id.split('_')
+            camel = parts[0] + ''.join(p.title() for p in parts[1:])
+            if hasattr(client, camel):
+                operation = getattr(client, camel)
+            else:
+                target_norm = op_id.lower().replace('_', '').replace('-', '')
+                for attr_name in dir(client):
+                    if attr_name.startswith('_'):
+                        continue
+                    if attr_name.lower().replace('_', '').replace('-', '') == target_norm:
+                        operation = getattr(client, attr_name)
+                        break
+
     if operation is None:
-        raise RuntimeError(f"method {payload['op_id']} not found on client")
+        available_ops = [m for m in dir(client) if not m.startswith('_') and callable(getattr(client, m, None))]
+        raise RuntimeError(f"method '{op_id}' not found on client. Available methods: {available_ops}")
 
     request = payload.get("request") or {}
     params = request.get("params") or {}
     body = request.get("body")
 
     started = time.perf_counter()
-    response = await operation(**params, body=body)
+    sig = inspect.signature(operation)
+    call_kwargs = {}
+    for p_name, p in sig.parameters.items():
+        if p.kind == inspect.Parameter.VAR_KEYWORD:
+            call_kwargs.update(params)
+            break
+        if p_name in params:
+            call_kwargs[p_name] = params[p_name]
+    if "body" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+        if body is not None:
+            call_kwargs["body"] = body
+
+    if asyncio.iscoroutinefunction(operation):
+        response = await operation(**call_kwargs)
+    else:
+        response = operation(**call_kwargs)
+        if asyncio.iscoroutine(response):
+            response = await response
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     result = {
@@ -367,7 +416,23 @@ async function main() {
         }
     }
     if (typeof operation !== "function") {
-        throw new Error(`method ${opId} not found on client`);
+        const snake = opId.replace(/([A-Z])/g, "_$1").toLowerCase().replace(/^_/, "");
+        if (typeof client[snake] === "function") {
+            operation = client[snake];
+        }
+    }
+    if (typeof operation !== "function") {
+        const norm = opId.toLowerCase().replace(/[^a-z0-9]/g, "");
+        for (const [key, val] of Object.entries(client)) {
+            if (typeof val === "function" && key.toLowerCase().replace(/[^a-z0-9]/g, "") === norm) {
+                operation = val;
+                break;
+            }
+        }
+    }
+    if (typeof operation !== "function") {
+        const avail = Object.keys(client).filter(k => typeof client[k] === "function");
+        throw new Error(`method '${opId}' not found on client. Available methods: ${avail.join(", ")}`);
     }
 
     const request = payload.request || {};
@@ -601,9 +666,10 @@ class DockerSandboxExecutor:
         started = time.perf_counter()
         container = None
         try:
-            op_id = endpoint.get(
-                "operationId",
-                path.replace("/", "_").replace("{", "").replace("}", "").replace("-", "_"),
+            op_id = (
+                endpoint.get("operationId")
+                or endpoint.get("operation_id")
+                or path.replace("/", "_").replace("{", "").replace("}", "").replace("-", "_")
             )
             request_data = fixture.get("request", {}) or {}
             if isinstance(request_data, list):

@@ -137,8 +137,15 @@ async def ingest_document(
                 session.add(endpoint_model)
                 await session.flush()
                 session.add_all(
-                    EndpointParameter(endpoint_id=endpoint_model.id, **parameter)
+                    EndpointParameter(
+                        endpoint_id=endpoint_model.id,
+                        name=parameter["name"],
+                        location=parameter["location"],
+                        type=parameter.get("type", "string"),
+                        required=bool(parameter.get("required", False)),
+                    )
                     for parameter in endpoint.parameters
+                    if isinstance(parameter, dict) and "name" in parameter and "location" in parameter
                 )
             await session.flush()
             return document, api_spec, normalized

@@ -180,6 +180,7 @@ export interface ExportRecord {
   export_type: string;
   status: string;
   created_at: string | null;
+  download_url?: string | null;
 }
 
 export interface ExportTriggerResponse {

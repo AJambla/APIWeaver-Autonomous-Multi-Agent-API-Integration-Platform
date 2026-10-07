@@ -106,7 +106,7 @@ async def list_generated_files(
 ) -> list[FileResponse]:
     """List generated files for a project."""
     stmt = (
-        select(GeneratedFile)
+        select(GeneratedFile, WorkflowRun.created_at.label("workflow_created_at"))
         .join(CodeGenerationRun, GeneratedFile.code_generation_run_id == CodeGenerationRun.id)
         .join(WorkflowRun, CodeGenerationRun.workflow_run_id == WorkflowRun.id)
         .where(WorkflowRun.project_id == project.id)
@@ -114,17 +114,19 @@ async def list_generated_files(
         .limit(limit)
     )
 
-    rows = list((await session.execute(stmt)).scalars())
+    rows = (await session.execute(stmt)).all()
     return [
         FileResponse(
-            id=row.id,
+            id=gf.id,
             project_id=project.id,
-            file_path=row.file_path,
-            language=row.language,
-            file_type=row.file_type,
+            file_path=gf.file_path,
+            language=gf.language,
+            file_type=gf.file_type,
             size_bytes=0,
+            created_at=created_at.isoformat() if created_at else None,
+            code_generation_run_id=gf.code_generation_run_id,
         )
-        for row in rows
+        for gf, created_at in rows
     ]
 
 

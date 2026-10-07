@@ -15,8 +15,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy.orm import selectinload
+
 from app.models.codegen import CodeGenerationRun, GeneratedFile
-from app.models.spec import APISpec, Endpoint
+from app.models.spec import APISpec, Endpoint, EndpointParameter
 from app.models.testing import TestResult, TestRun
 from app.models.workflow import WorkflowRun
 
@@ -41,7 +43,43 @@ async def load_normalized_spec(
         .order_by(APISpec.created_at.desc())
         .limit(1)
     )
-    return spec.raw_normalized if spec else None
+    if not spec:
+        return None
+    raw = dict(spec.raw_normalized) if isinstance(spec.raw_normalized, dict) else {}
+    raw_eps = raw.get("endpoints", [])
+    needs_hydration = not raw_eps or any(
+        isinstance(ep, dict) and ("parameters" not in ep or "request_schema" not in ep)
+        for ep in raw_eps
+    )
+    if needs_hydration:
+        endpoints_stmt = (
+            select(Endpoint)
+            .where(Endpoint.api_spec_id == spec.id)
+            .options(selectinload(Endpoint.parameters))
+        )
+        db_endpoints = (await session.execute(endpoints_stmt)).scalars().all()
+        if db_endpoints:
+            hydrated = []
+            for db_ep in db_endpoints:
+                hydrated.append({
+                    "id": str(db_ep.id),
+                    "method": str(db_ep.method).upper(),
+                    "path": db_ep.path,
+                    "summary": db_ep.summary,
+                    "request_schema": db_ep.request_schema,
+                    "response_schemas": db_ep.response_schemas,
+                    "parameters": [
+                        {
+                            "name": p.name,
+                            "location": p.location,
+                            "type": p.type,
+                            "required": p.required,
+                        }
+                        for p in db_ep.parameters
+                    ],
+                })
+            raw["endpoints"] = hydrated
+    return raw
 
 
 async def load_generated_files(

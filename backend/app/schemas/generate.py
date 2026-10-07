@@ -34,6 +34,7 @@ class FileResponse(ResponseModel):
     file_type: str | None = None
     size_bytes: int = 0
     created_at: str | None = None
+    code_generation_run_id: uuid.UUID | None = None
 
 
 class FileContentResponse(ResponseModel):
