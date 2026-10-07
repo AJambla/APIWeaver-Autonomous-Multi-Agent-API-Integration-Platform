@@ -1,6 +1,8 @@
 # Version control
 .git
 .gitignore
+.gitattributes
+.github/
 
 # Environment files
 # Bare patterns match only from the context root and `*` does not cross `/` (measured on BuildKit,
@@ -17,17 +19,34 @@
 secrets/
 *.pem
 *.key
+*.crt
+*.cert
+*.pfx
+*.p12
 **/secrets/
 **/*.pem
 **/*.key
+**/*.crt
+**/*.cert
+**/*.pfx
+**/*.p12
 
 # Dependencies
 node_modules/
+**/node_modules/
 
-# Build outputs
+# Build outputs & frontend dist
 .next/
 dist/
 build/
+.turbo/
+.vercel
+.vite/
+**/dist/
+**/build/
+**/node_modules/
+frontend/dist/
+Frontend/dist/
 
 # Python artifacts
 __pycache__/
@@ -35,6 +54,9 @@ __pycache__/
 *.egg-info
 *.pyo
 **/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.egg-info/
 
 # Virtual environments
 .venv/
@@ -48,47 +70,85 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+coverage.xml
 .mypy_cache/
 .ruff_cache/
+.cache/
+.tox/
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
+**/.cache/
 
 # Logs
+logs/
 *.log
+**/*.log
 
 # OS-generated files
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # IDE and editor files
 .idea/
 .vscode/
 *.swp
+*.swo
 *~
+**/.idea/
+**/.vscode/
 
-# Documentation and non-essential files
+# AI Assistants & Dev Agent tooling
+.claude/
+.kilo/
+.cursor/
+.gemini/
+.antigravity/
+.system_generated/
+scratch/
+ui-ux-pro-max-skill/
+
+# Docker sandbox temporary files
+*apiweaver-sandbox*
+apiweaver_sandbox/
+
+# Documentation and non-essential repository files
 Project-docs/
 monitoring/
 infra/terraform/
 **/README.md
 **/README.txt
 **/*.md
+LICENSE
+SECURITY.md
+CONTRIBUTING.md
 
-# Frontend (not needed for backend/agent-worker builds)
+# Frontend (not needed for backend/agent-worker builds; both casing handled)
 frontend/
+Frontend/
 frontend-*/
+Frontend-*/
 
-# Scripts and CI/CD
+# Scripts (only backend code needed in agent-worker/backend images)
 scripts/
-.github/
-
-# Kilo config
-.kilo/
 
 # Database migrations (alembic) - not needed for agent-worker
 backend/alembic/
 
-# Local development
+# Local databases and compose volume directories
+*.sqlite
+*.sqlite3
+*.db
+alembic.db
+pgdata/
+redisdata/
+miniodata/
+qdrantdata/
+
+# Local development files
 *.local
 *.dev
+*.tmp
+*.bak

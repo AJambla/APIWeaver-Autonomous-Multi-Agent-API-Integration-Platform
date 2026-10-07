@@ -11,6 +11,7 @@ a Kubernetes readiness probe should gate traffic on.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -18,8 +19,11 @@ from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_db, get_redis
+from app.core.config import get_settings
+from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.logging import get_logger
+from app.rbac.policy import Principal
+from app.workflows.llm import LLMClient
 
 router = APIRouter(tags=["health"])
 logger = get_logger(__name__)
@@ -58,3 +62,50 @@ async def readyz(
     if not ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return {"status": "ready" if ready else "not_ready", "checks": checks}
+
+
+@router.get("/health/llm", summary="LLM configuration status")
+async def health_llm() -> dict[str, Any]:
+    """Report configured LLM provider, model, and whether credentials exist."""
+    settings = get_settings()
+    provider = "anthropic" if settings.anthropic_api_key and not settings.openai_api_key else "openai"
+    is_configured = bool(settings.openai_api_key or settings.anthropic_api_key)
+    return {
+        "provider": provider,
+        "model": settings.llm_model,
+        "base_url": settings.openai_api_base_url,
+        "is_configured": is_configured,
+    }
+
+
+@router.post("/health/llm/test", summary="Test LLM connection")
+async def test_llm_connection(
+    _principal: Principal = Depends(get_current_principal),
+) -> dict[str, Any]:
+    """Test LLM connectivity by dispatching a lightweight prompt and returning latency."""
+    settings = get_settings()
+    client = LLMClient(settings=settings)
+    start = time.perf_counter()
+    try:
+        result, token_count = await client.generate_json(
+            system_prompt="You are a health check probe. Return strict JSON only.",
+            user_prompt='Return a JSON object: {"status": "ok", "message": "LLM connection active"}',
+        )
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        return {
+            "status": "ok",
+            "latency_ms": latency_ms,
+            "model": settings.llm_model,
+            "tokens": token_count,
+            "payload": result,
+        }
+    except Exception as exc:
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        logger.warning("llm_health_check_failed", error=str(exc))
+        return {
+            "status": "error",
+            "latency_ms": latency_ms,
+            "model": settings.llm_model,
+            "error": str(exc),
+        }
+

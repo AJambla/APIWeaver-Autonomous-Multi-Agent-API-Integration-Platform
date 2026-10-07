@@ -7,6 +7,7 @@
 # Version control
 .git
 .gitignore
+.gitattributes
 
 # Environment files
 .env
@@ -20,9 +21,17 @@
 secrets/
 *.pem
 *.key
+*.crt
+*.cert
+*.pfx
+*.p12
 **/secrets/
 **/*.pem
 **/*.key
+**/*.crt
+**/*.cert
+**/*.pfx
+**/*.p12
 
 # Dependencies
 node_modules/
@@ -40,8 +49,11 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.egg-info
+**/*.egg-info/
+**/*.egg-info
 **/__pycache__/
 **/*.py[cod]
+**/*.pyo
 
 # Virtual environments
 .venv/
@@ -49,30 +61,54 @@ venv/
 env/
 **/.venv/
 **/venv/
+**/env/
 
 # Test and cache directories
 .pytest_cache/
 .coverage
 htmlcov/
+coverage.xml
 .mypy_cache/
 .ruff_cache/
+.cache/
+.tox/
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
+**/.cache/
 
 # Logs
+logs/
 *.log
 **/*.log
 
 # OS-generated files
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # IDE and editor files
 .idea/
 .vscode/
 *.swp
+*.swo
 *~
+**/.idea/
+**/.vscode/
+
+# AI Assistants & Dev Agent tooling
+.claude/
+.kilo/
+.cursor/
+.gemini/
+.antigravity/
+.system_generated/
+scratch/
+
+# Docker sandbox temporary workspaces
+*apiweaver-sandbox*
+apiweaver_sandbox/
 
 # Documentation and non-essential files
 Project-docs/
@@ -81,3 +117,9 @@ infra/terraform/
 **/README.md
 **/README.txt
 **/*.md
+
+# Local database files
+*.sqlite
+*.sqlite3
+*.db
+alembic.db

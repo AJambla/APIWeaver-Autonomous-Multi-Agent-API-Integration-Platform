@@ -16,6 +16,7 @@ from app.api.v1 import (
     export,
     generate,
     github,
+    health,
     history,
     logs,
     monitoring,
@@ -59,4 +60,6 @@ api_router.include_router(monitoring.router, dependencies=[Depends(enforce_org_r
 api_router.include_router(spec_patch.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(settings.router, dependencies=[Depends(enforce_org_rate_limit)])
 api_router.include_router(organizations.router, dependencies=[Depends(enforce_org_rate_limit)])
+api_router.include_router(health.router)
+
 

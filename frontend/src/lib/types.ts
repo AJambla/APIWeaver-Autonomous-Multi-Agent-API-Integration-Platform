@@ -228,3 +228,20 @@ export interface WorkflowEvent {
 
 export const PROJECT_STATUSES = ['draft', 'planning', 'building', 'testing', 'ready', 'failed', 'archived'] as const;
 export const RUN_STATUSES = ['queued', 'running', 'paused_for_approval', 'completed', 'failed', 'cancelled'] as const;
+
+export interface LlmStatus {
+  provider: string;
+  model: string;
+  base_url: string;
+  is_configured: boolean;
+}
+
+export interface LlmTestResult {
+  status: 'ok' | 'error';
+  latency_ms: number;
+  model: string;
+  tokens?: number;
+  payload?: Record<string, unknown>;
+  error?: string;
+}
+
