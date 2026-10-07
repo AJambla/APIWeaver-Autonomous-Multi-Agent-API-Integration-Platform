@@ -11,33 +11,71 @@ node_modules
 dist
 build
 coverage
-.git
-npm-debug.log*
-*.log
+.vite
+.eslintcache
+*.tsbuildinfo
 **/node_modules/
 **/dist/
 **/build/
 **/coverage/
+**/.vite/
+**/.eslintcache
+**/*.tsbuildinfo
+
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Logs
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.log
 **/npm-debug.log*
+**/yarn-error.log*
 **/*.log
 
 # Environment files and keys
 .env
 .env.*
+.env.local
 .env.*.local
 **/.env
 **/.env.*
 secrets/
 *.pem
 *.key
+*.crt
+*.cert
+*.pfx
+*.p12
 **/secrets/
 **/*.pem
 **/*.key
+**/*.crt
+**/*.cert
+**/*.pfx
+**/*.p12
+
+# AI Assistants & Dev Agent tooling
+.claude/
+.kilo/
+.cursor/
+.gemini/
+.antigravity/
+.system_generated/
+scratch/
 
 # Editor and OS noise
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 *.swp
+*.swo
 *~
+**/.idea/
+**/.vscode/

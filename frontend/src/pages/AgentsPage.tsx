@@ -2,10 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../lib/auth-context';
 import { apiFetch } from '../lib/api';
-import { Page, Project, ProjectSummary } from '../lib/types';
+import { LlmStatus, Page, Project, ProjectSummary } from '../lib/types';
 import { relativeTime } from '../lib/format';
-import { cardCls, ErrorBanner, PageHeader, Skeleton, StatusBadge } from '../components/ui';
-import { FileUp, Network, Code2, FlaskConical, PackageOpen, ChevronDown } from 'lucide-react';
+import { btnGhost, cardCls, ErrorBanner, PageHeader, Skeleton, StatusBadge } from '../components/ui';
+import { FileUp, Network, Code2, FlaskConical, PackageOpen, ChevronDown, Sparkles } from 'lucide-react';
 
 /* The pipeline mirrors the real agent_worker task modules:
    document_tasks → planner_tasks → codegen_tasks → testing_tasks → export_tasks */
@@ -42,8 +42,15 @@ const errorMessage = (error: unknown) => (error instanceof Error ? error.message
 export const AgentsPage: React.FC = () => {
   const { organizationId } = useAuth();
   const [summaries, setSummaries] = useState<ProjectSummary[]>([]);
+  const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    apiFetch<LlmStatus>('/health/llm')
+      .then(setLlmStatus)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!organizationId) return;
@@ -71,6 +78,35 @@ export const AgentsPage: React.FC = () => {
       />
 
       {error && <ErrorBanner message={error} onDismiss={() => setError('')} />}
+
+      {/* LLM Status Banner */}
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-xl border border-white/10 bg-white/[0.02] p-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
+            <Sparkles className="h-4.5 w-4.5" />
+          </div>
+          <div>
+            <div className="text-sm font-medium text-white flex items-center gap-2">
+              <span>LLM Engine</span>
+              {llmStatus?.is_configured ? (
+                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400 border border-emerald-500/20">
+                  Ready
+                </span>
+              ) : (
+                <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400 border border-amber-500/20">
+                  Needs API Key
+                </span>
+              )}
+            </div>
+            <div className="text-xs text-neutral-400">
+              Active model: <span className="font-mono text-neutral-300">{llmStatus?.model || 'loading…'}</span>
+            </div>
+          </div>
+        </div>
+        <Link to="/settings?section=llm" className={`${btnGhost} text-xs shrink-0 self-start sm:self-auto`}>
+          Test LLM Connection →
+        </Link>
+      </div>
 
       {/* Pipeline */}
       <div className="mb-12 flex flex-col gap-2 lg:flex-row lg:items-stretch lg:gap-0">

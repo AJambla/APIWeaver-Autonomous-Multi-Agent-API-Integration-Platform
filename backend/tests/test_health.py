@@ -249,3 +249,18 @@ async def test_run_migrations_on_startup_triggers_upgrade(test_settings: Setting
     assert len(executed) == 0
 
 
+async def test_llm_health_returns_config(client: AsyncClient) -> None:
+    response = await client.get("/api/v1/health/llm")
+    assert response.status_code == 200
+    data = response.json()
+    assert "provider" in data
+    assert "model" in data
+    assert "is_configured" in data
+
+
+async def test_llm_test_endpoint_requires_auth(client: AsyncClient) -> None:
+    response = await client.post("/api/v1/health/llm/test")
+    assert response.status_code == 401
+
+
+

@@ -1,20 +1,25 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
+  Bot,
   Check,
+  CheckCircle2,
   Copy,
   Github,
   KeyRound,
   Link2Off,
+  Loader2,
   Plus,
+  Sparkles,
   Trash2,
   User as UserIcon,
   Users,
   X,
+  XCircle,
 } from 'lucide-react';
 import { useAuth } from '../lib/auth-context';
 import { apiFetch } from '../lib/api';
-import { ApiKey, ApiKeyCreated, GitHubStatus, Page } from '../lib/types';
+import { ApiKey, ApiKeyCreated, GitHubStatus, LlmStatus, LlmTestResult, Page } from '../lib/types';
 import { initials, relativeTime } from '../lib/format';
 import {
   btnGhost,
@@ -35,14 +40,16 @@ import {
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : 'Something went wrong.');
 
-type SectionKey = 'account' | 'workspace' | 'keys' | 'github';
+type SectionKey = 'account' | 'workspace' | 'keys' | 'github' | 'llm';
 
 const SECTIONS: Array<{ key: SectionKey; label: string; icon: React.FC<{ className?: string }> }> = [
   { key: 'account', label: 'Account', icon: UserIcon },
   { key: 'workspace', label: 'Workspace', icon: Users },
   { key: 'keys', label: 'API Keys', icon: KeyRound },
   { key: 'github', label: 'GitHub', icon: Github },
+  { key: 'llm', label: 'AI / LLM', icon: Bot },
 ];
+
 
 const InfoRow: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <div className="flex items-center justify-between gap-6 py-3">
@@ -486,6 +493,153 @@ const GitHubSection: React.FC = () => {
   );
 };
 
+const LlmSection: React.FC = () => {
+  const [status, setStatus] = useState<LlmStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<LlmTestResult | null>(null);
+  const [error, setError] = useState('');
+
+  const loadStatus = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await apiFetch<LlmStatus>('/health/llm');
+      setStatus(data);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStatus();
+  }, [loadStatus]);
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setError('');
+    setTestResult(null);
+    try {
+      const res = await apiFetch<LlmTestResult>('/health/llm/test', {
+        method: 'POST',
+      });
+      setTestResult(res);
+      if (res.status === 'error' && res.error) {
+        setError(res.error);
+      }
+    } catch (err) {
+      setError(errorMessage(err));
+      setTestResult({
+        status: 'error',
+        latency_ms: 0,
+        model: status?.model || 'unknown',
+        error: errorMessage(err),
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="text-base font-medium text-white">LLM Provider Configuration</h3>
+          <p className="text-sm text-neutral-400">
+            Verify connectivity, credentials, and token quota for planning, code generation, and repair agents.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleTestConnection}
+          disabled={testing || loading}
+          className={`${btnPrimary} shrink-0`}
+        >
+          {testing ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" /> Testing Connection…
+            </>
+          ) : (
+            <>
+              <Sparkles className="h-4 w-4 text-amber-300" /> Test Connection
+            </>
+          )}
+        </button>
+      </div>
+
+      {error && <ErrorBanner message={error} onDismiss={() => setError('')} />}
+
+      {testResult && testResult.status === 'ok' && (
+        <div className="flex items-start gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-emerald-200">
+          <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-emerald-300">Connection Successful</div>
+            <div className="mt-1 text-xs text-emerald-400/90">
+              Model <span className="font-mono font-medium text-emerald-200">{testResult.model}</span> responded in{' '}
+              <span className="font-semibold text-emerald-200">{testResult.latency_ms}ms</span> ({testResult.tokens ?? 0} tokens used). The LLM provider is fully operational.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className={`${cardCls} p-5 space-y-3`}>
+          <Skeleton className="h-8 w-1/3" />
+          <Skeleton className="h-6 w-1/2" />
+          <Skeleton className="h-6 w-2/3" />
+        </div>
+      ) : (
+        <div className={`${cardCls} divide-y divide-white/5 px-5 py-1`}>
+          <InfoRow label="Active Model">
+            <span className="font-mono text-xs text-neutral-200">{status?.model || '—'}</span>
+          </InfoRow>
+          <InfoRow label="Provider Type">
+            <span className="capitalize">{status?.provider || '—'}</span>
+          </InfoRow>
+          <InfoRow label="API Base URL">
+            <span
+              className="font-mono text-xs text-neutral-400 truncate max-w-[360px] inline-block align-middle"
+              title={status?.base_url}
+            >
+              {status?.base_url || 'Default'}
+            </span>
+          </InfoRow>
+          <InfoRow label="Credentials Status">
+            {status?.is_configured ? (
+              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
+                <CheckCircle2 className="h-3.5 w-3.5" /> Configured
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-xs text-amber-400">
+                <XCircle className="h-3.5 w-3.5" /> Not Configured
+              </span>
+            )}
+          </InfoRow>
+          <InfoRow label="Connection Status">
+            {testing ? (
+              <span className="inline-flex items-center gap-1.5 text-xs text-neutral-400">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Testing…
+              </span>
+            ) : testResult?.status === 'ok' ? (
+              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
+                <CheckCircle2 className="h-3.5 w-3.5" /> Operational ({testResult.latency_ms}ms)
+              </span>
+            ) : testResult?.status === 'error' ? (
+              <span className="inline-flex items-center gap-1.5 text-xs text-red-400 font-medium">
+                <XCircle className="h-3.5 w-3.5" /> Connection Failed
+              </span>
+            ) : (
+              <span className="text-xs text-neutral-500">Not tested</span>
+            )}
+          </InfoRow>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const SettingsPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const param = searchParams.get('section') as SectionKey | null;
@@ -522,8 +676,10 @@ export const SettingsPage: React.FC = () => {
           {active === 'workspace' && <WorkspaceSection />}
           {active === 'keys' && <KeysSection />}
           {active === 'github' && <GitHubSection />}
+          {active === 'llm' && <LlmSection />}
         </div>
       </div>
     </div>
   );
 };
+

@@ -7,29 +7,43 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # IDE extensions & settings
-.vscode/extensions/
-.vscode/settings.json
+.vscode/
+!.vscode/launch.json
+!.vscode/tasks.json
 .idea/
 *.swp
 *.swo
 *~
 .project
 .pydevproject
+*.sublime-project
+*.sublime-workspace
 
+# TypeScript / Linters
 *.tsbuildinfo
+.eslintcache
+
 # Python virtual environments
 env/
 ENV/
 .venv/
 venv/
 .Python
+**/env/
+**/.venv/
+**/venv/
 
 # Python bytecode & caches
 __pycache__/
 *.py[cod]
+*.pyo
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/__pycache__/
 htmlcov/
 .coverage
 .coverage.*
@@ -37,23 +51,38 @@ coverage.xml
 .tox/
 .cache/
 
-# Database files
+# Database files & local volume mounts
 *.db
 *.sqlite
 *.sqlite3
+alembic.db
+pgdata/
+redisdata/
+miniodata/
+qdrantdata/
 
-# Secrets / private keys
+# Secrets / private keys / certificates
 secrets/
 *.pem
 *.key
+*.crt
+*.cert
+*.pfx
+*.p12
 
 # Logs
 logs/
 *.log
+**/*.log
 
+# AI Assistants & Dev Agent tooling
 .claude/
 .kilo/
 .cursor/
+.gemini/
+.antigravity/
+.system_generated/
+scratch/
 
 # Local configuration
 .env
@@ -61,15 +90,30 @@ logs/
 !.env.example
 
 # Node.js / Frontend
-.nuxt/
-yarn-error.log*
-.pnpm-debug.log*
 node_modules/
+**/node_modules/
+.nuxt/
 .next/
 .turbo/
 .vercel
+.vite/
+frontend/.vite/
+Frontend/.vite/
+frontend/dist/
+Frontend/dist/
+yarn-error.log*
+.pnpm-debug.log*
+npm-debug.log*
 pnpm-lock.yaml
 yarn.lock
+
+# Vendored Monaco runtime, copied into Vite's static dir by frontend/scripts/copy-monaco.mjs
+frontend/public/monaco/
+Frontend/public/monaco/
+
+# APIWeaver Docker Sandbox temporary workspaces
+*apiweaver-sandbox*
+apiweaver_sandbox/
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
@@ -89,15 +133,10 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# Alembic (SQLAlchemy migrations)
-alembic.db
-
-# IDE plugins
-*.sublime-project
-*.sublime-workspace
-
-# Makefile artifacts
+# Makefile / local build artifacts
 .make_output
+*.tmp
+*.bak
 
 # Terraform
 .terraform/
@@ -106,9 +145,5 @@ alembic.db
 *.tfplan
 .terraform.lock.hcl
 
-# Skill
+# Skills
 ui-ux-pro-max-skill/
-ui-ux-pro-max-skill/
-
-# Vendored Monaco runtime, copied into Vite's static dir by frontend/scripts/copy-monaco.mjs
-frontend/public/monaco/
