@@ -21,6 +21,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.enums import WorkflowStatus
 from app.models.metrics import UsageMetric
+from app.models.project import Project
 from app.models.spec import APISpec, Endpoint
 from app.models.versioning import ArtifactVersion
 from app.models.workflow import WorkflowCheckpoint, WorkflowRun
@@ -1361,12 +1362,19 @@ class LangGraphOrchestrator:
 
                             if total_tokens > 0:
                                 try:
-                                    metric = UsageMetric(
-                                        organization_id=run_obj.organization_id,
-                                        metric_name="token_cost_usd",
-                                        value=cost_usd,
-                                    )
-                                    session.add(metric)
+                                    org_id = result_state.get("organization_id")
+                                    if not org_id:
+                                        project_row = await session.get(
+                                            Project, run_obj.project_id
+                                        )
+                                        org_id = project_row.organization_id if project_row else None
+                                    if org_id:
+                                        metric = UsageMetric(
+                                            organization_id=uuid.UUID(str(org_id)),
+                                            metric_name="token_cost_usd",
+                                            value=cost_usd,
+                                        )
+                                        session.add(metric)
                                 except Exception as metric_err:
                                     logger.warning("failed_to_record_usage_metric", error=str(metric_err))
 
