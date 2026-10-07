@@ -214,3 +214,19 @@ class LangGraphAgentLogger:
             state="IDLE",
             reason=reason,
         )
+
+    def log_thought(
+        self,
+        node_name: str,
+        run_id: str,
+        message: str,
+        action: str | None = None,
+    ) -> None:
+        """Logs real-time agent thoughts and granular actions to terminal."""
+        run_tag = run_id[:8] if run_id else "unknown"
+        display_name = node_name.replace("_", " ").title()
+        time_str = time.strftime("%H:%M:%S")
+        action_tag = f" {CYAN}({action}){RESET}" if action else ""
+        msg = f"  {DIM}[{time_str}]{RESET} {BLUE}▶{RESET} {BOLD}[{display_name}]{RESET}{action_tag} {message}"
+        self._emit(msg)
+

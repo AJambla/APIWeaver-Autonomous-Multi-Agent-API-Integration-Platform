@@ -179,3 +179,34 @@ class EventPublisher:
                 "artifact_count": artifact_count,
             },
         )
+
+    async def publish_agent_thought(
+        self,
+        run_id: str,
+        project_id: str | None,
+        agent_name: str,
+        message: str,
+        level: str = "info",
+        action: str | None = None,
+        step: int | None = None,
+        total_steps: int | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Publish real-time agent thought, activity, or sub-step update."""
+        import datetime
+        payload = {
+            "agent_name": agent_name,
+            "message": message,
+            "level": level,
+            "action": action,
+            "step": step,
+            "total_steps": total_steps,
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+            **(extra or {}),
+        }
+        await self.publish(
+            run_id,
+            project_id,
+            "agent.thought",
+            payload,
+        )

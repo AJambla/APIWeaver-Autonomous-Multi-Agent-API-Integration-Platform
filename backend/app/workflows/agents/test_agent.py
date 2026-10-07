@@ -530,6 +530,7 @@ async def run_test_agent(
     state: WorkflowState,
     llm_client: LLMClient | None = None,
     session_factory: Any | None = None,
+    on_activity: Any | None = None,
 ) -> dict[str, Any]:
     """Execution node for the Testing Agent."""
     logger.info("test_agent_started", workflow_run_id=state.get("workflow_run_id"))
@@ -598,9 +599,19 @@ async def run_test_agent(
                 )
 
         # Generate test fixtures defensively
+        if on_activity:
+            try:
+                await on_activity("fixtures", "Generating mock request payloads and endpoint test fixtures...", None, None)
+            except Exception:
+                pass
         fixtures = await generate_test_fixtures(spec, client)
 
         # Create sandbox client
+        if on_activity:
+            try:
+                await on_activity("sandbox_init", f"Starting isolated {get_settings().sandbox_backend.upper()} sandbox environment...", None, None)
+            except Exception:
+                pass
         sandbox = await _create_sandbox(state, generated_files, spec, auth=auth)
         classifier = FailureClassifier(client)
 
@@ -613,14 +624,38 @@ async def run_test_agent(
         test_results = []
         all_passed = True
 
-        for ep in endpoints_to_test:
+        for i, ep in enumerate(endpoints_to_test):
             method = str(ep.get("method") or "GET").upper()
             path = str(ep.get("path") or "/")
             ep_key = f"{method} {path}"
             fixture = fixtures.get(ep_key, {})
 
+            if on_activity:
+                try:
+                    await on_activity(
+                        "executing_test",
+                        f"Executing test {i + 1}/{len(endpoints_to_test)}: {method} {path}...",
+                        i + 1,
+                        len(endpoints_to_test),
+                    )
+                except Exception:
+                    pass
+
             result = await sandbox.execute_test(ep, fixture)
             test_results.append(result)
+
+            st = str(result.get("status", "unknown")).upper()
+            lat = result.get("latency_ms", 0)
+            if on_activity:
+                try:
+                    await on_activity(
+                        "test_result",
+                        f"Test {i + 1}/{len(endpoints_to_test)} {method} {path} → {st} ({lat}ms)",
+                        i + 1,
+                        len(endpoints_to_test),
+                    )
+                except Exception:
+                    pass
 
             if result.get("status") != "passed":
                 all_passed = False
