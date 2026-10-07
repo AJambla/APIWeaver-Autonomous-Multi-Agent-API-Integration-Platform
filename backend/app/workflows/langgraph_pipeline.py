@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.models.enums import WorkflowStatus
+from app.models.enums import ProjectStatus, WorkflowStatus
 from app.models.metrics import UsageMetric
 from app.models.project import Project
 from app.models.spec import APISpec, Endpoint
@@ -256,6 +256,32 @@ def create_apiweaver_graph(
         except Exception as exc:
             logger.warning("langgraph_checkpoint_save_failed", error=str(exc))
 
+    async def _set_project_status(state: WorkflowState, status: ProjectStatus) -> None:
+        """Move the project's lifecycle status as a stage starts or the run ends.
+
+        The workspace badge, `AgentsPage`, and the `GET /projects?status=` filter all read
+        this column, but only project creation and archiving ever wrote it, so a project
+        stayed `draft` however far its runs got.
+        """
+        if session_factory is None or not state.get("project_id"):
+            return
+        try:
+            async with session_factory() as session:
+                project = await session.get(Project, uuid.UUID(str(state["project_id"])))
+                if project is None or project.status == ProjectStatus.ARCHIVED:
+                    return
+                if project.status == status:
+                    return
+                project.status = status
+                await session.commit()
+        except Exception as exc:
+            logger.warning(
+                "project_status_update_failed",
+                project_id=str(state.get("project_id")),
+                status=str(status),
+                error=str(exc),
+            )
+
     async def _assert_not_cancelled(state: WorkflowState) -> None:
         run_id = state.get("workflow_run_id")
         if not run_id or not session_factory:
@@ -274,6 +300,7 @@ def create_apiweaver_graph(
     async def doc_agent_node(state: WorkflowState) -> dict[str, Any]:
         await _assert_not_cancelled(state)
         check_budget(state)
+        await _set_project_status(state, ProjectStatus.PLANNING)
         # If normalized_spec is already present (e.g. parsed directly from OpenAPI upload),
         # skip re-normalizing.
         if state.get("normalized_spec"):
@@ -376,6 +403,7 @@ def create_apiweaver_graph(
     async def planner_agent_node(state: WorkflowState) -> dict[str, Any]:
         await _assert_not_cancelled(state)
         check_budget(state)
+        await _set_project_status(state, ProjectStatus.PLANNING)
         run_id = state.get("workflow_run_id", "")
         spec = dict(state.get("normalized_spec") or {})
         endpoints = spec.get("endpoints", [])
@@ -559,6 +587,7 @@ def create_apiweaver_graph(
     async def code_agent_node(state: WorkflowState) -> dict[str, Any]:
         await _assert_not_cancelled(state)
         check_budget(state)
+        await _set_project_status(state, ProjectStatus.BUILDING)
         run_id = state.get("workflow_run_id", "")
         plan = state.get("execution_plan", {})
         phases = plan.get("phases", [])
@@ -754,6 +783,7 @@ def create_apiweaver_graph(
     async def test_agent_node(state: WorkflowState) -> dict[str, Any]:
         await _assert_not_cancelled(state)
         check_budget(state)
+        await _set_project_status(state, ProjectStatus.TESTING)
         run_id = state.get("workflow_run_id", "")
         backend = get_settings().sandbox_backend.upper()
         terminal_logger.log_start(
@@ -1018,6 +1048,7 @@ def create_apiweaver_graph(
     async def export_agent_node(state: WorkflowState) -> dict[str, Any]:
         await _assert_not_cancelled(state)
         check_budget(state)
+        await _set_project_status(state, ProjectStatus.BUILDING)
         run_id = state.get("workflow_run_id", "")
         terminal_logger.log_start(
             "export_agent",
@@ -1127,6 +1158,13 @@ def create_apiweaver_graph(
             final_status = WorkflowStatus.FAILED
         else:
             final_status = WorkflowStatus.COMPLETED
+
+        if final_status == WorkflowStatus.COMPLETED:
+            await _set_project_status(state, ProjectStatus.READY)
+        elif final_status == WorkflowStatus.FAILED:
+            await _set_project_status(state, ProjectStatus.FAILED)
+        else:
+            await _set_project_status(state, ProjectStatus.PLANNING)
 
         terminal_logger.log_complete(
             "finalize",
@@ -1449,7 +1487,17 @@ class LangGraphOrchestrator:
                         run_obj.current_node = current.get("current_node") or "failed"
                         run_obj.progress_percent = current.get("progress_percent") or 75
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
-                        await session.commit()
+                    try:
+                        project = await session.get(
+                            Project, uuid.UUID(str(current.get("project_id")))
+                        )
+                    except (TypeError, ValueError):
+                        project = None
+                    # A node that raises never reaches finalize_node, so this path has to
+                    # settle the project status itself or it stays on the crashed stage.
+                    if project is not None and project.status != ProjectStatus.ARCHIVED:
+                        project.status = ProjectStatus.FAILED
+                    await session.commit()
 
             await self._record_event(
                 workflow_run_id,
