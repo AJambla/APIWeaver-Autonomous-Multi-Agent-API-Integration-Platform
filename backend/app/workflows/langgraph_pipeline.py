@@ -1139,7 +1139,7 @@ def create_apiweaver_graph(
         updates: dict[str, Any] = {
             "status": final_status,
             "progress_percent": 100 if final_status == WorkflowStatus.COMPLETED else (30 if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else int(state.get("progress_percent") or 0)),
-            "current_node": "completed" if final_status == WorkflowStatus.COMPLETED else ("approval_gate" if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else "failed"),
+            "current_node": "completed",
         }
 
         if event_publisher and run_id:

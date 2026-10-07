@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import get_settings
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import DependencyUnavailableError, NotFoundError, UnprocessableEntityError
+from app.core.logging import get_logger
 from app.models.enums import ActorType, WorkflowStatus
 from app.models.project import Project
 from app.models.spec import APISpec
@@ -35,6 +36,8 @@ from app.services import audit_service
 from app.services.event_publisher import EventPublisher
 from app.workflows.langgraph_pipeline import LangGraphOrchestrator
 from app.workflows.state import WorkflowState
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["workflows"])
 
