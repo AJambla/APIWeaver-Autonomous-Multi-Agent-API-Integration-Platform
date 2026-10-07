@@ -23,6 +23,19 @@ _MAX_RETRY_DELAY_SECONDS = 8.0
 _MAX_RETRY_AFTER_SECONDS = 10.0
 
 
+def _safe_dump(obj: Any, limit: int = 50000, context_name: str = "context") -> str:
+    serialized = json.dumps(obj, indent=2)
+    if len(serialized) > limit:
+        logger.warning(
+            "llm_context_truncated",
+            context=context_name,
+            original_length=len(serialized),
+            truncated_to=limit,
+        )
+        return serialized[:limit] + "\n... [truncated]"
+    return serialized
+
+
 class _TransientProviderError(Exception):
     """A retryable provider failure; carries the status code and Retry-After hint."""
 
@@ -127,12 +140,14 @@ class LLMClient:
                     _raise_if_open()
                 if attempt >= self.settings.llm_max_retries:
                     break
+                max_retry_delay = getattr(self.settings, "llm_max_retry_delay_seconds", _MAX_RETRY_DELAY_SECONDS)
+                max_retry_after = getattr(self.settings, "llm_max_retry_after_seconds", _MAX_RETRY_AFTER_SECONDS)
                 delay = min(
                     self.settings.llm_retry_backoff_seconds * (2**attempt),
-                    _MAX_RETRY_DELAY_SECONDS,
+                    max_retry_delay,
                 )
                 if exc.retry_after is not None:
-                    delay = max(delay, min(exc.retry_after, _MAX_RETRY_AFTER_SECONDS))
+                    delay = max(delay, min(exc.retry_after, max_retry_after))
                 logger.warning(
                     "llm_transient_failure",
                     provider=provider,
@@ -223,8 +238,8 @@ Return a JSON object mapping file_path -> file_content.
                 ]
 
         user_prompt = (
-            f"Normalized API Spec:\n{json.dumps(spec, indent=2)[:8000]}\n\n"
-            f"Execution Plan:\n{json.dumps(plan, indent=2)[:4000]}\n\n"
+            f"Normalized API Spec:\n{_safe_dump(spec, 50000, 'spec')}\n\n"
+            f"Execution Plan:\n{_safe_dump(plan, 20000, 'plan')}\n\n"
             f"Target languages: {', '.join(target_languages)}\n"
             f"Phase: {phase_number if phase_number is not None else 'all'}"
         )
@@ -266,7 +281,10 @@ rewrite unrelated code. Explain your diagnosis in <=2 sentences in the
 Respond with JSON matching schema: {repair_output_schema}
 """
 
-        user_prompt = f"Failure Diagnosis:\n{json.dumps(diagnosis, indent=2)}\n\nSpec Context:\n{json.dumps(spec_context, indent=2)[:4000]}"
+        user_prompt = (
+            f"Failure Diagnosis:\n{_safe_dump(diagnosis, 15000, 'diagnosis')}\n\n"
+            f"Spec Context:\n{_safe_dump(spec_context, 25000, 'spec_context')}"
+        )
 
         return await self.generate_json(
             system_prompt=system_prompt,
@@ -302,9 +320,9 @@ Respond with JSON: {"classification": "...", "confidence": 0.0-1.0, "reasoning":
 """
 
         user_prompt = (
-            f"Test Error:\n{json.dumps(test_error, indent=2)}\n\n"
-            f"Endpoint Spec:\n{json.dumps(endpoint_spec, indent=2)[:2000]}\n\n"
-            f"Generated Code:\n{generated_code[:3000]}"
+            f"Test Error:\n{_safe_dump(test_error, 10000, 'test_error')}\n\n"
+            f"Endpoint Spec:\n{_safe_dump(endpoint_spec, 15000, 'endpoint_spec')}\n\n"
+            f"Generated Code:\n{generated_code[:20000]}"
         )
 
         return await self.generate_json(
@@ -341,8 +359,8 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
 
         user_prompt = (
             f"Export type: {export_type}\n"
-            f"Generated files: {json.dumps(generated_files, indent=2)[:4000]}\n"
-            f"Test summary: {json.dumps(test_summary, indent=2)}"
+            f"Generated files: {_safe_dump(generated_files, 25000, 'generated_files')}\n"
+            f"Test summary: {_safe_dump(test_summary, 10000, 'test_summary')}"
         )
 
         return await self.generate_json(

@@ -42,12 +42,15 @@ class EventPublisher:
         project_stream = f"project_events:{project_id}" if project_id else None
 
         try:
-            tasks = [self._redis.xadd(workflow_stream, message)]
+            tasks = [self._redis.xadd(workflow_stream, message, maxlen=1000, approximate=True)]
             if project_stream:
-                tasks.append(self._redis.xadd(project_stream, message))
+                tasks.append(self._redis.xadd(project_stream, message, maxlen=2000, approximate=True))
             await tasks[0]
             if len(tasks) > 1:
                 await tasks[1]
+            await self._redis.expire(workflow_stream, 86400)
+            if project_stream:
+                await self._redis.expire(project_stream, 86400 * 7)
         except Exception:
             logger.warning("event_publish_failed", run_id=run_id, event_type=event_type)
 

@@ -1,6 +1,6 @@
 {
   "name": "{{ title.lower().replace(' ', '-').replace('_', '-') }}-client",
-  "version": "0.1.0",
+  "version": "{{ version | default('0.1.0') }}",
   "description": "Auto-generated {{ title }} API client for Node.js/TypeScript",
   "type": "module",
   "main": "dist/index.js",
@@ -18,8 +18,8 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "keywords": ["api", "client", "typescript", "{{ title.lower().replace(' ', '-') }}"],
-  "author": "APIWeaver <support@apiweaver.dev>",
-  "license": "MIT",
+  "author": "{{ author_name | default('APIWeaver') }} <{{ author_email | default('support@apiweaver.dev') }}>",
+  "license": "{{ license | default('MIT') }}",
   "dependencies": {
     "zod": "^3.23.0"
   },

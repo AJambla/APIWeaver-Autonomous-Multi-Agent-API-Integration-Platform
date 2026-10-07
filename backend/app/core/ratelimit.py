@@ -45,7 +45,7 @@ WINDOW_SECONDS = 60
 TIER_REQUESTS_PER_MINUTE: dict[str, int] = {
     "free": 120,
     "pro": 600,
-    "enterprise": 600,
+    "enterprise": 3000,
 }
 
 TIER_LIMITS: dict[str, dict[str, int]] = {
@@ -205,6 +205,12 @@ async def enforce_org_rate_limit(
     # Critical workflow lifecycle control endpoints (approve, cancel) must never be locked out
     # by background/workspace polling traffic.
     if path.endswith("/approve") or path.endswith("/cancel"):
+        control_verdict = await consume(redis_client, f"org_control:{principal.organization_id}", 120)
+        if not control_verdict.allowed:
+            from app.core.errors import RateLimitError
+            raise RateLimitError("Workflow control rate limit exceeded", retry_after=WINDOW_SECONDS)
+        for header, value in control_verdict.headers().items():
+            response.headers[header] = value
         return
 
     org = await session.scalar(

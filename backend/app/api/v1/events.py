@@ -66,6 +66,8 @@ async def _stream_redis_events(
                 if isinstance(event_type, bytes):
                     event_type = event_type.decode("utf-8")
                 yield f"event: {event_type}\ndata: {payload}\nid: {message_id}\n\n"
+                if event_type in ("workflow.completed", "workflow.failed", "workflow.cancelled"):
+                    return
 
         if not results:
             yield ": heartbeat\n\n"

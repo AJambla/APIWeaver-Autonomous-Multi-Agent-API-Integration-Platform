@@ -66,10 +66,11 @@ class HttpQdrantClient:
 
     def __init__(self, settings: Settings) -> None:
         self.base_url = settings.qdrant_url.rstrip("/")
+        self.timeout = getattr(settings, "qdrant_timeout_seconds", 10.0)
 
     async def ensure_collection(self, collection_name: str = DEFAULT_COLLECTION) -> None:
         url = f"{self.base_url}/collections/{collection_name}"
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 res = await client.get(url)
                 if res.status_code == 200:
@@ -110,7 +111,7 @@ class HttpQdrantClient:
                 },
             })
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 res = await client.put(url, json={"points": points})
                 res.raise_for_status()
@@ -137,7 +138,7 @@ class HttpQdrantClient:
             },
             "with_payload": True,
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 res = await client.post(url, json=payload)
                 if res.status_code == 404:
@@ -176,7 +177,7 @@ class HttpQdrantClient:
                 ]
             }
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 res = await client.post(url, json=payload)
                 if res.status_code != 404:

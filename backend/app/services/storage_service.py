@@ -41,11 +41,26 @@ class AsyncS3ObjectStorage:
     def __init__(self, settings: Settings) -> None:
         from aiobotocore.session import get_session
 
+        self._uploads_bucket = settings.s3_bucket_uploads
+        self._artifacts_bucket = settings.s3_bucket_artifacts
         self._bucket = settings.s3_bucket_uploads
         self._endpoint_url = settings.s3_endpoint_url
         self._aws_access_key_id = settings.aws_access_key_id
         self._aws_secret_access_key = settings.aws_secret_access_key
         self._session = get_session()
+
+    def _target_bucket_for_key(self, key: str, bucket: str | None = None) -> str:
+        if bucket:
+            return bucket
+        # Artifacts, exports, generated SDKs and repair files belong in the dedicated artifacts bucket
+        if key.startswith(("exports/", "artifacts/", "projects/", "generated/")):
+            return self._artifacts_bucket
+        return self._uploads_bucket
+
+    def _fallback_bucket_for_key(self, target_bucket: str) -> str | None:
+        if target_bucket == self._artifacts_bucket:
+            return self._uploads_bucket if self._uploads_bucket != self._artifacts_bucket else None
+        return self._artifacts_bucket if self._artifacts_bucket != self._uploads_bucket else None
 
     async def _get_client(self) -> Any:
         return self._session.create_client(
@@ -55,37 +70,54 @@ class AsyncS3ObjectStorage:
             aws_secret_access_key=self._aws_secret_access_key,
         )
 
-    async def get(self, *, key: str) -> bytes | None:
+    async def get(self, *, key: str, bucket: str | None = None) -> bytes | None:
         import botocore.exceptions
 
         key = validate_storage_key(key)
+        target_bucket = self._target_bucket_for_key(key, bucket)
         async with await self._get_client() as client:
             try:
-                response = await client.get_object(Bucket=self._bucket, Key=key)
+                response = await client.get_object(Bucket=target_bucket, Key=key)
                 async with response["Body"] as stream:
                     body: bytes = await stream.read()
                     return body
             except botocore.exceptions.ClientError as exc:
                 if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                    fallback = self._fallback_bucket_for_key(target_bucket)
+                    if fallback:
+                        try:
+                            fallback_res = await client.get_object(Bucket=fallback, Key=key)
+                            async with fallback_res["Body"] as stream:
+                                return await stream.read()
+                        except botocore.exceptions.ClientError:
+                            pass
                     return None
                 raise
 
-    async def put(self, *, key: str, content: bytes, content_type: str | None) -> None:
+    async def put(self, *, key: str, content: bytes, content_type: str | None = None, bucket: str | None = None) -> None:
         key = validate_storage_key(key)
+        target_bucket = self._target_bucket_for_key(key, bucket)
         extra = {"ContentType": content_type} if content_type else {}
         async with await self._get_client() as client:
-            await client.put_object(Bucket=self._bucket, Key=key, Body=content, **extra)
+            await client.put_object(Bucket=target_bucket, Key=key, Body=content, **extra)
 
-    async def delete(self, *, key: str) -> None:
+    async def delete(self, *, key: str, bucket: str | None = None) -> None:
         key = validate_storage_key(key)
+        target_bucket = self._target_bucket_for_key(key, bucket)
         async with await self._get_client() as client:
-            await client.delete_object(Bucket=self._bucket, Key=key)
+            await client.delete_object(Bucket=target_bucket, Key=key)
+            fallback = self._fallback_bucket_for_key(target_bucket)
+            if fallback:
+                try:
+                    await client.delete_object(Bucket=fallback, Key=key)
+                except Exception:
+                    pass
 
-    async def upload(self, key: str, content: bytes) -> None:
-        await self.put(key=key, content=content, content_type="text/plain")
+    async def upload(self, key: str, content: bytes, bucket: str | None = None) -> None:
+        await self.put(key=key, content=content, content_type="text/plain", bucket=bucket)
 
-    async def download(self, key: str) -> bytes:
-        result = await self.get(key=key)
+    async def download(self, key: str, bucket: str | None = None) -> bytes:
+        result = await self.get(key=key, bucket=bucket)
         if result is None:
             raise FileNotFoundError(f"Object not found: {key}")
         return result
@@ -97,23 +129,23 @@ class InMemoryObjectStorage:
     def __init__(self) -> None:
         self._store: dict[str, bytes] = {}
 
-    async def get(self, *, key: str) -> bytes | None:
+    async def get(self, *, key: str, bucket: str | None = None) -> bytes | None:
         key = validate_storage_key(key)
         return self._store.get(key)
 
-    async def put(self, *, key: str, content: bytes, content_type: str | None = None) -> None:
+    async def put(self, *, key: str, content: bytes, content_type: str | None = None, bucket: str | None = None) -> None:
         key = validate_storage_key(key)
         self._store[key] = content
 
-    async def delete(self, *, key: str) -> None:
+    async def delete(self, *, key: str, bucket: str | None = None) -> None:
         key = validate_storage_key(key)
         self._store.pop(key, None)
 
-    async def upload(self, key: str, content: bytes) -> None:
-        await self.put(key=key, content=content, content_type="text/plain")
+    async def upload(self, key: str, content: bytes, bucket: str | None = None) -> None:
+        await self.put(key=key, content=content, content_type="text/plain", bucket=bucket)
 
-    async def download(self, key: str) -> bytes:
-        result = await self.get(key=key)
+    async def download(self, key: str, bucket: str | None = None) -> bytes:
+        result = await self.get(key=key, bucket=bucket)
         if result is None:
             raise FileNotFoundError(f"Object not found: {key}")
         return result

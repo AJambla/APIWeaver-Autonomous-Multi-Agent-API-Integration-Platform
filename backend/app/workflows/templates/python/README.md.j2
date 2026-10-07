@@ -1,0 +1,24 @@
+# {{ title }} Python Client
+
+Auto-generated API client for {{ title }} using APIWeaver.
+
+## Installation
+
+```bash
+pip install .
+```
+
+## Quick Start
+
+```python
+import asyncio
+from client import {{ title.replace(' ', '_').replace('-', '_') }}Client
+
+async def main():
+    client = {{ title.replace(' ', '_').replace('-', '_') }}Client(base_url="{{ base_url }}")
+    # Call client methods
+    await client.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```

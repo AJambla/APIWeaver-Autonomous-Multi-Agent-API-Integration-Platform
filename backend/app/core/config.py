@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     # --- Vault (required by §9; client lands in Phase 2) ----------------------
     vault_addr: str = "http://localhost:8200"
     vault_token: str | None = None
+    vault_mount_path: str = "secret"
+    qdrant_timeout_seconds: float = 10.0
+    github_timeout_seconds: float = 30.0
+
+    # --- Rate Limiting --------------------------------------------------------
+    rate_limit_free_rpm: int = 120
+    rate_limit_pro_rpm: int = 600
+    rate_limit_enterprise_rpm: int = 3000
 
     # --- LLM providers (conditional) ------------------------------------------
     openai_api_key: str | None = None
@@ -63,6 +71,11 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     anthropic_model: str = "claude-3-5-sonnet-20241022"
     embedding_model: str = "text-embedding-3-small"
+    llm_max_retry_delay_seconds: float = 60.0
+    llm_max_retry_after_seconds: float = 60.0
+    llm_temperature: float = 0.1
+    llm_request_timeout: float = 60.0
+    llm_max_tokens: int = 4096
     embedding_base_url: str | None = None
     # Chunks of a single document that get embedded and indexed. Without a ceiling, one
     # 50MB upload is ~100k provider calls (audit M8); the remainder is skipped loudly.
@@ -107,7 +120,9 @@ class Settings(BaseSettings):
     # Explicit Docker daemon URL (e.g. "unix:///var/run/docker.sock" or "tcp://docker-dind:2375").
     # If None, docker.from_env() resolves from DOCKER_HOST or local default.
     docker_host: str | None = None
-    sandbox_image: str = "python:3.12-slim"
+    sandbox_image: str = (
+        "python:3.12.15-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d"
+    )
     sandbox_node_image: str = "node:22-alpine"
     sandbox_max_cpu: str = "1"
     sandbox_max_memory: str = "256Mi"

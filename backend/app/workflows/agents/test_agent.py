@@ -100,8 +100,8 @@ class MockSandboxClient:
                         text = re.sub(r'^(from\s+)\.([a-zA-Z_][a-zA-Z0-9_]*\s+import)', r'\1\2', text, flags=re.MULTILINE)
                         text = re.sub(r'^from\s+\.\s+import\s+([a-zA-Z_][a-zA-Z0-9_]*)', r'import \1', text, flags=re.MULTILINE)
                         content = text.encode("utf-8")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("test_agent_relative_import_rewrite_failed", error=str(e))
                 full_path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
 
                 # Add to sys.path if not already
@@ -164,11 +164,15 @@ class MockSandboxClient:
                 result["error"] = "Could not load generated client class"
                 return result
 
-            # Instantiate client with mock configuration
-            client = ClientClass(
-                base_url="http://mock.local",
-                api_key="test-key",
-            )
+            # Instantiate client with spec configuration
+            spec_base_url = self.spec.get("base_url") if isinstance(self.spec, dict) else None
+            client_kwargs: dict[str, Any] = {
+                "base_url": spec_base_url or "http://127.0.0.1:8000",
+            }
+            client_sig = inspect.signature(ClientClass.__init__)
+            if "api_key" in client_sig.parameters:
+                client_kwargs["api_key"] = (self.spec.get("auth") or {}).get("api_key") or "test-key"
+            client = ClientClass(**client_kwargs)
 
             # Build request parameters from fixture
             request_data = fixture.get("request", {}) if isinstance(fixture, dict) else {}
@@ -686,16 +690,16 @@ async def run_test_agent(
         if on_activity:
             try:
                 await on_activity("fixtures", "Generating test fixtures and request payloads...", None, None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("on_activity_fixtures_failed", error=str(e))
         fixtures = await generate_test_fixtures(spec, client)
 
         # Create sandbox client
         if on_activity:
             try:
                 await on_activity("sandbox_init", f"Starting isolated {get_settings().sandbox_backend.upper()} sandbox environment...", None, None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("on_activity_sandbox_init_failed", error=str(e))
         sandbox = await _create_sandbox(state, generated_files, spec, auth=auth)
         classifier = FailureClassifier(client)
 
@@ -722,8 +726,8 @@ async def run_test_agent(
                         i + 1,
                         len(endpoints_to_test),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("on_activity_executing_test_failed", error=str(e))
 
             result = await sandbox.execute_test(ep, fixture)
             test_results.append(result)
@@ -738,8 +742,8 @@ async def run_test_agent(
                         i + 1,
                         len(endpoints_to_test),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("on_activity_test_result_failed", error=str(e))
 
             if result.get("status") != "passed":
                 all_passed = False
