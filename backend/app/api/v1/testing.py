@@ -14,7 +14,7 @@ from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError
 from app.models.enums import ActorType, TestEnvironment, WorkflowStatus
 from app.models.project import Project
-from app.models.testing import TestResult, TestRun
+from app.models.testing import RepairAttempt, TestResult, TestRun
 from app.models.workflow import WorkflowRun
 from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
@@ -145,6 +145,30 @@ async def _execute_test_run(
     return state
 
 
+async def _repairs_for(
+    session: AsyncSession, result_ids: list[uuid.UUID]
+) -> list[RepairAttemptResponse]:
+    """Read the self-healing loop recorded against these results."""
+    if not result_ids:
+        return []
+    repairs = await session.scalars(
+        select(RepairAttempt)
+        .where(RepairAttempt.test_result_id.in_(result_ids))
+        .order_by(RepairAttempt.attempt_number)
+    )
+    return [
+        RepairAttemptResponse(
+            id=r.id,
+            test_result_id=r.test_result_id,
+            attempt_number=r.attempt_number,
+            failure_classification=r.failure_classification,
+            diff_summary=r.diff_summary,
+            outcome=r.outcome,
+        )
+        for r in repairs
+    ]
+
+
 @router.get("/{id}/test-runs/latest", response_model=TestRunSummaryResponse)
 async def get_latest_test_run(
     project: Project = Depends(require_project_permission(Permission.TEST_READ)),
@@ -197,6 +221,7 @@ async def get_latest_test_run(
         },
         results=result_responses,
         errors=errors,
+        repairs=await _repairs_for(session, [r.id for r in results]),
     )
 
 
@@ -248,6 +273,7 @@ async def get_test_run(
         },
         results=result_responses,
         errors=errors,
+        repairs=await _repairs_for(session, [r.id for r in results]),
     )
 
 
@@ -265,23 +291,4 @@ async def list_repair_attempts(
         .where(TestResult.test_run_id == run_id, TestRun.project_id == project.id)
     )).scalars())
 
-    result_ids = [r.id for r in results]
-    if not result_ids:
-        return []
-
-    from app.models.testing import RepairAttempt
-    repairs = list((await session.execute(
-        select(RepairAttempt).where(RepairAttempt.test_result_id.in_(result_ids))
-    )).scalars())
-
-    return [
-        RepairAttemptResponse(
-            id=r.id,
-            test_result_id=r.test_result_id,
-            attempt_number=r.attempt_number,
-            failure_classification=r.failure_classification,
-            diff_summary=r.diff_summary,
-            outcome=r.outcome,
-        )
-        for r in repairs
-    ]
+    return await _repairs_for(session, [r.id for r in results])

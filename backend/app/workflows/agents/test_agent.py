@@ -804,6 +804,7 @@ async def run_test_agent(
                 project_id=state.get("project_id"),
                 test_suite=test_results,
                 summary=test_run_summary,
+                repair_attempts=repair_attempts,
                 status="completed" if all_passed else "completed_with_failures",
             )
 
