@@ -64,7 +64,18 @@ async def run_doc_agent(
 
     # 1. Check if normalized spec is already provided
     if state.get("normalized_spec"):
+        if qdrant_client is not None:
+            norm_spec = state["normalized_spec"]
+            raw_text = str(norm_spec.get("raw_normalized") or norm_spec)
+            await _upsert_to_qdrant(
+                qdrant_client=qdrant_client,
+                client=client,
+                state=state,
+                text=raw_text,
+            )
         return {
+            "normalized_spec": state["normalized_spec"],
+            "spec_confidence_score": state.get("spec_confidence_score", 1.0),
             "current_node": "doc_agent",
             "progress_percent": 25,
             "status": "spec_ready",

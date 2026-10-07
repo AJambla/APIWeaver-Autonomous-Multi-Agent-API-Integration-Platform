@@ -241,3 +241,108 @@ class TestEmbeddingChunkCap:
             project_id=project_id, query_vector=[0.0] * 1536, limit=50
         )
         assert len(stored) == 3
+
+    @pytest.mark.asyncio
+    async def test_doc_agent_indexes_pre_normalized_spec(self, monkeypatch) -> None:
+        """Structured spec uploads already present in state must be indexed into Qdrant."""
+        fake_qdrant = FakeQdrantClient()
+        project_id = str(uuid.uuid4())
+        document_id = str(uuid.uuid4())
+
+        state: WorkflowState = {
+            "project_id": project_id,
+            "document_id": document_id,
+            "workflow_run_id": str(uuid.uuid4()),
+            "normalized_spec": {
+                "title": "Swagger Petstore",
+                "base_url": "https://api.example.com",
+                "endpoints": [
+                    {"method": "GET", "path": "/pets", "summary": "List pets"}
+                ],
+                "raw_normalized": {"info": {"title": "Petstore"}, "paths": {"/pets": {"get": {}}}},
+            },
+        }
+
+        async def fake_embedding(text: str) -> list[float]:
+            return [0.1] * 1536
+
+        client = LLMClient()
+        monkeypatch.setattr(client, "generate_embedding", fake_embedding)
+
+        res = await run_doc_agent(state, llm_client=client, qdrant_client=fake_qdrant)
+        assert res["status"] == "spec_ready"
+
+        # Verify Qdrant has indexed points
+        hits = await fake_qdrant.search(
+            project_id=uuid.UUID(project_id),
+            query_vector=[0.1] * 1536,
+            limit=5,
+        )
+        assert len(hits) > 0
+        assert "Petstore" in hits[0].text or "paths" in hits[0].text
+
+    @pytest.mark.asyncio
+    async def test_code_agent_searches_qdrant_rag(self, monkeypatch) -> None:
+        """Code agent must query QdrantClient.search for relevant doc context."""
+        from app.workflows.agents.code_agent import run_code_agent
+
+        fake_qdrant = FakeQdrantClient()
+        project_id = uuid.uuid4()
+        doc_id = uuid.uuid4()
+
+        # Pre-seed Qdrant with doc chunk
+        await fake_qdrant.upsert_chunks(
+            project_id=project_id,
+            document_id=doc_id,
+            chunks=[{
+                "text": "Rate limits: 100 requests per minute for /pets endpoint.",
+                "vector": [0.2] * 1536,
+            }],
+        )
+
+        state: WorkflowState = {
+            "project_id": str(project_id),
+            "workflow_run_id": str(uuid.uuid4()),
+            "target_languages": ["python"],
+            "normalized_spec": {
+                "title": "Petstore",
+                "base_url": "https://api.example.com",
+                "endpoints": [
+                    {"method": "GET", "path": "/pets", "summary": "List all pets"}
+                ],
+            },
+            "execution_plan": {
+                "phases": [
+                    {
+                        "phase_number": 1,
+                        "name": "Phase 1",
+                        "group_name": "pets",
+                        "endpoints": [{"method": "GET", "path": "/pets"}],
+                    }
+                ]
+            },
+            "generated_files": [],
+        }
+
+        captured_user_prompts = []
+
+        async def fake_generate_json(system_prompt: str, user_prompt: str, **kwargs):
+            captured_user_prompts.append(user_prompt)
+            return {"client.py": "# client code"}, 10
+
+        async def fake_embedding(text: str) -> list[float]:
+            return [0.2] * 1536
+
+        client = LLMClient()
+        monkeypatch.setattr(client, "generate_json", fake_generate_json)
+        monkeypatch.setattr(client, "generate_embedding", fake_embedding)
+
+        res = await run_code_agent(
+            state,
+            phase_number=1,
+            llm_client=client,
+            qdrant_client=fake_qdrant,
+        )
+        assert res.get("status") != "failed"
+        # Assert that prompt contained the RAG documentation chunk
+        assert any("Rate limits: 100 requests per minute" in p for p in captured_user_prompts)

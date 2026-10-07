@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.logging import get_logger
+from app.services.qdrant_service import QdrantClient
 from app.services.storage_service import storage_service
 from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.source_safety import (
@@ -313,7 +314,15 @@ def _build_endpoint_group(
     if phase is None:
         return spec
 
-    phase_endpoints = set(phase.get("endpoints", []))
+    phase_endpoints = set()
+    for item in phase.get("endpoints", []):
+        if isinstance(item, str):
+            phase_endpoints.add(item.strip())
+        elif isinstance(item, dict):
+            m = str(item.get("method", "")).upper()
+            p = str(item.get("path", "")).strip()
+            phase_endpoints.add(f"{m} {p}")
+
     filtered_endpoints = [
         ep for ep in spec.get("endpoints", [])
         if f"{ep.get('method', '').upper()} {ep.get('path', '')}" in phase_endpoints
@@ -449,6 +458,7 @@ async def run_code_agent(
     failure_diagnosis: dict[str, Any] | None = None,
     target_file: str | None = None,
     llm_client: LLMClient | None = None,
+    qdrant_client: QdrantClient | None = None,
 ) -> dict[str, Any]:
     """Execution node for the Code Generator Agent.
 
@@ -556,6 +566,21 @@ async def run_code_agent(
         user_prompt = fence_untrusted(
             "FAILURE DIAGNOSIS", json.dumps(failure_diagnosis, indent=2)
         )
+
+        if qdrant_client is not None and state.get("project_id"):
+            try:
+                query_text = f"Failure: {failure_diagnosis.get('method')} {failure_diagnosis.get('path')} {failure_diagnosis.get('error')}"
+                query_vec = await client.generate_embedding(query_text)
+                scored_chunks = await qdrant_client.search(
+                    project_id=uuid.UUID(str(state["project_id"])),
+                    query_vector=query_vec,
+                    limit=3,
+                )
+                if scored_chunks:
+                    rag_doc = "\n---\n".join(c.text for c in scored_chunks if c.text)
+                    user_prompt += f"\n{fence_untrusted('RELEVANT DOCUMENTATION', rag_doc)}"
+            except Exception as e:
+                logger.debug("code_agent_repair_rag_search_failed", error=str(e))
 
         repair_json, tokens = await client.generate_json(
             system_prompt=repair_prompt,
@@ -695,6 +720,24 @@ async def run_code_agent(
             ),
         )
 
+        rag_context = ""
+        if qdrant_client is not None and state.get("project_id"):
+            try:
+                query_text = f"API endpoints for {language}: " + ", ".join(
+                    f"{e.get('method')} {e.get('path')} {e.get('summary', '')}"
+                    for e in endpoint_group.get("endpoints", [])[:5]
+                )
+                query_vec = await client.generate_embedding(query_text)
+                scored_chunks = await qdrant_client.search(
+                    project_id=uuid.UUID(str(state["project_id"])),
+                    query_vector=query_vec,
+                    limit=3,
+                )
+                if scored_chunks:
+                    rag_context = "\n---\n".join(c.text for c in scored_chunks if c.text)
+            except Exception as e:
+                logger.debug("code_agent_rag_search_failed", error=str(e))
+
         endpoint_list = json.dumps(
             [f'{e.get("method")} {e.get("path")}' for e in endpoint_group.get("endpoints", [])],
             indent=2,
@@ -706,6 +749,8 @@ async def run_code_agent(
             f"{fence_untrusted('PHASE NAME', phase_label)}\n"
             f"Endpoints:\n{fence_untrusted('ENDPOINT LIST', endpoint_list)}"
         )
+        if rag_context:
+            user_prompt += f"\n{fence_untrusted('RELEVANT DOCUMENTATION', rag_context)}"
 
         llm_files, tokens = await client.generate_json(
             system_prompt=llm_prompt,
