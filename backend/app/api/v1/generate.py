@@ -122,7 +122,7 @@ async def list_generated_files(
             file_path=gf.file_path,
             language=gf.language,
             file_type=gf.file_type,
-            size_bytes=0,
+            size_bytes=getattr(gf, "size_bytes", 0) or 0,
             created_at=created_at.isoformat() if created_at else None,
             code_generation_run_id=gf.code_generation_run_id,
         )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, String
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, UUIDPrimaryKeyMixin
@@ -45,5 +45,6 @@ class GeneratedFile(UUIDPrimaryKeyMixin, Base):
     content_s3_key: Mapped[str] = mapped_column(String(1000), nullable=False)
     language: Mapped[str | None] = mapped_column(String(20), nullable=True)
     file_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
 
     code_generation_run: Mapped[CodeGenerationRun] = relationship(back_populates="files")

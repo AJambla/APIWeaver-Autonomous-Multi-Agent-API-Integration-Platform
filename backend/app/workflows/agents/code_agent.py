@@ -6,7 +6,9 @@ Supports chunked generation, cross-chunk consistency, and targeted self-healing 
 
 from __future__ import annotations
 
+import ast
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,101 @@ from app.workflows.source_safety import (
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
+
+
+def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -> str:
+    """Merge new Python code into existing code via AST, preserving all methods and models."""
+    if not existing_code.strip():
+        return new_code
+    if not new_code.strip():
+        return existing_code
+
+    try:
+        tree_orig = ast.parse(existing_code)
+        tree_new = ast.parse(new_code)
+    except Exception:
+        return new_code or existing_code
+
+    try:
+        # Merge imports
+        existing_import_sigs = {
+            ast.dump(n) for n in tree_orig.body if isinstance(n, (ast.Import, ast.ImportFrom))
+        }
+        new_imports = [
+            n for n in tree_new.body
+            if isinstance(n, (ast.Import, ast.ImportFrom)) and ast.dump(n) not in existing_import_sigs
+        ]
+        insert_idx = 0
+        for i, node in enumerate(tree_orig.body):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                insert_idx = i + 1
+        for ni in reversed(new_imports):
+            tree_orig.body.insert(insert_idx, ni)
+
+        orig_classes = {
+            node.name: node for node in tree_orig.body if isinstance(node, ast.ClassDef)
+        }
+
+        for node in tree_new.body:
+            if isinstance(node, ast.ClassDef):
+                if node.name in orig_classes:
+                    target_cls = orig_classes[node.name]
+                    target_methods = {
+                        m.name: idx
+                        for idx, m in enumerate(target_cls.body)
+                        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    }
+                    for member in node.body:
+                        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            if member.name in target_methods:
+                                target_cls.body[target_methods[member.name]] = member
+                            else:
+                                target_cls.body.append(member)
+                else:
+                    tree_orig.body.append(node)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                orig_funcs = {
+                    fn.name: idx
+                    for idx, fn in enumerate(tree_orig.body)
+                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                }
+                if node.name in orig_funcs:
+                    tree_orig.body[orig_funcs[node.name]] = node
+                else:
+                    tree_orig.body.append(node)
+
+        return ast.unparse(tree_orig)
+    except Exception as exc:
+        logger.warning("python_ast_merge_failed", file_path=file_path, error=str(exc))
+        return new_code or existing_code
+
+
+def _merge_ts_code(existing_code: str, new_code: str, file_path: str = "") -> str:
+    """Merge TypeScript code, injecting new methods into the client class."""
+    if not existing_code.strip():
+        return new_code
+    if not new_code.strip():
+        return existing_code
+
+    if "class " in existing_code and "class " in new_code:
+        new_methods = re.findall(
+            r'(async\s+[a-zA-Z0-9_]+\([^)]*\)[\s\S]*?^  \})', new_code, re.MULTILINE
+        )
+        if new_methods:
+            added = []
+            for m in new_methods:
+                m_match = re.search(r'async\s+([a-zA-Z0-9_]+)', m)
+                if m_match:
+                    mname = m_match.group(1)
+                    if f"{mname}(" not in existing_code:
+                        added.append(m)
+            if added:
+                last_brace = existing_code.rfind("}")
+                if last_brace != -1:
+                    injection = "\n\n  " + "\n\n  ".join(added) + "\n"
+                    return existing_code[:last_brace] + injection + existing_code[last_brace:]
+
+    return new_code or existing_code
 
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 
@@ -146,9 +243,10 @@ async def _run_self_review(
     for f in generated_files:
         try:
             content = await storage_service.download(f["content_s3_key"])
-            file_contents[f["file_path"]] = content.decode()
+            key = f"{f.get('language') or 'sdk'}/{f['file_path']}"
+            file_contents[key] = content.decode()
         except Exception as e:
-            logger.warning("self_review_download_failed", file=f["file_path"], error=str(e))
+            logger.warning("self_review_download_failed", file=f.get("file_path"), error=str(e))
 
     if not file_contents:
         return {"self_review_passed": True, "self_review_issues": [], "self_review_summary": "No file contents available"}
@@ -289,8 +387,15 @@ async def run_code_agent(
 
     # Handle repair mode
     if failure_diagnosis and target_file:
-        # Find the file to repair
-        file_meta = next((f for f in generated_files if isinstance(f, dict) and f.get("file_path") == target_file), None)
+        # Find the file to repair, matching language for the target file
+        file_meta = next(
+            (
+                f for f in generated_files
+                if isinstance(f, dict) and f.get("file_path") == target_file
+                and (f.get("language") == "python" if target_file.endswith(".py") else True)
+            ),
+            None,
+        )
         if not file_meta:
             return {
                 "current_node": "code_agent",
@@ -349,13 +454,20 @@ async def run_code_agent(
 
         # Upload corrected file to S3
         s3_key = f"generated/{state['project_id']}/{uuid.uuid4()}/{target_file}"
-        await storage_service.upload(s3_key, corrected_content.encode())
+        encoded_b = corrected_content.encode("utf-8")
+        await storage_service.upload(s3_key, encoded_b)
 
         # Update file metadata
+        target_lang = file_meta.get("language")
         for f in new_generated_files:
-            if isinstance(f, dict) and f.get("file_path") == target_file:
+            if (
+                isinstance(f, dict)
+                and f.get("file_path") == target_file
+                and (not target_lang or f.get("language") == target_lang)
+            ):
                 f["content_s3_key"] = s3_key
                 f["repair_diagnosis"] = diagnosis
+                f["size_bytes"] = len(encoded_b)
                 break
 
         return {
@@ -375,7 +487,8 @@ async def run_code_agent(
                 continue
             try:
                 content = await storage_service.download(f["content_s3_key"])
-                all_files[f["file_path"]] = content.decode()
+                key = f"{f.get('language') or 'sdk'}/{f['file_path']}"
+                all_files[key] = content.decode()
             except Exception as e:
                 logger.warning("consistency_download_failed", file=f.get("file_path"), error=str(e))
 
@@ -393,13 +506,16 @@ async def run_code_agent(
             total_tokens += tokens
 
             # Apply consistency fixes
-            for file_path, corrected_content in consistency_json.items():
+            for file_key, corrected_content in consistency_json.items():
                 if corrected_content:
-                    s3_key = f"generated/{state['project_id']}/{uuid.uuid4()}/{file_path}"
-                    await storage_service.upload(s3_key, corrected_content.encode())
+                    pure_path = file_key.split("/", 1)[-1] if "/" in file_key else file_key
+                    s3_key = f"generated/{state['project_id']}/{uuid.uuid4()}/{pure_path}"
+                    encoded_b = corrected_content.encode("utf-8")
+                    await storage_service.upload(s3_key, encoded_b)
                     for f in new_generated_files:
-                        if isinstance(f, dict) and f.get("file_path") == file_path:
+                        if isinstance(f, dict) and f.get("file_path") == pure_path:
                             f["content_s3_key"] = s3_key
+                            f["size_bytes"] = len(encoded_b)
                             break
 
         return {
@@ -442,8 +558,38 @@ async def run_code_agent(
         )
         total_tokens += tokens
 
-        # Merge template and LLM output (LLM takes precedence for overlapping files)
-        all_files = {**template_files, **llm_files}
+        # Collect existing files for this language (from earlier phases)
+        existing_lang_files: dict[str, str] = {}
+        for f in new_generated_files:
+            if f.get("language") == language and f.get("file_path") and f.get("content_s3_key"):
+                try:
+                    raw_b = await storage_service.download(f["content_s3_key"])
+                    existing_lang_files[f["file_path"]] = (
+                        raw_b.decode("utf-8") if isinstance(raw_b, bytes) else str(raw_b)
+                    )
+                except Exception:
+                    pass
+
+        # Smart merge: start with existing files or template files
+        all_files: dict[str, str] = dict(existing_lang_files)
+        for fp, tmpl_content in template_files.items():
+            if fp not in all_files:
+                all_files[fp] = tmpl_content
+            elif fp.endswith(".py"):
+                all_files[fp] = _merge_python_code(all_files[fp], tmpl_content, fp)
+            elif fp.endswith(".ts"):
+                all_files[fp] = _merge_ts_code(all_files[fp], tmpl_content, fp)
+
+        # Merge LLM-generated files
+        for fp, llm_content in llm_files.items():
+            if fp not in all_files:
+                all_files[fp] = llm_content
+            elif fp.endswith(".py"):
+                all_files[fp] = _merge_python_code(all_files[fp], llm_content, fp)
+            elif fp.endswith(".ts"):
+                all_files[fp] = _merge_ts_code(all_files[fp], llm_content, fp)
+            else:
+                all_files[fp] = llm_content
 
         # Upload to S3 and record metadata
         for file_path, content in all_files.items():
@@ -466,14 +612,17 @@ async def run_code_agent(
             else:
                 file_type = "sdk"
 
+            encoded_b = content.encode("utf-8") if isinstance(content, str) else content
+            size_bytes = len(encoded_b)
             s3_key = f"generated/{state['project_id']}/{uuid.uuid4()}/{file_path}"
-            await storage_service.upload(s3_key, content.encode())
+            await storage_service.upload(s3_key, encoded_b)
 
             entry = {
                 "file_path": file_path,
                 "content_s3_key": s3_key,
                 "language": language,
                 "file_type": file_type,
+                "size_bytes": size_bytes,
                 "phase_number": current_phase.get("phase_number") if current_phase else None,
             }
             existing_idx = next(

@@ -370,6 +370,20 @@ const thoughtColor = (level: string) => {
   return 'text-neutral-200';
 };
 
+const formatExportType = (type: string) => {
+  const map: Record<string, string> = {
+    sdk: 'SDK',
+    mcp: 'MCP',
+    cicd: 'CI/CD',
+    client: 'Client',
+    docker: 'Docker',
+    docs: 'Docs',
+    fastapi: 'FastAPI',
+    github: 'GitHub',
+  };
+  return map[type.toLowerCase()] || type.toUpperCase();
+};
+
 /* Main page ------------------------------------------------------------------- */
 
 export const ProjectWorkspace: React.FC = () => {
@@ -880,7 +894,7 @@ export const ProjectWorkspace: React.FC = () => {
   /* --- export actions --- */
 
   const triggerExport = async (exportType: string) => {
-    if (!id) return;
+    if (!id || exportBusy !== null) return;
     setExportBusy(exportType);
     setExportError('');
     setExportNote('');
@@ -1920,10 +1934,10 @@ export const ProjectWorkspace: React.FC = () => {
                   <button
                     onClick={() => triggerExport(target.type)}
                     disabled={exportBusy !== null}
-                    className={`${btnGhost} h-9 px-4 text-xs`}
+                    className={`${btnGhost} h-9 px-4 text-xs disabled:opacity-40 disabled:cursor-not-allowed`}
                   >
                     {exportBusy === target.type ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Boxes className="h-3.5 w-3.5" />}
-                    Generate
+                    {exportBusy === target.type ? 'Generating...' : 'Generate'}
                   </button>
                 </div>
               ))}
@@ -1959,7 +1973,7 @@ export const ProjectWorkspace: React.FC = () => {
                   <tbody>
                     {exports.map(row => (
                       <tr key={row.id} className="border-b border-white/5 hover:bg-white/[0.02]">
-                        <Td><span className="font-mono text-xs capitalize">{row.export_type}</span></Td>
+                        <Td><span className="font-mono text-xs">{formatExportType(row.export_type)}</span></Td>
                         <Td><StatusBadge status={row.status} /></Td>
                         <Td><span className="text-xs text-neutral-500">{relativeTime(row.created_at)}</span></Td>
                         <Td>

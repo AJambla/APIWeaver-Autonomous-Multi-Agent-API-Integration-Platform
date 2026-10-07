@@ -73,6 +73,7 @@ class Endpoint(UUIDPrimaryKeyMixin, Base):
     )
     method: Mapped[str] = mapped_column(String(10), nullable=False)
     path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    operation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     request_schema: Mapped[dict[str, Any] | None] = mapped_column(JSONB(), nullable=True)
     # Keyed by status code (Database.md §3.9).

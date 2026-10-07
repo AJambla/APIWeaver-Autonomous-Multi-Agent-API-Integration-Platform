@@ -95,6 +95,10 @@ async def run_doc_agent(
                     "method": ep.method,
                     "path": ep.path,
                     "summary": ep.summary,
+                    "operation_id": ep.operation_id,
+                    "operationId": ep.operation_id,
+                    "description": ep.description,
+                    "tags": list(ep.tags),
                     "request_schema": ep.request_schema,
                     "response_schemas": ep.response_schemas,
                     "parameters": ep.parameters,
@@ -140,12 +144,25 @@ async def run_doc_agent(
     )
     total_tokens += tokens
 
+    raw_eps = extracted_json.get("endpoints", [])
+    normalized_eps = []
+    for ep in raw_eps:
+        if isinstance(ep, dict):
+            op_id = ep.get("operation_id") or ep.get("operationId")
+            normalized_eps.append({
+                **ep,
+                "operation_id": op_id,
+                "operationId": op_id,
+            })
+        else:
+            normalized_eps.append(ep)
+
     extracted_spec = {
         "format": DocumentFormat.MARKDOWN,
         "title": extracted_json.get("title", "Extracted API"),
         "base_url": extracted_json.get("base_url"),
         "confidence_score": float(extracted_json.get("confidence_score", 0.8)),
-        "endpoints": extracted_json.get("endpoints", []),
+        "endpoints": normalized_eps,
         "raw_normalized": extracted_json,
     }
 

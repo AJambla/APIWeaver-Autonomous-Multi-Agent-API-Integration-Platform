@@ -59,24 +59,35 @@ async def load_normalized_spec(
         )
         db_endpoints = (await session.execute(endpoints_stmt)).scalars().all()
         if db_endpoints:
+            raw_by_key = {
+                (str(ep.get("method", "")).upper(), ep.get("path", "")): ep
+                for ep in raw_eps
+                if isinstance(ep, dict)
+            }
             hydrated = []
             for db_ep in db_endpoints:
+                m = str(db_ep.method).upper()
+                p = db_ep.path
+                matched_raw = raw_by_key.get((m, p), {})
+                op_id = getattr(db_ep, "operation_id", None) or matched_raw.get("operation_id") or matched_raw.get("operationId")
                 hydrated.append({
                     "id": str(db_ep.id),
-                    "method": str(db_ep.method).upper(),
-                    "path": db_ep.path,
-                    "summary": db_ep.summary,
-                    "request_schema": db_ep.request_schema,
-                    "response_schemas": db_ep.response_schemas,
+                    "method": m,
+                    "path": p,
+                    "operation_id": op_id,
+                    "operationId": op_id,
+                    "summary": db_ep.summary or matched_raw.get("summary"),
+                    "request_schema": db_ep.request_schema if db_ep.request_schema is not None else matched_raw.get("request_schema"),
+                    "response_schemas": db_ep.response_schemas if db_ep.response_schemas else matched_raw.get("response_schemas", {}),
                     "parameters": [
                         {
-                            "name": p.name,
-                            "location": p.location,
-                            "type": p.type,
-                            "required": p.required,
+                            "name": param.name,
+                            "location": param.location,
+                            "type": param.type,
+                            "required": param.required,
                         }
-                        for p in db_ep.parameters
-                    ],
+                        for param in db_ep.parameters
+                    ] if db_ep.parameters else matched_raw.get("parameters", []),
                 })
             raw["endpoints"] = hydrated
     return raw
