@@ -6,7 +6,9 @@ the self-healing repair loop (max 3 attempts per failing test).
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import inspect
 import json
 import re
 import sys
@@ -111,6 +113,7 @@ class MockSandboxClient:
 
     def _get_client_class(self) -> type | None:
         """Find and return the generated client class."""
+        classes = []
         for file_meta in (self.generated_files if isinstance(self.generated_files, list) else []):
             if not isinstance(file_meta, dict):
                 continue
@@ -122,10 +125,12 @@ class MockSandboxClient:
                     for attr_name in dir(module):
                         attr = getattr(module, attr_name)
                         if isinstance(attr, type) and "Client" in attr_name:
-                            return attr
+                            if "Echo" in attr_name or "Mock" in attr_name or "sandbox" in fp.lower():
+                                return attr
+                            classes.append(attr)
                 except Exception as e:
                     logger.warning("client_class_load_failed", module=module_name, error=str(e))
-        return None
+        return classes[0] if classes else None
 
     async def execute_test(self, endpoint: dict[str, Any], fixture: dict[str, Any]) -> dict[str, Any]:
         """Execute a single test against the mock sandbox."""
@@ -175,35 +180,88 @@ class MockSandboxClient:
             body = request_data.get("body")
 
             # Call the appropriate method
-            op_id = endpoint.get("operationId", path.replace("/", "_").replace("{", "").replace("}", "").replace("-", "_"))
+            op_id = (
+                endpoint.get("operationId")
+                or endpoint.get("operation_id")
+                or path.replace("/", "_").replace("{", "").replace("}", "").replace("-", "_")
+            )
             method_func = getattr(client, op_id, None)
+            if not method_func:
+                snake = re.sub(r'(?<!^)(?=[A-Z])', '_', op_id).lower()
+                if hasattr(client, snake):
+                    method_func = getattr(client, snake)
+                else:
+                    for attr_name in dir(client):
+                        if not attr_name.startswith('_') and attr_name.lower().replace('_', '') == op_id.lower().replace('_', ''):
+                            method_func = getattr(client, attr_name)
+                            break
 
             if not method_func:
                 result["status"] = "failed"
                 result["error"] = f"Method {op_id} not found on client"
                 return result
 
+            # Signature-safe argument binding
+            sig = inspect.signature(method_func)
+            call_kwargs = {}
+            params_normalized = {k: v for k, v in params.items()}
+            params_normalized.update({k.lower().replace("_", "").replace("-", ""): v for k, v in params.items()})
+
+            for p_name, p in sig.parameters.items():
+                if p.kind == inspect.Parameter.VAR_KEYWORD:
+                    call_kwargs.update(params)
+                    break
+                if p_name in params:
+                    call_kwargs[p_name] = params[p_name]
+                else:
+                    p_norm = p_name.lower().replace("_", "").replace("-", "")
+                    if p_norm in params_normalized:
+                        call_kwargs[p_name] = params_normalized[p_norm]
+
+            if "body" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                if body is not None:
+                    call_kwargs["body"] = body
+
             # Execute with timing
             import time
             start = time.perf_counter()
-            response = await method_func(**params, body=body)
+            if asyncio.iscoroutinefunction(method_func):
+                response = await method_func(**call_kwargs)
+            else:
+                response = method_func(**call_kwargs)
+                if asyncio.iscoroutine(response):
+                    response = await response
             result["latency_ms"] = int((time.perf_counter() - start) * 1000)
 
             # Capture response
-            result["status_code"] = response.status_code
+            status_code = getattr(response, "status_code", 200)
+            result["status_code"] = status_code
             result["response_snapshot"] = {
-                "status_code": response.status_code,
-                "headers": dict(response.headers),
-                "body": response.json() if hasattr(response, "json") else response.text,
+                "status_code": status_code,
+                "headers": dict(getattr(response, "headers", {})),
+                "body": response.json() if hasattr(response, "json") else getattr(response, "text", None),
             }
 
             # Validate response
             expected_status = fixture.get("expected_status", 200)
-            if response.status_code != expected_status:
+            is_success_code = 200 <= status_code < 300
+            expected_is_2xx = isinstance(expected_status, int) and 200 <= expected_status < 300
+            if expected_is_2xx:
+                if not is_success_code:
+                    result["status"] = "failed"
+                    result["error"] = f"Expected 2xx status, got {status_code}"
+            elif status_code != expected_status:
                 result["status"] = "failed"
-                result["error"] = f"Expected status {expected_status}, got {response.status_code}"
+                result["error"] = f"Expected status {expected_status}, got {status_code}"
 
-            await client.close()
+            close_fn = getattr(client, "close", None)
+            if close_fn:
+                if asyncio.iscoroutinefunction(close_fn):
+                    await close_fn()
+                else:
+                    res = close_fn()
+                    if asyncio.iscoroutine(res):
+                        await res
 
         except Exception as e:
             result["status"] = "failed"
@@ -375,12 +433,30 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
     if isinstance(req_schema, dict) and req_schema:
         body = _mock_schema(req_schema)
 
+    expected_status = 200
+    method = str(ep.get("method") or "GET").upper()
+    if method == "POST":
+        expected_status = 201
+    elif method == "DELETE":
+        expected_status = 204
+
+    resp_schemas = ep.get("response_schemas")
+    if isinstance(resp_schemas, dict):
+        for code_str in resp_schemas.keys():
+            try:
+                code_int = int(code_str)
+                if 200 <= code_int < 300:
+                    expected_status = code_int
+                    break
+            except (ValueError, TypeError):
+                pass
+
     return {
         "request": {
             "params": params,
             "body": body,
         },
-        "expected_status": 200,
+        "expected_status": expected_status,
         "is_fallback": True,
     }
 
@@ -518,7 +594,13 @@ async def _create_sandbox(
                 "sandbox_file_download_failed", file=file_meta.get("file_path"), error=str(e)
             )
 
+    network_enabled = (
+        state.get("environment") == "live"
+        or getattr(settings, "sandbox_network_enabled", False)
+    )
     executor = DockerSandboxExecutor(settings)
+    if hasattr(executor, "_network_enabled"):
+        executor._network_enabled = network_enabled
     await executor.load(
         project_id=state.get("project_id"),
         files=files,
@@ -603,7 +685,7 @@ async def run_test_agent(
         # Generate test fixtures defensively
         if on_activity:
             try:
-                await on_activity("fixtures", "Generating mock request payloads and endpoint test fixtures...", None, None)
+                await on_activity("fixtures", "Generating test fixtures and request payloads...", None, None)
             except Exception:
                 pass
         fixtures = await generate_test_fixtures(spec, client)

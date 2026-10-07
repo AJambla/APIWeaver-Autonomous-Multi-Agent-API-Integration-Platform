@@ -103,6 +103,7 @@ async def trigger_test(
         "project_id": str(project.id),
         "organization_id": str(project.organization_id),
         "workflow_run_id": str(run.id),
+        "environment": env,
         "stages": ["test"],
         "target_languages": ["python", "node"],
         "normalized_spec": normalized_spec,

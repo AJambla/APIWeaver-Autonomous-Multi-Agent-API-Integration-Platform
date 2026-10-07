@@ -169,7 +169,7 @@ class {{ title.replace(' ', '').replace('-', '') }}Client:
         {% endif %}
         {% endfor %}
         {% if ep.get('request_schema') %}
-        , body: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request = None
+        body: Optional[{{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request] = None,
         {% endif %}
     ) -> httpx.Response:
         """{{ summary }}."""
@@ -209,9 +209,9 @@ async def {{ op_id }}(
     {% endif %}
     {% endfor %}
     {% if ep.get('request_schema') %}
-    , body: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request = None
+    body: Optional[{{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request] = None,
     {% endif %}
-    *, client: Optional[{{ title.replace(' ', '').replace('-', '') }}Client] = None
+    *, client: Optional[{{ title.replace(' ', '').replace('-', '') }}Client] = None,
 ) -> httpx.Response:
     """{{ ep.summary or ep.path }}."""
     async with (client or {{ title.replace(' ', '').replace('-', '') }}Client()) as c:

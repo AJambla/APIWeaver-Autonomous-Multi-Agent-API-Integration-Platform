@@ -292,6 +292,13 @@ async def _main() -> int:
     params = request.get("params") or {}
     body = request.get("body")
 
+    params_normalized = {}
+    for k, v in params.items():
+        params_normalized[k] = v
+        params_normalized[k.lower().replace("_", "").replace("-", "")] = v
+        k_snake = re.sub(r'(?<!^)(?=[A-Z])', '_', k).lower()
+        params_normalized[k_snake] = v
+
     started = time.perf_counter()
     sig = inspect.signature(operation)
     call_kwargs = {}
@@ -301,9 +308,21 @@ async def _main() -> int:
             break
         if p_name in params:
             call_kwargs[p_name] = params[p_name]
+        else:
+            p_norm = p_name.lower().replace("_", "").replace("-", "")
+            if p_norm in params_normalized:
+                call_kwargs[p_name] = params_normalized[p_norm]
+            elif p_name in params_normalized:
+                call_kwargs[p_name] = params_normalized[p_name]
+
     if "body" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
         if body is not None:
             call_kwargs["body"] = body
+    else:
+        for body_param in ("payload", "data", "request"):
+            if body_param in sig.parameters and body is not None:
+                call_kwargs[body_param] = body
+                break
 
     if asyncio.iscoroutinefunction(operation):
         response = await operation(**call_kwargs)
@@ -337,9 +356,21 @@ async def _main() -> int:
         result["response_snapshot"] = {"snapshot_error": str(snapshot_error)}
 
     expected_status = payload.get("expected_status")
-    if expected_status is not None and response.status_code != expected_status:
+    status_code = getattr(response, "status_code", None)
+    is_success_code = status_code is not None and 200 <= status_code < 300
+    expected_is_2xx = expected_status is None or (isinstance(expected_status, int) and 200 <= expected_status < 300)
+
+    if expected_status is not None:
+        if expected_is_2xx:
+            if not is_success_code:
+                result["status"] = "failed"
+                result["error"] = f"Expected 2xx status, got {status_code}"
+        elif status_code != expected_status:
+            result["status"] = "failed"
+            result["error"] = f"Expected status {expected_status}, got {status_code}"
+    elif not is_success_code and status_code is not None:
         result["status"] = "failed"
-        result["error"] = f"Expected status {expected_status}, got {response.status_code}"
+        result["error"] = f"HTTP error status {status_code}"
 
     close = getattr(client, "close", None)
     if close is not None:
@@ -468,9 +499,21 @@ async function main() {
     }
 
     const expectedStatus = payload.expected_status;
-    if (expectedStatus && result.status_code !== expectedStatus) {
+    const isSuccess = result.status_code >= 200 && result.status_code < 300;
+    const expectedIs2xx = !expectedStatus || (expectedStatus >= 200 && expectedStatus < 300);
+    if (expectedStatus) {
+        if (expectedIs2xx) {
+            if (!isSuccess) {
+                result.status = "failed";
+                result.error = `Expected 2xx status, got ${result.status_code}`;
+            }
+        } else if (result.status_code !== expectedStatus) {
+            result.status = "failed";
+            result.error = `Expected status ${expectedStatus}, got ${result.status_code}`;
+        }
+    } else if (!isSuccess) {
         result.status = "failed";
-        result.error = `Expected status ${expectedStatus}, got ${result.status_code}`;
+        result.error = `HTTP error status ${result.status_code}`;
     }
 
     if (typeof client.close === "function") {
@@ -553,9 +596,20 @@ class DockerSandboxExecutor:
     Architecture.md §277/§314).
     """
 
-    def __init__(self, settings: Settings, *, docker_client: Any | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        docker_client: Any | None = None,
+        network_enabled: bool | None = None,
+    ) -> None:
         self._settings = settings
         self._docker_client = docker_client
+        self._network_enabled = (
+            network_enabled
+            if network_enabled is not None
+            else settings.sandbox_network_enabled
+        )
         self._workspace: Path | None = None
         self._client_module: str | None = None
         self._client_file: str | None = None
@@ -721,7 +775,7 @@ class DockerSandboxExecutor:
                 pids_limit=self._settings.sandbox_pids_limit,
                 cap_drop=["ALL"],
                 user=_DOCKER_USER,
-                network_disabled=not self._settings.sandbox_network_enabled,
+                network_disabled=not self._network_enabled,
                 read_only=self._settings.sandbox_read_only_rootfs,
                 security_opt=["no-new-privileges:true"],
                 detach=True,

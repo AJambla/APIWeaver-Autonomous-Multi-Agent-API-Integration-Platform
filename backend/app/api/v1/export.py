@@ -140,7 +140,11 @@ async def _execute_export_run(
             if artifact is None:
                 export.status = "failed"
                 continue
-            export.status = "failed" if artifact.get("status") == "failed" else "completed"
+            art_status = artifact.get("status")
+            if art_status in ("failed", "skipped"):
+                export.status = art_status
+            else:
+                export.status = "completed"
             primary_key = None
             if artifact.get("s3_key"):
                 primary_key = artifact.get("s3_key")
@@ -180,10 +184,12 @@ async def export_mcp(
         {"tools_generated": 0, "flagged_destructive": 0, "artifacts": []},
     )
 
+    manifest_s3_key = f"exports/{project.id}/mcp/manifest.json"
     exp = Export(
         project_id=project.id,
         export_type=ExportType.MCP.value,
         status="completed",
+        s3_key=manifest_s3_key,
     )
     session.add(exp)
     await session.commit()
@@ -248,6 +254,9 @@ async def download_export(
         f"exports/{project.id}/{export.export_type}/node/client.ts",
         f"exports/{project.id}/{export.export_type}/Dockerfile",
         f"exports/{project.id}/{export.export_type}/package.json",
+        f"exports/{project.id}/{export.export_type}/manifest.json",
+        f"exports/{project.id}/mcp/manifest.json",
+        f"exports/{project.id}/mcp/mcp_manifest.json",
     ])
 
     content: bytes | None = None
@@ -265,9 +274,36 @@ async def download_export(
         raise NotFoundError(f"No downloadable artifact found for export {export_id}.")
 
     filename = matched_key.split("/")[-1] if matched_key else f"export-{export.export_type}.zip"
-    media_type = "application/zip" if filename.endswith(".zip") else "application/octet-stream"
+    media_type = "application/zip" if filename.endswith(".zip") else ("application/json" if filename.endswith(".json") else "application/octet-stream")
     return Response(
         content=content,
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{id}/exports/mcp/manifest.json")
+async def download_mcp_manifest(
+    id: uuid.UUID,
+    project: Project = Depends(require_project_permission(Permission.EXPORT_READ)),
+    session: AsyncSession = Depends(get_db),
+):
+    """Download the MCP manifest JSON for a project."""
+    from fastapi import Response
+    from app.core.errors import NotFoundError
+    from app.services.storage_service import storage_service
+
+    manifest_key = f"exports/{project.id}/mcp/manifest.json"
+    try:
+        content = await storage_service.download(manifest_key)
+    except Exception:
+        content = None
+
+    if not content:
+        raise NotFoundError("MCP manifest not found. Please generate an MCP export first.")
+
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=manifest.json"},
     )

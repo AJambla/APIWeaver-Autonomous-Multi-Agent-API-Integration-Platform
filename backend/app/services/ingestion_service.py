@@ -130,6 +130,7 @@ async def ingest_document(
                     method=endpoint.method,
                     path=endpoint.path,
                     summary=endpoint.summary,
+                    operation_id=endpoint.operation_id,
                     request_schema=endpoint.request_schema,
                     response_schemas=endpoint.response_schemas,
                     confidence_score=1,
