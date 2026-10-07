@@ -85,6 +85,26 @@ def to_type_name(value: Any, *, fallback: str = "string") -> str:
     return name or fallback
 
 
+# Spec type names come from the uploaded document, but a JSON Schema type is not a
+# TypeScript type: `integer`, `array` and `object` are not valid annotations in that
+# language. `unknown[]` and `Record<string, unknown>` stay open because a normalized
+# parameter carries no item or property types to widen them with.
+_TS_TYPES = {
+    "string": "string",
+    "integer": "number",
+    "number": "number",
+    "boolean": "boolean",
+    "array": "unknown[]",
+    "object": "Record<string, unknown>",
+    "null": "null",
+}
+
+
+def to_ts_type(value: Any) -> str:
+    """Translate a spec type name into a TypeScript type expression."""
+    return _TS_TYPES.get(_as_str(value).strip().lower(), "unknown")
+
+
 def to_literal(value: Any) -> str:
     """A complete string literal (`json.dumps` output is a valid Python and JS literal)."""
     return json.dumps(str(value))
