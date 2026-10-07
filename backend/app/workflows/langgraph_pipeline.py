@@ -301,14 +301,6 @@ def create_apiweaver_graph(
         await _assert_not_cancelled(state)
         check_budget(state)
         await _set_project_status(state, ProjectStatus.PLANNING)
-        # If normalized_spec is already present (e.g. parsed directly from OpenAPI upload),
-        # skip re-normalizing.
-        if state.get("normalized_spec"):
-            return {
-                "progress_percent": 15,
-                "current_node": "doc_agent",
-            }
-
         run_id = state.get("workflow_run_id", "")
         doc_filename = state.get("document_filename", "unspecified_spec")
         terminal_logger.log_start(
@@ -626,6 +618,7 @@ def create_apiweaver_graph(
                     phase_result = await code_agent_module.run_code_agent(
                         {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
                         phase_number=phase_num,
+                        qdrant_client=qdrant_client,
                     )
 
                 for nf in phase_result.get("generated_files", []):
@@ -958,6 +951,7 @@ def create_apiweaver_graph(
                 {**state, "generated_files": repaired_files, "total_tokens_used": total_tokens},
                 failure_diagnosis=failure_diagnosis,
                 target_file=target_file_path,
+                qdrant_client=qdrant_client,
             )
 
             if repair_result.get("generated_files"):
