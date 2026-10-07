@@ -15,12 +15,15 @@ class WorkflowState(TypedDict, total=False):
     workflow_run_id: str
     stages: list[str]
     target_languages: list[str]
+    environment: str | None
 
     # Input artifacts
     document_id: str | None
     raw_document_bytes: bytes | None
     document_filename: str | None
     format_hint: str | None
+    spec_persisted: bool | None
+    endpoints_discovered: int | None
 
     # Agent intermediate outputs
     normalized_spec: dict[str, Any] | None
@@ -38,6 +41,10 @@ class WorkflowState(TypedDict, total=False):
     # Export stage
     export_types: list[str] | None
     exports: list[dict[str, Any]]
+    github_repo_name: str | None
+    github_org: str | None
+    github_private: bool | None
+    github_branch: str | None
 
     # Pipeline tracking
     current_node: str
