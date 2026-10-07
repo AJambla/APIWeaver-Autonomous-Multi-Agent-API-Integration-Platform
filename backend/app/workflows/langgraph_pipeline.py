@@ -181,6 +181,51 @@ def create_apiweaver_graph(
         except Exception as exc:
             logger.warning("langgraph_event_record_failed", error=str(exc))
 
+    async def _emit_thought(
+        state: WorkflowState,
+        agent_name: str,
+        message: str,
+        *,
+        level: str = "info",
+        action: str | None = None,
+        step: int | None = None,
+        total_steps: int | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Stream real-time thought/sub-step to SSE, terminal logger, and AgentEvent table."""
+        run_id = str(state.get("workflow_run_id") or "")
+        project_id = str(state.get("project_id") or "")
+        terminal_logger.log_thought(agent_name, run_id, message, action=action)
+        if event_publisher and run_id:
+            try:
+                await event_publisher.publish_agent_thought(
+                    run_id=run_id,
+                    project_id=project_id or None,
+                    agent_name=agent_name,
+                    message=message,
+                    level=level,
+                    action=action,
+                    step=step,
+                    total_steps=total_steps,
+                    extra=extra,
+                )
+            except Exception as pub_err:
+                logger.warning("thought_publish_failed", error=str(pub_err))
+
+        await _record_event(
+            state,
+            agent_name=agent_name,
+            event_type="agent_thought",
+            payload={
+                "message": message,
+                "level": level,
+                "action": action,
+                "step": step,
+                "total_steps": total_steps,
+                **(extra or {}),
+            },
+        )
+
     async def _save_checkpoint(state: WorkflowState, node_name: str) -> None:
         """Persist intermediate state snapshot checkpoint to PostgreSQL."""
         if session_factory is None or not state.get("workflow_run_id"):
@@ -231,12 +276,14 @@ def create_apiweaver_graph(
             run_id,
             details=f"Document: '{doc_filename}' | Parsing & Normalizing API Specification",
         )
+        await _emit_thought(state, "doc_agent", f"Parsing and normalizing API specification '{doc_filename}'...", action="doc_parsing")
 
         tokens_before = state.get("total_tokens_used", 0)
         try:
             doc_updates = await run_doc_agent(state, qdrant_client=qdrant_client)
         except Exception as exc:
             terminal_logger.log_failure("doc_agent", run_id, exc)
+            await _emit_thought(state, "doc_agent", f"Failed to normalize document: {exc}", level="error", action="doc_failed")
             raise
 
         tokens_after = doc_updates.get("total_tokens_used", tokens_before)
@@ -258,6 +305,7 @@ def create_apiweaver_graph(
             tokens_after=tokens_after,
             details=f"Normalized API Spec '{spec.get('title', 'API')}' with {len(endpoints)} endpoints",
         )
+        await _emit_thought(state, "doc_agent", f"Normalized API specification '{spec.get('title', 'API')}' with {len(endpoints)} endpoints.", level="success", action="doc_normalized")
 
         updates: dict[str, Any] = {
             **doc_updates,
@@ -371,12 +419,14 @@ def create_apiweaver_graph(
             run_id,
             details=f"Analyzing {len(endpoints)} endpoints for topological DAG ordering & dependency clustering",
         )
+        await _emit_thought(state, "planner_agent", f"Analyzing {len(endpoints)} endpoints for topological DAG ordering & dependency clustering...", action="graph_clustering")
 
         tokens_before = state.get("total_tokens_used", 0)
         try:
             planner_updates = await run_planner_agent(state)
         except Exception as exc:
             terminal_logger.log_failure("planner_agent", run_id, exc)
+            await _emit_thought(state, "planner_agent", f"Planning failed: {exc}", level="error", action="plan_failed")
             raise
 
         tokens_after = planner_updates.get("total_tokens_used", tokens_before)
@@ -399,6 +449,7 @@ def create_apiweaver_graph(
             tokens_after=tokens_after,
             details=f"Synthesized execution plan with {len(phases)} phase(s) and {len(nodes)} DAG node(s)",
         )
+        await _emit_thought(state, "planner_agent", f"Plan generated: {len(phases)} execution phase(s) and {len(nodes)} DAG node(s) mapped.", level="success", action="plan_ready")
 
         updates: dict[str, Any] = {
             **planner_updates,
@@ -464,6 +515,7 @@ def create_apiweaver_graph(
             run_id,
             reason=reason,
         )
+        await _emit_thought(state, "approval_gate", reason, level="warn", action="approval_hold")
 
         updates: dict[str, Any] = {
             "status": WorkflowStatus.PAUSED_FOR_APPROVAL,
@@ -496,6 +548,7 @@ def create_apiweaver_graph(
             run_id,
             details=f"Target Languages: {target_langs} across {len(phases)} execution phase(s)",
         )
+        await _emit_thought(state, "code_agent", f"Starting SDK code synthesis for {target_langs} across {len(phases)} execution phases...", action="codegen_start")
 
         tokens_before = state.get("total_tokens_used", 0)
         generated_files = list(state.get("generated_files", []))
@@ -510,6 +563,7 @@ def create_apiweaver_graph(
                     raise RuntimeError(f"token_budget_exceeded: {total_tokens}/{budget}")
 
                 phase_num = phase.get("phase_number")
+                await _emit_thought(state, "code_agent", f"Phase {phase_num}/{len(phases)}: Synthesizing {target_langs} client and models for '{phase.get('group_name', 'endpoints')}'...", action="codegen_phase", step=phase_num, total_steps=len(phases))
                 if execution_mode == "async":
                     from agent_worker.celery_app import app as celery_app
                     result = celery_app.send_task(
@@ -540,11 +594,13 @@ def create_apiweaver_graph(
                     else:
                         generated_files.append(nf)
                 total_tokens = phase_result.get("total_tokens_used", total_tokens)
+                await _emit_thought(state, "code_agent", f"Phase {phase_num}/{len(phases)} complete ({len(generated_files)} cumulative file(s) generated).", level="success", action="phase_complete", step=phase_num, total_steps=len(phases))
                 if total_tokens >= budget:
                     raise RuntimeError(f"token_budget_exceeded: {total_tokens}/{budget}")
 
             # Consistency pass
             if total_tokens < budget:
+                await _emit_thought(state, "code_agent", "Running multi-file consistency, typing, and import alignment pass...", action="codegen_consistency")
                 if execution_mode == "async":
                     from agent_worker.celery_app import app as celery_app
                     result = celery_app.send_task(
@@ -567,6 +623,7 @@ def create_apiweaver_graph(
                     raise RuntimeError(f"token_budget_exceeded: {total_tokens}/{budget}")
         except Exception as exc:
             terminal_logger.log_failure("code_agent", run_id, exc)
+            await _emit_thought(state, "code_agent", f"Code generation encountered an error: {exc}", level="error", action="codegen_failed")
             raise
 
         if any(f.get("is_fallback") for f in generated_files):
@@ -586,6 +643,7 @@ def create_apiweaver_graph(
             tokens_after=total_tokens,
             details=f"Generated {len(generated_files)} SDK file(s) ({preview_files})",
         )
+        await _emit_thought(state, "code_agent", f"SDK generation complete: {len(generated_files)} source files generated ({preview_files}).", level="success", action="codegen_complete")
 
         updates: dict[str, Any] = {
             "generated_files": generated_files,
@@ -684,10 +742,17 @@ def create_apiweaver_graph(
         )
 
         tokens_before = state.get("total_tokens_used", 0)
+        await _emit_thought(state, "test_agent", f"Preparing sandbox test suite in {backend} environment...", action="test_suite_start")
+
+        async def on_test_activity(action: str, msg: str, step: int | None, total: int | None) -> None:
+            lvl = "success" if "→ PASSED" in msg else ("error" if "→ FAILED" in msg else "info")
+            await _emit_thought(state, "test_agent", msg, level=lvl, action=action, step=step, total_steps=total)
+
         try:
-            test_updates = await run_test_agent(state, session_factory=session_factory)
+            test_updates = await run_test_agent(state, session_factory=session_factory, on_activity=on_test_activity)
         except Exception as exc:
             terminal_logger.log_failure("test_agent", run_id, exc)
+            await _emit_thought(state, "test_agent", f"Sandbox testing failed: {exc}", level="error", action="test_failed")
             raise
 
         tokens_after = test_updates.get("total_tokens_used", tokens_before)
@@ -715,6 +780,13 @@ def create_apiweaver_graph(
             tokens_before=tokens_before,
             tokens_after=tokens_after,
             details=f"Sandbox test run complete: {passed} passed, {failed} failed (duration: {summary.get('duration_ms', 0)}ms)",
+        )
+        await _emit_thought(
+            state,
+            "test_agent",
+            f"Sandbox testing complete: {passed} passed, {failed} failed (duration: {summary.get('duration_ms', 0)}ms).",
+            level="success" if failed == 0 else "warn",
+            action="test_suite_finish",
         )
 
         updates: dict[str, Any] = {
@@ -775,6 +847,7 @@ def create_apiweaver_graph(
             run_id,
             details=f"Self-healing repair attempt #{attempt_number}/3 | Diagnosing failures & repairing client",
         )
+        await _emit_thought(state, "repair_agent", f"Self-healing repair loop triggered (attempt #{attempt_number}/3): diagnosing failures...", level="warn", action="repair_start")
 
         tokens_before = state.get("total_tokens_used", 0)
         repaired_files = list(state.get("generated_files", []))
@@ -856,6 +929,7 @@ def create_apiweaver_graph(
             })
         except Exception as exc:
             terminal_logger.log_failure("repair_agent", run_id, exc)
+            await _emit_thought(state, "repair_agent", f"Repair synthesis failed: {exc}", level="error", action="repair_failed")
             raise
 
         tokens_after = total_tokens
@@ -867,6 +941,7 @@ def create_apiweaver_graph(
             tokens_after=tokens_after,
             details=f"Self-healing repair #{attempt_number}/3 applied to {target_file_path}; re-routing back to test_agent",
         )
+        await _emit_thought(state, "repair_agent", f"Repair #{attempt_number}/3 patch applied to {target_file_path}. Re-testing in sandbox...", level="info", action="repair_applied")
 
         updates: dict[str, Any] = {
             "generated_files": repaired_files,
@@ -915,6 +990,7 @@ def create_apiweaver_graph(
             run_id,
             details="Packaging SDK distribution bundles, wheel/npm archives, and docs",
         )
+        await _emit_thought(state, "export_agent", "Building distribution packages and packaging SDK modules...", action="export_start")
 
         tokens_before = state.get("total_tokens_used", 0)
         try:
@@ -922,6 +998,7 @@ def create_apiweaver_graph(
             export_updates = await export_agent.run(state)
         except Exception as exc:
             terminal_logger.log_failure("export_agent", run_id, exc)
+            await _emit_thought(state, "export_agent", f"Export failed: {exc}", level="error", action="export_failed")
             raise
 
         tokens_after = export_updates.get("total_tokens_used", tokens_before)
@@ -934,6 +1011,7 @@ def create_apiweaver_graph(
             tokens_after=tokens_after,
             details=f"Export packaging complete: {len(artifacts)} distribution artifact(s) published",
         )
+        await _emit_thought(state, "export_agent", f"Export packaging complete: {len(artifacts)} distribution bundle(s) generated.", level="success", action="export_complete")
 
         updates: dict[str, Any] = {
             **export_updates,
@@ -999,6 +1077,7 @@ def create_apiweaver_graph(
             0,
             details=f"LangGraph execution finished with final status: {final_status.value.upper()}",
         )
+        await _emit_thought(state, "orchestrator", f"LangGraph pipeline finished with status: {final_status.value.upper()}.", level="success" if final_status == WorkflowStatus.COMPLETED else "warn", action="workflow_finished")
 
         updates: dict[str, Any] = {
             "status": final_status,

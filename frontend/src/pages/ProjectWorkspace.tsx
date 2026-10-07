@@ -340,6 +340,36 @@ const formatEventTime = (iso: string | null): string => {
   return d.toLocaleTimeString('en-US', { hour12: false });
 };
 
+interface LiveThought {
+  id: string;
+  timestamp: string;
+  agent: string;
+  message: string;
+  level: 'info' | 'success' | 'warn' | 'error';
+  action?: string;
+  step?: number;
+  total_steps?: number;
+}
+
+const agentBadgeColor = (agent: string) => {
+  const a = agent.toLowerCase();
+  if (a.includes('doc')) return 'bg-purple-500/10 text-purple-300 border border-purple-500/20';
+  if (a.includes('plan')) return 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20';
+  if (a.includes('gate') || a.includes('approval')) return 'bg-amber-500/10 text-amber-300 border border-amber-500/20';
+  if (a.includes('code')) return 'bg-blue-500/10 text-blue-300 border border-blue-500/20';
+  if (a.includes('test')) return 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20';
+  if (a.includes('repair')) return 'bg-rose-500/10 text-rose-300 border border-rose-500/20';
+  if (a.includes('export')) return 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20';
+  return 'bg-neutral-800 text-neutral-300 border border-neutral-700';
+};
+
+const thoughtColor = (level: string) => {
+  if (level === 'success') return 'text-emerald-300';
+  if (level === 'error') return 'text-rose-400';
+  if (level === 'warn') return 'text-amber-300';
+  return 'text-neutral-200';
+};
+
 /* Main page ------------------------------------------------------------------- */
 
 export const ProjectWorkspace: React.FC = () => {
@@ -382,6 +412,9 @@ export const ProjectWorkspace: React.FC = () => {
   const [cancelBusy, setCancelBusy] = useState(false);
   const [buildError, setBuildError] = useState('');
   const [targetLanguages, setTargetLanguages] = useState<string[]>(['python', 'node']);
+  const [liveThoughts, setLiveThoughts] = useState<LiveThought[]>([]);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const terminalEndRef = useRef<HTMLDivElement>(null);
 
   /* --- test tab --- */
   const [testEnv, setTestEnv] = useState('sandbox');
@@ -536,6 +569,96 @@ export const ProjectWorkspace: React.FC = () => {
     }, 500);
     return () => clearTimeout(timer);
   }, [runEvents, activeRunId, id]);
+
+  /* Accumulate live thoughts from SSE events */
+  useEffect(() => {
+    if (runEvents.length === 0) return;
+    const newThoughts: LiveThought[] = [];
+    for (const ev of runEvents) {
+      if (ev.event_type === 'agent.thought' && ev.payload && typeof ev.payload === 'object') {
+        const p = ev.payload as Record<string, unknown>;
+        newThoughts.push({
+          id: ev.id,
+          timestamp: (p.timestamp as string) || new Date().toISOString(),
+          agent: (p.agent_name as string) || 'orchestrator',
+          message: (p.message as string) || '',
+          level: (p.level as 'info' | 'success' | 'warn' | 'error') || 'info',
+          action: p.action as string | undefined,
+          step: typeof p.step === 'number' ? p.step : undefined,
+          total_steps: typeof p.total_steps === 'number' ? p.total_steps : undefined,
+        });
+      } else if (ev.event_type === 'workflow.started') {
+        newThoughts.push({
+          id: ev.id,
+          timestamp: new Date().toISOString(),
+          agent: 'orchestrator',
+          message: 'Workflow execution initiated. LangGraph state machine active.',
+          level: 'info',
+          action: 'workflow_started',
+        });
+      } else if (ev.event_type === 'workflow.progress' && ev.payload && typeof ev.payload === 'object') {
+        const p = ev.payload as Record<string, unknown>;
+        if (p.current_node) {
+          newThoughts.push({
+            id: ev.id,
+            timestamp: new Date().toISOString(),
+            agent: String(p.current_node),
+            message: `Entering pipeline stage [${p.current_node}] (${p.progress_percent || 0}%)`,
+            level: 'info',
+            action: 'stage_transition',
+          });
+        }
+      }
+    }
+    if (newThoughts.length > 0) {
+      setLiveThoughts(prev => {
+        const seen = new Set(prev.map(t => t.id));
+        const append = newThoughts.filter(t => !seen.has(t.id));
+        if (append.length === 0) return prev;
+        return [...prev, ...append];
+      });
+    }
+  }, [runEvents]);
+
+  /* Hydrate historical thoughts from project logs if terminal or returning */
+  useEffect(() => {
+    if (logs.length === 0) return;
+    setLiveThoughts(prev => {
+      if (prev.length > 0) return prev;
+      const fromLogs: LiveThought[] = [];
+      const sorted = [...logs].reverse();
+      for (const log of sorted) {
+        const p = log.payload || {};
+        const msg = (p.message as string) || eventMessage(p) || log.event_type;
+        const lvl: 'info' | 'success' | 'warn' | 'error' =
+          log.event_type.includes('fail') || log.event_type.includes('error')
+            ? 'error'
+            : log.event_type.includes('complete') || log.event_type.includes('pass')
+            ? 'success'
+            : log.event_type.includes('pause') || log.event_type.includes('warn')
+            ? 'warn'
+            : ((p.level as 'info' | 'success' | 'warn' | 'error') || 'info');
+        fromLogs.push({
+          id: log.id,
+          timestamp: log.created_at || new Date().toISOString(),
+          agent: log.agent_name || 'orchestrator',
+          message: msg,
+          level: lvl,
+          action: (p.action as string) || log.event_type,
+          step: typeof p.step === 'number' ? p.step : undefined,
+          total_steps: typeof p.total_steps === 'number' ? p.total_steps : undefined,
+        });
+      }
+      return fromLogs;
+    });
+  }, [logs]);
+
+  /* Auto-scroll terminal when new thoughts arrive */
+  useEffect(() => {
+    if (autoScroll && terminalEndRef.current) {
+      terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [liveThoughts, autoScroll]);
 
   /* Resume watching a run that is still in flight when the build tab opens. */
   useEffect(() => {
@@ -910,6 +1033,23 @@ export const ProjectWorkspace: React.FC = () => {
       latest: events[0], // logs arrive newest-first
     }));
   }, [logs]);
+
+  const activeAgentName = useMemo(() => {
+    if (activeRun?.current_node) {
+      const map: Record<string, string> = {
+        doc_agent: 'Specification Normalizer',
+        planner_agent: 'Topological DAG Planner',
+        approval_gate: 'Approval Gate (Human Review)',
+        code_agent: 'SDK Code Generator',
+        test_agent: 'Docker Sandbox Test Runner',
+        repair_agent: 'Self-Healing Repair Agent',
+        export_agent: 'Packaging & Distribution Agent',
+        completed: 'Pipeline Completed',
+      };
+      return map[activeRun.current_node] || activeRun.current_node;
+    }
+    return 'Agent Orchestrator';
+  }, [activeRun?.current_node]);
 
   const agentNames = useMemo(
     () => Array.from(new Set(logs.map(l => l.agent_name || 'System'))).sort(),
@@ -1458,6 +1598,116 @@ export const ProjectWorkspace: React.FC = () => {
                 <div className="mt-1.5 text-right text-[11px] text-neutral-500">{activeRun.progress_percent}%</div>
               </div>
             )}
+
+            {/* Live Agent Activity & Terminal Console */}
+            <div className={`${cardCls} overflow-hidden`}>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-3 bg-white/[0.02]">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-500/10 text-blue-400">
+                    <TerminalIcon className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-medium">Live Agent Activity & Thought Stream</h3>
+                      {runIsLive && (
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          Live Stream
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-neutral-500">
+                      Real-time LangGraph agent thoughts, DAG transitions, and execution telemetry.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {runIsLive && (
+                    <span className="rounded-lg border border-blue-500/20 bg-blue-500/10 px-2.5 py-1 text-xs text-blue-300 font-mono">
+                      Active: {activeAgentName}
+                    </span>
+                  )}
+                  <label className="flex items-center gap-1.5 text-xs text-neutral-400 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={autoScroll}
+                      onChange={e => setAutoScroll(e.target.checked)}
+                      className="rounded border-white/20 bg-white/5 text-blue-500 focus:ring-0"
+                    />
+                    Auto-scroll
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const text = liveThoughts.map(t => `[${formatEventTime(t.timestamp)}] [${t.agent}] ${t.message}`).join('\n');
+                      navigator.clipboard.writeText(text);
+                    }}
+                    disabled={liveThoughts.length === 0}
+                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1 text-xs text-neutral-400 hover:bg-white/5 hover:text-white transition-colors disabled:opacity-40"
+                    title="Copy terminal logs"
+                  >
+                    <Copy className="h-3 w-3" />
+                    Copy
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLiveThoughts([])}
+                    disabled={liveThoughts.length === 0}
+                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-xs text-neutral-500 hover:bg-white/5 hover:text-neutral-300 transition-colors disabled:opacity-40"
+                    title="Clear console"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              {/* Terminal body */}
+              <div className="max-h-[380px] min-h-[160px] overflow-y-auto bg-neutral-950 p-4 font-mono text-xs select-text">
+                {liveThoughts.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-center text-neutral-500">
+                    <TerminalIcon className="h-8 w-8 mb-2 stroke-[1.5] text-neutral-600" />
+                    <p className="text-xs">No active thought stream recorded yet.</p>
+                    <p className="text-[11px] text-neutral-600 mt-1">
+                      Trigger "Run Build Pipeline" above to stream live agent decisions and sandbox telemetry.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {liveThoughts.map(thought => (
+                      <div key={thought.id} className="flex items-start gap-2.5 leading-relaxed hover:bg-white/[0.02] rounded px-1.5 py-0.5 transition-colors">
+                        <span className="shrink-0 text-neutral-500 text-[11px]">
+                          [{formatEventTime(thought.timestamp)}]
+                        </span>
+                        <span className={`shrink-0 rounded px-1.5 py-0.2 text-[10px] font-medium uppercase tracking-wider ${agentBadgeColor(thought.agent)}`}>
+                          {thought.agent.replace(/_/g, ' ')}
+                        </span>
+                        {thought.action && (
+                          <span className="shrink-0 rounded bg-white/5 px-1.5 py-0.2 text-[10px] text-neutral-400">
+                            {thought.action}
+                          </span>
+                        )}
+                        {thought.step !== undefined && thought.total_steps !== undefined && (
+                          <span className="shrink-0 text-neutral-400 text-[11px]">
+                            [{thought.step}/{thought.total_steps}]
+                          </span>
+                        )}
+                        <span className={`min-w-0 flex-1 break-words ${thoughtColor(thought.level)}`}>
+                          {thought.message}
+                        </span>
+                      </div>
+                    ))}
+                    {runIsLive && (
+                      <div className="flex items-center gap-2 pt-1 text-blue-400/80 animate-pulse">
+                        <span className="inline-block h-2 w-2 rounded-full bg-blue-400" />
+                        <span className="text-neutral-400">[{activeAgentName}] executing stage...</span>
+                      </div>
+                    )}
+                    <div ref={terminalEndRef} />
+                  </div>
+                )}
+              </div>
+            </div>
 
             {agentStreams.length === 0 ? (
               <EmptyState
