@@ -36,6 +36,16 @@ def _safe_dump(obj: Any, limit: int = 50000, context_name: str = "context") -> s
     return serialized
 
 
+class LLMResponseTruncatedError(DependencyUnavailableError):
+    """The provider hit its output-token ceiling mid-reply.
+
+    Distinct from an unreachable provider: retrying the same request reproduces the same
+    cut-off output, and half a file must never be treated as generated code.
+    """
+
+    message = "The LLM provider truncated its response before completing it."
+
+
 class _TransientProviderError(Exception):
     """A retryable provider failure; carries the status code and Retry-After hint."""
 
@@ -68,6 +78,28 @@ def _retry_after_seconds(response: Any) -> float | None:
         return float(raw)
     except (TypeError, ValueError):
         return None
+
+
+TRUNCATION_STOP_REASONS = frozenset({"length", "max_tokens"})
+
+
+def _require_complete_output(provider: str, stop_reason: Any, content_length: int) -> None:
+    """Fail when the provider itself reports that it stopped mid-output.
+
+    Providers omit the field when the reply ended naturally, so `None` means complete.
+    """
+    if str(stop_reason or "") in TRUNCATION_STOP_REASONS:
+        logger.error(
+            "llm_response_truncated",
+            provider=provider,
+            stop_reason=stop_reason,
+            output_characters=content_length,
+        )
+        raise LLMResponseTruncatedError(
+            f"{provider} stopped with {stop_reason} after {content_length} characters of "
+            f"output; the reply is incomplete."
+        )
+
 
 SHARED_SAFETY_PREAMBLE = """You are a component of APIWeaver.
 You must:
@@ -402,7 +434,9 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             except httpx.TransportError as exc:
                 raise _TransientProviderError(f"openai transport error: {exc}") from exc
             data = res.json()
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
+            _require_complete_output("openai", choice.get("finish_reason"), len(content or ""))
             tokens = int(data.get("usage", {}).get("total_tokens", 0))
             cleaned = content.strip()
             if cleaned.startswith("```json"):
@@ -491,7 +525,7 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             "messages": [
                 {"role": "user", "content": f"{user}\n\nRespond ONLY with valid JSON."}
             ],
-            "max_tokens": 4096,
+            "max_tokens": self.settings.llm_max_tokens,
             "temperature": 0.1,
         }
         async def send() -> tuple[dict[str, Any], int]:
@@ -512,6 +546,7 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
                 raise _TransientProviderError(f"anthropic transport error: {exc}") from exc
             data = res.json()
             content = data["content"][0]["text"]
+            _require_complete_output("anthropic", data.get("stop_reason"), len(content or ""))
             usage = data.get("usage", {})
             tokens = int(usage.get("input_tokens", 0) + usage.get("output_tokens", 0))
             cleaned = content.strip()
