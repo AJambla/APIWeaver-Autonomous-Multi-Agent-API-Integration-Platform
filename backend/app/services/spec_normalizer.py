@@ -26,6 +26,9 @@ class NormalizedEndpoint:
     request_schema: dict[str, Any] | None
     response_schemas: dict[str, Any]
     parameters: list[dict[str, Any]]
+    operation_id: str | None = None
+    description: str | None = None
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,20 +159,57 @@ def _normalize_openapi(data: dict[str, Any], document_format: str) -> Normalized
             if method is None or not isinstance(operation, dict):
                 continue
             parameters = _openapi_parameters(inherited, operation.get("parameters", []))
-            request_schema = _request_schema(operation, document_format)
+            operation_id = _string_or_none(operation.get("operationId"))
+            description = _string_or_none(operation.get("description"))
+            raw_tags = operation.get("tags", [])
+            tags_tuple = tuple(str(t) for t in raw_tags) if isinstance(raw_tags, list) else ()
+            req_schema = _request_schema(operation, document_format)
             endpoints.append(NormalizedEndpoint(
                 method=method,
                 path=path,
                 summary=_string_or_none(operation.get("summary") or operation.get("operationId")),
-                request_schema=request_schema,
+                request_schema=req_schema,
                 response_schemas=_response_schemas(operation, document_format),
                 parameters=parameters,
+                operation_id=operation_id,
+                description=description,
+                tags=tags_tuple,
             ))
 
     base_url = _openapi_base_url(data, document_format)
-    raw = {"format": document_format, "title": info.get("title"), "base_url": base_url,
-           "endpoints": [{"method": endpoint.method, "path": endpoint.path,
-                           "summary": endpoint.summary} for endpoint in endpoints]}
+    definitions = data.get("definitions") if isinstance(data.get("definitions"), dict) else {}
+    components = data.get("components") if isinstance(data.get("components"), dict) else {}
+    sec_defs = data.get("securityDefinitions") if isinstance(data.get("securityDefinitions"), dict) else {}
+    security = data.get("security") if isinstance(data.get("security"), list) else []
+    tags = data.get("tags") if isinstance(data.get("tags"), list) else []
+
+    raw = {
+        "format": document_format,
+        "title": _string_or_none(info.get("title")),
+        "version": _string_or_none(info.get("version")),
+        "description": _string_or_none(info.get("description")),
+        "base_url": base_url,
+        "definitions": definitions,
+        "components": components,
+        "securityDefinitions": sec_defs,
+        "security": security,
+        "tags": tags,
+        "endpoints": [
+            {
+                "method": ep.method,
+                "path": ep.path,
+                "summary": ep.summary,
+                "description": ep.description,
+                "operation_id": ep.operation_id,
+                "operationId": ep.operation_id,
+                "parameters": ep.parameters,
+                "request_schema": ep.request_schema,
+                "response_schemas": ep.response_schemas,
+                "tags": list(ep.tags),
+            }
+            for ep in endpoints
+        ],
+    }
     return NormalizedSpec(
         document_format,
         _string_or_none(info.get("title")),
@@ -194,9 +234,21 @@ def _openapi_parameters(*groups: Any) -> list[dict[str, Any]]:
             if location not in allowed_locations:
                 continue
             schema = parameter.get("schema") if isinstance(parameter.get("schema"), dict) else {}
-            normalized.append({"name": str(parameter.get("name", "unnamed")), "location": location,
-                               "type": str(schema.get("type", parameter.get("type", "string"))),
-                               "required": bool(parameter.get("required", False))})
+            item_data: dict[str, Any] = {
+                "name": str(parameter.get("name", "unnamed")),
+                "location": location,
+                "type": str(schema.get("type", parameter.get("type", "string"))),
+                "required": bool(parameter.get("required", False)),
+            }
+            if "description" in parameter:
+                item_data["description"] = parameter["description"]
+            if schema:
+                item_data["schema"] = schema
+            if "default" in parameter:
+                item_data["default"] = parameter["default"]
+            if "enum" in parameter:
+                item_data["enum"] = parameter["enum"]
+            normalized.append(item_data)
     return normalized
 
 
@@ -274,13 +326,47 @@ def _normalize_postman(data: dict[str, Any]) -> NormalizedSpec:
                 continue
             parsed = urlparse(url.replace("{{baseUrl}}", ""))
             path = parsed.path or "/"
-            endpoints.append(NormalizedEndpoint(method, path, _string_or_none(item.get("name")),
-                                                None, {}, []))
+            op_id = _string_or_none(item.get("id") or item.get("name"))
+            endpoints.append(NormalizedEndpoint(
+                method,
+                path,
+                _string_or_none(item.get("name")),
+                None,
+                {},
+                [],
+                op_id,
+                _string_or_none(request.get("description") if isinstance(request.get("description"), str) else None),
+                (),
+            ))
 
     visit(data.get("item"))
-    raw = {"format": DocumentFormat.POSTMAN, "title": info.get("name"), "base_url": None,
-           "endpoints": [{"method": endpoint.method, "path": endpoint.path,
-                           "summary": endpoint.summary} for endpoint in endpoints]}
+    raw = {
+        "format": DocumentFormat.POSTMAN,
+        "title": _string_or_none(info.get("name")),
+        "version": _string_or_none(info.get("version")),
+        "description": _string_or_none(info.get("description")),
+        "base_url": None,
+        "definitions": {},
+        "components": {},
+        "securityDefinitions": {},
+        "security": [],
+        "tags": [],
+        "endpoints": [
+            {
+                "method": endpoint.method,
+                "path": endpoint.path,
+                "summary": endpoint.summary,
+                "description": endpoint.description,
+                "operation_id": endpoint.operation_id,
+                "operationId": endpoint.operation_id,
+                "parameters": endpoint.parameters,
+                "request_schema": endpoint.request_schema,
+                "response_schemas": endpoint.response_schemas,
+                "tags": list(endpoint.tags),
+            }
+            for endpoint in endpoints
+        ],
+    }
     return NormalizedSpec(
         DocumentFormat.POSTMAN,
         _string_or_none(info.get("name")),

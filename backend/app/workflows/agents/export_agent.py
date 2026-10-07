@@ -178,12 +178,55 @@ class ExportAgent:
                 json.dumps(package_metadata).encode(),
             )
 
+            import io
+            import zipfile
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for f in lang_files:
+                    try:
+                        f_content = await storage_service.download(f["content_s3_key"])
+                        zf.writestr(f.get("file_path", "unknown"), f_content)
+                    except Exception as e:
+                        logger.warning("sdk_zip_file_failed", file=f.get("file_path"), error=str(e))
+                zf.writestr("package_metadata.json", json.dumps(package_metadata, indent=2))
+            zip_bytes = zip_buffer.getvalue()
+            zip_s3_key = f"exports/{project_id}/sdk/{language}/sdk-{language}.zip"
+            await storage_service.upload(zip_s3_key, zip_bytes)
+
             artifacts.append({
                 "type": "sdk",
                 "language": language,
-                "s3_key": s3_key,
+                "s3_key": zip_s3_key,
+                "filename": f"sdk-{language}.zip",
                 "metadata": package_metadata,
             })
+
+            if self.session_factory:
+                try:
+                    async with self.session_factory() as session:
+                        from app.models.export import SDKPackage, SDKVersion
+                        pkg_stmt = select(SDKPackage).where(
+                            SDKPackage.project_id == uuid.UUID(str(project_id)),
+                            SDKPackage.language == language,
+                        )
+                        pkg = await session.scalar(pkg_stmt)
+                        if pkg is None:
+                            pkg = SDKPackage(
+                                project_id=uuid.UUID(str(project_id)),
+                                language=language,
+                                package_name=f"apiweaver-{language}-sdk",
+                            )
+                            session.add(pkg)
+                            await session.flush()
+                        ver = SDKVersion(
+                            sdk_package_id=pkg.id,
+                            semver="0.1.0",
+                            s3_key=zip_s3_key,
+                        )
+                        session.add(ver)
+                        await session.commit()
+                except Exception as db_err:
+                    logger.warning("sdk_package_db_save_failed", error=str(db_err))
 
         return {
             "type": "sdk",

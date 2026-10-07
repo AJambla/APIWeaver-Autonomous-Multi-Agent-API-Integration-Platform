@@ -11,6 +11,7 @@ import {
   Clipboard,
   Clock,
   Copy,
+  Download,
   FileCode2,
   FileJson,
   FileText,
@@ -264,9 +265,11 @@ const UploadDropzone: React.FC<{
 /* Analysis panel ------------------------------------------------------------- */
 
 const AnalysisPanel: React.FC<{ spec: ApiSpec; endpoints: SpecEndpoint[] }> = ({ spec, endpoints }) => {
-  const raw = (spec.raw_normalized ?? {}) as NormalizedSpec & { security?: unknown[] };
-  const schemaCount = Object.keys(raw.components?.schemas ?? {}).length;
-  const authSchemes = Object.keys((raw.components as { securitySchemes?: Record<string, unknown> } | undefined)?.securitySchemes ?? {});
+  const raw = (spec.raw_normalized ?? {}) as NormalizedSpec;
+  const schemasObj = raw.components?.schemas ?? raw.definitions ?? {};
+  const schemaCount = Object.keys(schemasObj).length;
+  const authSchemesObj = raw.components?.securitySchemes ?? raw.securityDefinitions ?? {};
+  const authSchemes = Object.keys(authSchemesObj);
   const deprecated = endpoints.filter(e => e.deprecated).length;
   const missingSummary = endpoints.filter(e => !e.summary).length;
   const lowConfidence = endpoints.filter(e => e.confidence_score !== null && e.confidence_score < 0.6).length;
@@ -795,6 +798,34 @@ export const ProjectWorkspace: React.FC = () => {
       setExportError(errorMessage(err));
     } finally {
       setExportBusy(null);
+    }
+  };
+
+  const handleDownloadExport = async (row: ExportRecord) => {
+    if (!row.download_url) return;
+    try {
+      const token = sessionStorage.getItem('access_token');
+      const res = await fetch(row.download_url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
+      const disposition = res.headers.get('Content-Disposition');
+      let filename = `export-${row.export_type}.zip`;
+      if (disposition && disposition.includes('filename=')) {
+        const match = disposition.match(/filename="?([^"]+)"?/);
+        if (match) filename = match[1];
+      }
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error('Failed to download export artifact:', err);
     }
   };
 
@@ -1672,6 +1703,7 @@ export const ProjectWorkspace: React.FC = () => {
                       <Th>Type</Th>
                       <Th>Status</Th>
                       <Th>Created</Th>
+                      <Th>Artifact</Th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1680,6 +1712,21 @@ export const ProjectWorkspace: React.FC = () => {
                         <Td><span className="font-mono text-xs capitalize">{row.export_type}</span></Td>
                         <Td><StatusBadge status={row.status} /></Td>
                         <Td><span className="text-xs text-neutral-500">{relativeTime(row.created_at)}</span></Td>
+                        <Td>
+                          {row.download_url ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadExport(row)}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium text-white hover:bg-white/10 transition-colors"
+                              title="Download artifact archive"
+                            >
+                              <Download className="h-3 w-3 text-neutral-400" />
+                              Download
+                            </button>
+                          ) : (
+                            <span className="text-xs text-neutral-500">—</span>
+                          )}
+                        </Td>
                       </tr>
                     ))}
                   </tbody>

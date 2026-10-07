@@ -101,7 +101,7 @@ async def trigger_export(
         "organization_id": str(project.organization_id),
         "workflow_run_id": str(run.id),
         "stages": ["export"],
-        "target_languages": ["python", "node"],
+        "target_languages": payload.target_languages or ["python", "node"],
         "normalized_spec": normalized_spec,
         "generated_files": generated_files,
         "test_suite": test_suite,
@@ -208,6 +208,54 @@ async def list_exports(
             "export_type": r.export_type,
             "status": r.status,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "download_url": f"/api/v1/projects/{project.id}/exports/{r.id}/download" if r.status == "completed" else None,
         }
         for r in rows
     ]
+
+
+@router.get("/{id}/exports/{export_id}/download")
+async def download_export(
+    export_id: uuid.UUID,
+    project: Project = Depends(require_project_permission(Permission.EXPORT_READ)),
+    session: AsyncSession = Depends(get_db),
+):
+    """Download the generated export package bundle."""
+    from fastapi import Response
+    from app.core.errors import NotFoundError
+    from app.services.storage_service import storage_service
+
+    export = await session.get(Export, export_id)
+    if export is None or export.project_id != project.id:
+        raise NotFoundError("Export record not found.")
+
+    candidate_keys = [
+        f"exports/{project.id}/{export.export_type}/python/sdk-python.zip",
+        f"exports/{project.id}/{export.export_type}/node/sdk-node.zip",
+        f"exports/{project.id}/{export.export_type}/python/client.py",
+        f"exports/{project.id}/{export.export_type}/node/client.ts",
+        f"exports/{project.id}/{export.export_type}/Dockerfile",
+        f"exports/{project.id}/{export.export_type}/package.json",
+    ]
+
+    content: bytes | None = None
+    matched_key: str | None = None
+    for key in candidate_keys:
+        try:
+            content = await storage_service.download(key)
+            if content:
+                matched_key = key
+                break
+        except Exception:
+            continue
+
+    if not content:
+        raise NotFoundError(f"No downloadable artifact found for export {export_id}.")
+
+    filename = matched_key.split("/")[-1] if matched_key else f"export-{export.export_type}.zip"
+    media_type = "application/zip" if filename.endswith(".zip") else "application/octet-stream"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

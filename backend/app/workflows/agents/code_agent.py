@@ -184,9 +184,15 @@ async def _render_templates(
 
     title = to_display_name(spec.get("title"), fallback="API Client")
     base_url = to_base_url(spec.get("base_url"))
-    endpoints = [
-        safe_endpoint(ep) for ep in endpoint_group.get("endpoints", []) if isinstance(ep, dict)
-    ]
+    raw_spec_endpoints = spec.get("endpoints", [])
+    if isinstance(raw_spec_endpoints, list) and raw_spec_endpoints:
+        endpoints = [
+            safe_endpoint(ep) for ep in raw_spec_endpoints if isinstance(ep, dict)
+        ]
+    else:
+        endpoints = [
+            safe_endpoint(ep) for ep in endpoint_group.get("endpoints", []) if isinstance(ep, dict)
+        ]
     auth_scheme = _get_auth_scheme(spec)
 
     # Group endpoints by resource for template context
@@ -284,7 +290,7 @@ async def run_code_agent(
     # Handle repair mode
     if failure_diagnosis and target_file:
         # Find the file to repair
-        file_meta = next((f for f in generated_files if f["file_path"] == target_file), None)
+        file_meta = next((f for f in generated_files if isinstance(f, dict) and f.get("file_path") == target_file), None)
         if not file_meta:
             return {
                 "current_node": "code_agent",
@@ -347,7 +353,7 @@ async def run_code_agent(
 
         # Update file metadata
         for f in new_generated_files:
-            if f["file_path"] == target_file:
+            if isinstance(f, dict) and f.get("file_path") == target_file:
                 f["content_s3_key"] = s3_key
                 f["repair_diagnosis"] = diagnosis
                 break
@@ -365,11 +371,13 @@ async def run_code_agent(
         # Collect all generated files for consistency check
         all_files = {}
         for f in generated_files:
+            if not isinstance(f, dict) or not f.get("file_path") or not f.get("content_s3_key"):
+                continue
             try:
                 content = await storage_service.download(f["content_s3_key"])
                 all_files[f["file_path"]] = content.decode()
             except Exception as e:
-                logger.warning("consistency_download_failed", file=f["file_path"], error=str(e))
+                logger.warning("consistency_download_failed", file=f.get("file_path"), error=str(e))
 
         if all_files:
             consistency_prompt = CONSISTENCY_SYSTEM_PROMPT.format(
@@ -390,7 +398,7 @@ async def run_code_agent(
                     s3_key = f"generated/{state['project_id']}/{uuid.uuid4()}/{file_path}"
                     await storage_service.upload(s3_key, corrected_content.encode())
                     for f in new_generated_files:
-                        if f["file_path"] == file_path:
+                        if isinstance(f, dict) and f.get("file_path") == file_path:
                             f["content_s3_key"] = s3_key
                             break
 
@@ -461,13 +469,25 @@ async def run_code_agent(
             s3_key = f"generated/{state['project_id']}/{uuid.uuid4()}/{file_path}"
             await storage_service.upload(s3_key, content.encode())
 
-            new_generated_files.append({
+            entry = {
                 "file_path": file_path,
                 "content_s3_key": s3_key,
                 "language": language,
                 "file_type": file_type,
                 "phase_number": current_phase.get("phase_number") if current_phase else None,
-            })
+            }
+            existing_idx = next(
+                (
+                    i
+                    for i, f in enumerate(new_generated_files)
+                    if f.get("file_path") == file_path and f.get("language") == language
+                ),
+                None,
+            )
+            if existing_idx is not None:
+                new_generated_files[existing_idx] = entry
+            else:
+                new_generated_files.append(entry)
 
     # Self-review reflection pass before returning
     review = await _run_self_review(new_generated_files, state, client)

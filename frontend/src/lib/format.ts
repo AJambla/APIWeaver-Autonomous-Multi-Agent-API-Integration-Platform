@@ -46,18 +46,30 @@ export function initials(name: string | undefined, email?: string): string {
 /* Normalized OpenAPI document helpers (SpecResponse.raw_normalized) */
 
 export interface NormalizedSpec {
+  format?: string;
+  title?: string;
+  version?: string;
   openapi?: string;
   swagger?: string;
   info?: { title?: string; version?: string; description?: string };
   servers?: Array<{ url?: string }>;
   paths?: Record<string, Record<string, unknown>>;
-  components?: { schemas?: Record<string, unknown> };
+  definitions?: Record<string, unknown>;
+  components?: {
+    schemas?: Record<string, unknown>;
+    securitySchemes?: Record<string, unknown>;
+  };
+  securityDefinitions?: Record<string, unknown>;
+  security?: unknown[];
 }
 
 export function specFormat(raw: NormalizedSpec | null | undefined): string {
   if (!raw) return '—';
   if (raw.openapi) return `OpenAPI ${raw.openapi}`;
   if (raw.swagger) return `Swagger ${raw.swagger}`;
+  if (raw.format === 'swagger') return 'Swagger 2.0';
+  if (raw.format === 'openapi') return 'OpenAPI 3.x';
+  if (raw.format === 'postman') return 'Postman Collection';
   return 'Normalized';
 }
 
