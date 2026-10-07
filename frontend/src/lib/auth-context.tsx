@@ -9,7 +9,7 @@ interface AuthContextType {
   selectOrganization: (orgId: string) => void;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, fullName?: string) => Promise<void>;
+  register: (email: string, password: string, fullName?: string, organizationName?: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -59,15 +59,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCurrentUser(me);
   };
 
-  const register = async (email: string, password: string, fullName?: string) => {
-    const organizationName = email.split('@')[1]?.split('.')[0] || 'organization';
+  const register = async (email: string, password: string, fullName?: string, organizationName?: string) => {
+    const userPart = fullName?.trim() || email.split('@')[0] || 'User';
+    const domainPart = email.split('@')[1]?.split('.')[0] || 'workspace';
+    const resolvedOrgName = organizationName?.trim() || `${userPart}'s ${domainPart}`;
     const tokens = await apiFetch<AuthTokens>('/auth/register', {
       method: 'POST',
       body: JSON.stringify({
         email,
         password,
         full_name: fullName || email.split('@')[0],
-        organization_name: organizationName,
+        organization_name: resolvedOrgName,
       }),
     });
     sessionStorage.setItem('access_token', tokens.access_token);

@@ -64,6 +64,17 @@ async def test_register_creates_owner_membership(client: AsyncClient) -> None:
     assert body["organizations"][0]["organization_name"] == "Acme Payments"
 
 
+async def test_second_signup_same_org_disambiguates_slug(client: AsyncClient) -> None:
+    tokens1 = await register(client)
+    tokens2 = await register(
+        client,
+        email="second@example.com",
+        organization_name="Acme Payments",
+    )
+    assert tokens2["access_token"]
+    assert tokens1["access_token"] != tokens2["access_token"]
+
+
 async def test_access_token_carries_the_specified_claims(
     client: AsyncClient, test_settings: object
 ) -> None:
