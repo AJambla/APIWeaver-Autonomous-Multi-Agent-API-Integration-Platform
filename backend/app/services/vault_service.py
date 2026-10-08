@@ -13,6 +13,7 @@ import httpx
 from fastapi import Depends
 
 from app.core.config import Settings, get_settings
+from app.core.errors import DependencyUnavailableError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -42,7 +43,12 @@ class HttpVaultClient:
 
     def __init__(self, settings: Settings) -> None:
         self.vault_addr = settings.vault_addr.rstrip("/")
-        self.vault_token = settings.vault_token or "root"
+        token = (settings.vault_token or "").strip()
+        if not token:
+            raise DependencyUnavailableError(
+                "Vault token is required but VAULT_TOKEN is not configured."
+            )
+        self.vault_token = token
         self.vault_mount = getattr(settings, "vault_mount_path", "secret").strip("/")
         self._headers = {"X-Vault-Token": self.vault_token}
 

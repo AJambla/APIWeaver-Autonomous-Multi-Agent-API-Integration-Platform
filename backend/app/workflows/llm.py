@@ -403,7 +403,14 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
     async def _call_openai(self, system: str, user: str) -> tuple[dict[str, Any], int]:
         base_url = (self.settings.openai_api_base_url or "https://api.openai.com/v1").rstrip("/")
         url = f"{base_url}/chat/completions"
-        api_key = self.settings.openai_api_key or "local"
+        api_key = (self.settings.openai_api_key or "").strip()
+        if not api_key:
+            # If using a custom local endpoint (e.g. Ollama, vLLM) that does not require an auth key,
+            # use a standard bearer token rather than a hardcoded dummy secret.
+            if self.settings.openai_api_base_url and self.settings.openai_api_base_url.rstrip("/") != "https://api.openai.com/v1":
+                api_key = "none"
+            else:
+                raise DependencyUnavailableError("OpenAI API key is required but not configured.")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -477,7 +484,12 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             or "https://api.openai.com/v1"
         ).rstrip("/")
         url = f"{base_url}/embeddings"
-        api_key = self.settings.openai_api_key or "local"
+        api_key = (self.settings.openai_api_key or "").strip()
+        if not api_key:
+            if has_custom_endpoint:
+                api_key = "none"
+            else:
+                raise DependencyUnavailableError("OpenAI API key is required for embeddings.")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
