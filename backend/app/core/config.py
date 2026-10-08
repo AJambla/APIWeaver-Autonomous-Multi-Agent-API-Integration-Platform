@@ -204,3 +204,54 @@ def get_settings() -> Settings:
     cache via `get_settings.cache_clear()`.
     """
     return Settings()  # type: ignore[call-arg]  # values come from the environment
+
+
+def validate_startup_environment(settings: Settings) -> None:
+    """Validate critical environment requirements at application startup.
+
+    Enforces fail-loud pre-flight checks before the application begins accepting requests:
+    - DATABASE_URL is set and non-empty.
+    - REDIS_URL is set and non-empty.
+    - JWT private and public key files exist on disk and are readable.
+    - In production mode: strictly requires at least one active LLM provider key
+      (OPENAI_API_KEY or ANTHROPIC_API_KEY).
+    """
+    if not settings.database_url or not settings.database_url.strip():
+        raise ValueError("DATABASE_URL must be set and non-empty.")
+
+    if not settings.redis_url or not settings.redis_url.strip():
+        raise ValueError("REDIS_URL must be set and non-empty.")
+
+    def _resolve_path(path: Path) -> Path:
+        if path.is_file():
+            return path
+        backend_dir = Path(__file__).resolve().parents[2]
+        if (backend_dir / path).is_file():
+            return backend_dir / path
+        repo_root = Path(__file__).resolve().parents[3]
+        if (repo_root / path).is_file():
+            return repo_root / path
+        return path
+
+    private_key = _resolve_path(settings.jwt_private_key_path)
+    if not private_key.is_file():
+        raise FileNotFoundError(
+            f"JWT private key not found at '{settings.jwt_private_key_path}'. "
+            "Ensure keys are mounted from Vault or generated via scripts/gen_jwt_keys.sh."
+        )
+
+    public_key = _resolve_path(settings.jwt_public_key_path)
+    if not public_key.is_file():
+        raise FileNotFoundError(
+            f"JWT public key not found at '{settings.jwt_public_key_path}'. "
+            "Ensure keys are mounted from Vault or generated via scripts/gen_jwt_keys.sh."
+        )
+
+    if settings.is_production:
+        has_openai = bool(settings.openai_api_key and settings.openai_api_key.strip())
+        has_anthropic = bool(settings.anthropic_api_key and settings.anthropic_api_key.strip())
+        if not (has_openai or has_anthropic):
+            raise ValueError(
+                "Production mode strictly requires at least one configured LLM provider key "
+                "(OPENAI_API_KEY or ANTHROPIC_API_KEY)."
+            )

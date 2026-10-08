@@ -8,8 +8,9 @@ from pydantic import ValidationError
 from app.core.config import Settings
 from app.services.ingestion_service import sanitize_filename
 from app.services.sandbox_service import create_sandbox_client
-from app.services.storage_service import InMemoryObjectStorage, validate_storage_key
-from app.services.vault_service import FakeVaultClient, validate_vault_path
+from app.services.storage_service import validate_storage_key
+from app.services.vault_service import validate_vault_path
+from tests.fakes import FakeVaultClient, InMemoryObjectStorage
 
 
 def _make_settings(base: Settings, **kwargs) -> Settings:
@@ -138,3 +139,82 @@ class TestSecurityResponseHeaders:
         assert response.headers.get("X-XSS-Protection") == "1; mode=block"
         assert response.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
         assert "camera=()" in response.headers.get("Permissions-Policy", "")
+
+
+class TestStartupEnvironmentValidation:
+    """Ensure startup preflight checks fail-loud on misconfigured or missing environment dependencies."""
+
+    def test_validate_startup_environment_passes_on_valid_dev(self, test_settings: Settings) -> None:
+        from app.core.config import validate_startup_environment
+
+        validate_startup_environment(test_settings)
+
+    def test_validate_startup_environment_requires_database_url(self, test_settings: Settings) -> None:
+        from app.core.config import validate_startup_environment
+
+        settings = test_settings.model_copy(update={"database_url": "   "})
+        with pytest.raises(ValueError, match="DATABASE_URL must be set and non-empty"):
+            validate_startup_environment(settings)
+
+    def test_validate_startup_environment_requires_redis_url(self, test_settings: Settings) -> None:
+        from app.core.config import validate_startup_environment
+
+        settings = test_settings.model_copy(update={"redis_url": ""})
+        with pytest.raises(ValueError, match="REDIS_URL must be set and non-empty"):
+            validate_startup_environment(settings)
+
+    def test_validate_startup_environment_fails_missing_jwt_keys(
+        self, test_settings: Settings, tmp_path: Path
+    ) -> None:
+        from app.core.config import validate_startup_environment
+
+        settings = test_settings.model_copy(
+            update={"jwt_private_key_path": tmp_path / "nonexistent.pem"}
+        )
+        with pytest.raises(FileNotFoundError, match="JWT private key not found"):
+            validate_startup_environment(settings)
+
+    def test_validate_startup_environment_requires_llm_key_in_production(
+        self, test_settings: Settings
+    ) -> None:
+        from app.core.config import validate_startup_environment
+
+        prod_no_llm = test_settings.model_copy(
+            update={
+                "app_env": "production",
+                "openai_api_key": "",
+                "anthropic_api_key": "",
+            }
+        )
+        with pytest.raises(
+            ValueError,
+            match="Production mode strictly requires at least one configured LLM provider key",
+        ):
+            validate_startup_environment(prod_no_llm)
+
+    def test_validate_startup_environment_accepts_production_with_openai_key(
+        self, test_settings: Settings
+    ) -> None:
+        from app.core.config import validate_startup_environment
+
+        prod = test_settings.model_copy(
+            update={
+                "app_env": "production",
+                "openai_api_key": "sk-proj-test12345",
+            }
+        )
+        validate_startup_environment(prod)
+
+    def test_validate_startup_environment_accepts_production_with_anthropic_key(
+        self, test_settings: Settings
+    ) -> None:
+        from app.core.config import validate_startup_environment
+
+        prod = test_settings.model_copy(
+            update={
+                "app_env": "production",
+                "anthropic_api_key": "sk-ant-test12345",
+            }
+        )
+        validate_startup_environment(prod)
+
