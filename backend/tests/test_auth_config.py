@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from httpx import AsyncClient
 
 from app.models.enums import AuthScheme
@@ -152,4 +153,144 @@ async def test_delete_auth_config_purges_vault_and_database(
             await session.scalars(select(SecretRef).where(SecretRef.vault_path == vault_path))
         ).all()
         assert len(ref_rows) == 0
+
+
+def test_auth_credentials_schema_validation_unit() -> None:
+    """Verify schema-level credential validation rules for each auth scheme."""
+    from pydantic import ValidationError
+
+    from app.schemas.auth_config import (
+        ApiKeyCredentials,
+        AuthConfigRequest,
+        BasicAuthCredentials,
+        BearerJwtCredentials,
+        HmacCredentials,
+        OAuth2AuthCodeCredentials,
+        OAuth2ClientCredentials,
+    )
+
+    # API Key: valid & alias
+    k1 = ApiKeyCredentials.model_validate({"api_key": "secret-123"})
+    assert k1.api_key == "secret-123"
+    k2 = ApiKeyCredentials.model_validate({"key": "secret-456"})
+    assert k2.api_key == "secret-456"
+
+    # API Key: empty or extra forbidden
+    with pytest.raises(ValidationError):
+        ApiKeyCredentials.model_validate({"api_key": ""})
+    with pytest.raises(ValidationError):
+        ApiKeyCredentials.model_validate({"api_key": "valid", "extra_bad": "no"})
+
+    # Bearer JWT: valid & alias
+    b1 = BearerJwtCredentials.model_validate({"token": "jwt.header.body"})
+    assert b1.token == "jwt.header.body"
+    b2 = BearerJwtCredentials.model_validate({"bearer_token": "jwt.header.body"})
+    assert b2.token == "jwt.header.body"
+    with pytest.raises(ValidationError):
+        BearerJwtCredentials.model_validate({"token": ""})
+
+    # OAuth2 Client Credentials
+    o1 = OAuth2ClientCredentials.model_validate({"client_id": "cid", "client_secret": "csec"})
+    assert o1.client_id == "cid"
+    assert o1.client_secret == "csec"
+    with pytest.raises(ValidationError):
+        OAuth2ClientCredentials.model_validate({"client_id": "cid"})  # missing secret
+
+    # OAuth2 Auth Code
+    ac = OAuth2AuthCodeCredentials.model_validate({
+        "client_id": "cid",
+        "client_secret": "csec",
+        "access_token": "at",
+        "refresh_token": "rt",
+    })
+    assert ac.refresh_token == "rt"
+
+    # Basic Auth
+    ba = BasicAuthCredentials.model_validate({"username": "user", "password": "pwd"})
+    assert ba.username == "user"
+    with pytest.raises(ValidationError):
+        BasicAuthCredentials.model_validate({"username": "user"})  # missing password
+
+    # HMAC
+    hm = HmacCredentials.model_validate({"secret_key": "hmac_secret", "key_id": "kid1"})
+    assert hm.secret == "hmac_secret"
+    assert hm.key_id == "kid1"
+
+    # AuthConfigRequest validations
+    req_api = AuthConfigRequest.model_validate({
+        "scheme": "api_key",
+        "credentials": {"api_key": "my-key"},
+    })
+    assert req_api.credentials == {"api_key": "my-key"}
+
+    req_none = AuthConfigRequest.model_validate({
+        "scheme": "none",
+        "credentials": None,
+    })
+    assert req_none.credentials is None
+
+    # Scheme 'none' with credentials must fail
+    with pytest.raises(ValidationError):
+        AuthConfigRequest.model_validate({
+            "scheme": "none",
+            "credentials": {"api_key": "forbidden"},
+        })
+
+    # Scheme 'basic' with incomplete credentials must fail
+    with pytest.raises(ValidationError):
+        AuthConfigRequest.model_validate({
+            "scheme": "basic",
+            "credentials": {"username": "admin"},
+        })
+
+
+async def test_endpoint_rejects_invalid_credentials(client: AsyncClient) -> None:
+    """Verify HTTP endpoint enforces 400 VALIDATION_ERROR for malformed or incomplete credentials."""
+    project_id, _, headers = await _setup_project(client)
+
+    # 1. Empty API key
+    res = await client.put(
+        f"/api/v1/projects/{project_id}/auth",
+        json={"scheme": "api_key", "credentials": {"api_key": ""}},
+        headers=headers,
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 2. Extra forbidden fields
+    res = await client.put(
+        f"/api/v1/projects/{project_id}/auth",
+        json={"scheme": "api_key", "credentials": {"api_key": "valid", "injected": "bad"}},
+        headers=headers,
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 3. Basic auth missing password
+    res = await client.put(
+        f"/api/v1/projects/{project_id}/auth",
+        json={"scheme": "basic", "credentials": {"username": "admin"}},
+        headers=headers,
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 4. Scheme 'none' with credentials
+    res = await client.put(
+        f"/api/v1/projects/{project_id}/auth",
+        json={"scheme": "none", "credentials": {"token": "should-not-exist"}},
+        headers=headers,
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 5. Valid basic auth succeeds
+    res = await client.put(
+        f"/api/v1/projects/{project_id}/auth",
+        json={"scheme": "basic", "credentials": {"username": "admin", "password": "secure"}},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    assert res.json()["scheme"] == "basic"
+
 
