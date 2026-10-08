@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from httpx import AsyncClient
 
 from app.workflows.agents.export_agent import ExportAgent
 from app.workflows.state import WorkflowState
@@ -139,9 +141,14 @@ class TestExportAgent:
 
     @pytest.mark.asyncio
     async def test_package_mcp(self, mock_state):
-        """Test MCP packaging."""
+        """Test MCP packaging and generated server script."""
+        uploaded_files = {}
+
+        async def capture_upload(key: str, data: bytes):
+            uploaded_files[key] = data
+
         with patch("app.workflows.agents.export_agent.storage_service") as mock_storage:
-            mock_storage.upload = AsyncMock()
+            mock_storage.upload = AsyncMock(side_effect=capture_upload)
 
             agent = ExportAgent()
             result = await agent._package_mcp(
@@ -150,8 +157,61 @@ class TestExportAgent:
             )
 
             assert result["type"] == "mcp"
+            assert result["status"] == "completed"
             assert result["tools_generated"] == 2
-            assert "artifacts" in result
+            assert result["flagged_destructive"] == 0
+            assert len(result["artifacts"]) == 2
+
+            # Validate manifest artifact
+            manifest_key = "exports/test-project/mcp/manifest.json"
+            assert manifest_key in uploaded_files
+            manifest_data = json.loads(uploaded_files[manifest_key].decode("utf-8"))
+            assert manifest_data["tools_count"] == 2
+            assert len(manifest_data["tools"]) == 2
+            tool_names = [t["name"] for t in manifest_data["tools"]]
+            assert "listUsers" in tool_names
+            assert "createUser" in tool_names
+
+            # Validate server artifact
+            server_key = "exports/test-project/mcp/server.py"
+            assert server_key in uploaded_files
+            server_code = uploaded_files[server_key].decode("utf-8")
+            assert "execute_http_call" in server_code
+            assert "handle_message" in server_code
+
+            # Test JSON-RPC execution by running server's handle_message
+            namespace = {}
+            exec(server_code, namespace)
+            handle_message = namespace["handle_message"]
+            tools_list = manifest_data["tools"]
+            tools_map = {t["name"]: t for t in tools_list}
+
+            # 1. initialize handshake
+            init_res = handle_message({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, tools_list, tools_map)
+            assert init_res["result"]["protocolVersion"] == "2024-11-05"
+            assert "tools" in init_res["result"]["capabilities"]
+
+            # 2. tools/list
+            list_res = handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, tools_list, tools_map)
+            assert len(list_res["result"]["tools"]) == 2
+
+            # 3. tools/call unknown tool
+            call_err = handle_message({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "unknown"}}, tools_list, tools_map)
+            assert "error" in call_err
+            assert call_err["error"]["code"] == -32601
+
+            # 4. tools/call known tool (mocking urllib)
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_resp = MagicMock()
+                mock_resp.read.return_value = b'{"status": "ok"}'
+                mock_urlopen.return_value.__enter__.return_value = mock_resp
+                call_ok = handle_message(
+                    {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "listUsers", "arguments": {"limit": 10}}},
+                    tools_list,
+                    tools_map,
+                )
+                assert call_ok["result"]["isError"] is False
+                assert call_ok["result"]["content"][0]["text"] == '{"status": "ok"}'
 
     @pytest.mark.asyncio
     async def test_package_docs(self, mock_state):
@@ -198,15 +258,104 @@ class TestExportAgent:
             assert len(result["exports"]) == 6
 
 
+OPENAPI_SPEC = b'''openapi: 3.0.3
+info:
+  title: Test Export API
+  version: 1.0.0
+servers:
+  - url: https://api.example.test/v1
+paths:
+  /items:
+    get:
+      summary: List items
+      operationId: listItems
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {type: array}
+'''
+
+
 class TestExportAPI:
     """Integration tests for the Export API."""
 
-    @pytest.mark.asyncio
-    async def test_trigger_export_endpoint(self, client, auth_headers):
-        """Test POST /projects/{id}/export endpoint."""
-        pass
+    async def _setup_project(self, client: AsyncClient, auth_headers: dict[str, str]) -> str:
+        me = await client.get("/api/v1/auth/me", headers=auth_headers)
+        assert me.status_code == 200, me.text
+        org_id = me.json()["organizations"][0]["organization_id"]
+        res = await client.post(
+            "/api/v1/projects",
+            json={"name": "Export Test Project", "organization_id": org_id},
+            headers=auth_headers,
+        )
+        assert res.status_code == 201, res.text
+        return res.json()["id"]
 
     @pytest.mark.asyncio
-    async def test_export_mcp_endpoint(self, client, auth_headers):
-        """Test POST /projects/{id}/export/mcp endpoint."""
-        pass
+    async def test_trigger_export_endpoint(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Test POST /projects/{id}/export endpoint."""
+        project_id = await self._setup_project(client, auth_headers)
+        res = await client.post(
+            f"/api/v1/projects/{project_id}/export",
+            headers=auth_headers,
+            json={"export_types": ["mcp", "docker"]},
+        )
+        assert res.status_code == 202, res.text
+        data = res.json()
+        assert "export_id" in data
+        assert len(data["artifacts"]) == 2
+        types = [a["type"] for a in data["artifacts"]]
+        assert "mcp" in types
+        assert "docker" in types
+        assert all(a["status"] == "queued" for a in data["artifacts"])
+
+    @pytest.mark.asyncio
+    async def test_export_mcp_endpoint_no_spec(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Test POST /projects/{id}/export/mcp without normalized spec returns 404."""
+        project_id = await self._setup_project(client, auth_headers)
+        res = await client.post(
+            f"/api/v1/projects/{project_id}/export/mcp",
+            headers=auth_headers,
+        )
+        assert res.status_code == 404, res.text
+        assert res.json()["error"]["code"] == "NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_export_mcp_endpoint_success(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """Test POST /projects/{id}/export/mcp with valid spec returns 200."""
+        project_id = await self._setup_project(client, auth_headers)
+
+        # Upload spec
+        upload_res = await client.post(
+            f"/api/v1/projects/{project_id}/upload",
+            headers=auth_headers,
+            files={"file": ("openapi.yaml", OPENAPI_SPEC, "application/yaml")},
+        )
+        assert upload_res.status_code == 202, upload_res.text
+
+        # Call export/mcp
+        res = await client.post(
+            f"/api/v1/projects/{project_id}/export/mcp",
+            headers=auth_headers,
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()
+        assert data["tools_generated"] >= 1
+        assert data["mcp_manifest_url"].endswith(f"/exports/mcp/manifest.json")
+
+        # Verify export record in list_exports
+        list_res = await client.get(
+            f"/api/v1/projects/{project_id}/exports",
+            headers=auth_headers,
+        )
+        assert list_res.status_code == 200, list_res.text
+        records = list_res.json()
+        mcp_rec = next((r for r in records if r["export_type"] == "mcp"), None)
+        assert mcp_rec is not None
+        assert mcp_rec["status"] == "completed"
