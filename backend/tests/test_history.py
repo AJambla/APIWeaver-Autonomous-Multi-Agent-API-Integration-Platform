@@ -192,11 +192,11 @@ async def test_rollback_restores_active_generated_files(client: AsyncClient, db,
         }).encode("utf-8"),
     }
 
-    async def fake_download(k):
-        return s3_store[k]
-
     from app.services import storage_service as st_mod
-    monkeypatch.setattr(st_mod.storage_service, "download", fake_download)
+    fake_storage = st_mod.InMemoryObjectStorage()
+    for k, v in s3_store.items():
+        await fake_storage.put(key=k, content=v)
+    monkeypatch.setattr(st_mod, "_storage_instance", fake_storage)
 
     async with db as session:
         v1 = ArtifactVersion(
