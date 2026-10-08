@@ -37,12 +37,9 @@ class SecretRef(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
     Note the FK is `RESTRICT`, not `CASCADE`, unlike the rest of the project subtree.
     `Database.md §5` carves this out deliberately: deleting an auth config must first run
-    an application-level Vault-deletion hook, because a DB cascade would orphan the
-    secret in Vault with nothing left pointing at it. RESTRICT makes skipping that hook a
-    hard error instead of a silent leak.
-
-    TODO(Phase 2): implement the Vault-deletion hook in the secrets service alongside the
-    hvac client, per Security.md §7.
+    an application-level Vault-deletion hook (`delete_auth_config_with_vault`), because a DB cascade
+    would orphan the secret in Vault with nothing left pointing at it. RESTRICT makes skipping
+    that hook a hard error instead of a silent leak.
     """
 
     __tablename__ = "secrets_refs"
