@@ -44,8 +44,8 @@ from app.models.enums import OrgRole
 from app.models.github import GitHubConnection, GitHubOAuthState
 from app.models.organization import OrganizationMember
 from app.models.user import APIKey, User
-from app.services.vault_service import FakeVaultClient
 from tests.conftest import add_org_member, make_org, make_user
+from tests.fakes import FakeVaultClient
 
 
 class StubOAuthClient:

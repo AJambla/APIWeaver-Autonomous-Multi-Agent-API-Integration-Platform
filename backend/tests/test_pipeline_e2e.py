@@ -21,9 +21,9 @@ from unittest.mock import patch
 from httpx import AsyncClient
 
 import app.services.storage_service as storage_module
-from app.services.storage_service import InMemoryObjectStorage
 from app.workflows.llm import LLMClient
 from tests.conftest import TEST_PASSWORD
+from tests.fakes import InMemoryObjectStorage
 
 SPEC_YAML = """\
 openapi: "3.0.3"

@@ -116,26 +116,6 @@ class HttpVaultClient:
                 raise
 
 
-class FakeVaultClient:
-    """In-memory mock Vault client for testing."""
-
-    def __init__(self) -> None:
-        self._secrets: dict[str, dict[str, Any]] = {}
-
-    async def write_secret(self, path: str, data: dict[str, Any]) -> None:
-        clean_path = validate_vault_path(path)
-        self._secrets[clean_path] = dict(data)
-
-    async def read_secret(self, path: str) -> dict[str, Any] | None:
-        clean_path = validate_vault_path(path)
-        data = self._secrets.get(clean_path)
-        return dict(data) if data is not None else None
-
-    async def delete_secret(self, path: str) -> None:
-        clean_path = validate_vault_path(path)
-        self._secrets.pop(clean_path, None)
-
-
 # Module-level singleton (export_agent.py uses this)
 # Use create_vault_client() with settings in production; this is a lazy class reference.
 vault_service = HttpVaultClient

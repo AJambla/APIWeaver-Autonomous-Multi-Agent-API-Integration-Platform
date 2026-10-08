@@ -6,7 +6,7 @@ import uuid
 
 from app.models.auth_config import AuthConfig, SecretRef
 from app.models.enums import AuthScheme
-from app.services.vault_service import FakeVaultClient
+from tests.fakes import FakeVaultClient
 from app.workflows.agents import test_agent as test_agent_module
 from app.workflows.agents.test_agent import _credential_from_auth, _resolve_target_auth
 from tests.conftest import make_org, make_project

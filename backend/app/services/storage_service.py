@@ -123,43 +123,19 @@ class AsyncS3ObjectStorage:
         return result
 
 
-class InMemoryObjectStorage:
-    """In-memory object storage fallback when external S3/aiobotocore is unavailable."""
-
-    def __init__(self) -> None:
-        self._store: dict[str, bytes] = {}
-
-    async def get(self, *, key: str, bucket: str | None = None) -> bytes | None:
-        key = validate_storage_key(key)
-        return self._store.get(key)
-
-    async def put(self, *, key: str, content: bytes, content_type: str | None = None, bucket: str | None = None) -> None:
-        key = validate_storage_key(key)
-        self._store[key] = content
-
-    async def delete(self, *, key: str, bucket: str | None = None) -> None:
-        key = validate_storage_key(key)
-        self._store.pop(key, None)
-
-    async def upload(self, key: str, content: bytes, bucket: str | None = None) -> None:
-        await self.put(key=key, content=content, content_type="text/plain", bucket=bucket)
-
-    async def download(self, key: str, bucket: str | None = None) -> bytes:
-        result = await self.get(key=key, bucket=bucket)
-        if result is None:
-            raise FileNotFoundError(f"Object not found: {key}")
-        return result
-
-
 def create_object_storage(settings: Settings) -> ObjectStorage:
     try:
         import aiobotocore  # noqa: F401
         return AsyncS3ObjectStorage(settings)
-    except (ImportError, ModuleNotFoundError):
-        return InMemoryObjectStorage()
+    except (ImportError, ModuleNotFoundError) as err:
+        from app.core.errors import DependencyUnavailableError
+        raise DependencyUnavailableError(
+            "Object storage requires 'aiobotocore' library in production."
+        ) from err
 
 
 # Global instance for agents to use
+
 _storage_instance: ObjectStorage | None = None
 
 
