@@ -7,9 +7,8 @@ import uuid
 from httpx import AsyncClient
 
 from app.models.enums import AuthScheme
-from app.services.qdrant_service import FakeQdrantClient
-from app.services.vault_service import FakeVaultClient
 from tests.conftest import TEST_PASSWORD
+from tests.fakes import FakeQdrantClient, FakeVaultClient
 
 
 async def _setup_project(client: AsyncClient) -> tuple[str, str, dict[str, str]]:
