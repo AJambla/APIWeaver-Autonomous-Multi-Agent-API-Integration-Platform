@@ -177,5 +177,11 @@ class _StorageServiceProxy:
     def __getattr__(self, name: str) -> Any:
         return getattr(get_storage(), name)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(get_storage(), name, value)
+
+    def __delattr__(self, name: str) -> None:
+        delattr(get_storage(), name)
+
 
 storage_service = _StorageServiceProxy()
