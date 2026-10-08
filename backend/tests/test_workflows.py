@@ -332,6 +332,17 @@ async def test_consistency_pass_respects_the_token_budget(
 class _FakeAsyncResult:
     def __init__(self, updates: dict[str, Any]) -> None:
         self._updates = updates
+        self.result = updates
+        self.id = "fake-async-task-id"
+
+    def ready(self) -> bool:
+        return True
+
+    def successful(self) -> bool:
+        return True
+
+    def failed(self) -> bool:
+        return False
 
     def get(self, timeout: int | None = None) -> dict[str, Any]:
         return self._updates
@@ -477,5 +488,85 @@ async def test_async_workflow_dispatches_to_celery(client: AsyncClient, monkeypa
     assert len(dispatched) == 1
     assert dispatched[0]["name"] == "agent_worker.tasks.run_workflow"
     assert len(dispatched[0]["args"]) == 2
+
+
+async def test_wait_for_celery_task_immediate_success():
+    """Verify immediate resolution when task is already ready."""
+    from app.workflows.langgraph_pipeline import _wait_for_celery_task
+
+    fake = _FakeAsyncResult({"done": True})
+    out = await _wait_for_celery_task(fake, timeout=5.0)
+    assert out == {"done": True}
+
+
+async def test_wait_for_celery_task_delayed_success():
+    """Verify cooperative polling resolution after multiple polling ticks."""
+    from app.workflows.langgraph_pipeline import _wait_for_celery_task
+
+    class _DelayedResult:
+        def __init__(self) -> None:
+            self.ticks = 0
+            self.id = "delayed-task"
+
+        def ready(self) -> bool:
+            self.ticks += 1
+            return self.ticks >= 3
+
+        def successful(self) -> bool:
+            return True
+
+        def failed(self) -> bool:
+            return False
+
+        @property
+        def result(self) -> dict[str, Any]:
+            return {"ticks": self.ticks}
+
+    delayed = _DelayedResult()
+    out = await _wait_for_celery_task(delayed, timeout=5.0, initial_poll_interval=0.01)
+    assert out == {"ticks": 3}
+
+
+async def test_wait_for_celery_task_failure_raises():
+    """Verify that a failing task re-raises the underlying exception."""
+    import pytest
+    from app.workflows.langgraph_pipeline import _wait_for_celery_task
+
+    class _FailingResult:
+        def __init__(self) -> None:
+            self.id = "failing-task"
+
+        def ready(self) -> bool:
+            return True
+
+        def successful(self) -> bool:
+            return False
+
+        def failed(self) -> bool:
+            return True
+
+        @property
+        def result(self) -> Exception:
+            return ValueError("task worker failed")
+
+    with pytest.raises(ValueError, match="task worker failed"):
+        await _wait_for_celery_task(_FailingResult(), timeout=5.0)
+
+
+async def test_wait_for_celery_task_timeout_raises():
+    """Verify that a task exceeding the timeout raises TimeoutError."""
+    import pytest
+    from app.workflows.langgraph_pipeline import _wait_for_celery_task
+
+    class _NeverReadyResult:
+        def __init__(self) -> None:
+            self.id = "never-ready-task"
+
+        def ready(self) -> bool:
+            return False
+
+    with pytest.raises(TimeoutError, match="never-ready-task timed out"):
+        await _wait_for_celery_task(_NeverReadyResult(), timeout=0.05, initial_poll_interval=0.01)
+
 
 
