@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
+from app.core.errors import APIError, NotFoundError
 from app.models.enums import ActorType, ExportType, WorkflowStatus
 from app.models.export import Export
 from app.models.project import Project
@@ -171,6 +172,9 @@ async def export_mcp(
     """Export MCP tools for a project."""
     # Run MCP export synchronously for this endpoint
     normalized_spec = await load_normalized_spec(session, project.id)
+    if not normalized_spec or not normalized_spec.get("endpoints"):
+        raise NotFoundError("Project has no normalized API specification to export MCP tools from.")
+
     export_agent = ExportAgent()
     state: WorkflowState = {
         "project_id": str(project.id),
@@ -188,10 +192,14 @@ async def export_mcp(
 
     mcp_artifact = next(
         (a for a in result.get("exports", []) if a.get("type") == "mcp"),
-        {"tools_generated": 0, "flagged_destructive": 0, "artifacts": []},
+        None,
     )
 
-    mcp_failed = mcp_artifact.get("status") == "failed"
+    mcp_failed = (
+        mcp_artifact is None
+        or mcp_artifact.get("status") == "failed"
+        or result.get("status") == "failed"
+    )
     manifest_s3_key = f"exports/{project.id}/mcp/manifest.json"
     exp = Export(
         project_id=project.id,
@@ -203,8 +211,8 @@ async def export_mcp(
     await session.commit()
 
     if mcp_failed:
-        from app.core.errors import AppError
-        raise AppError(mcp_artifact.get("error") or "MCP export packaging failed.", status_code=500)
+        error_msg = (mcp_artifact.get("error") if mcp_artifact else None) or "MCP export packaging failed."
+        raise APIError(error_msg)
 
     return MCPExportResponse(
         mcp_manifest_url=f"/api/v1/projects/{project.id}/exports/mcp/manifest.json",
