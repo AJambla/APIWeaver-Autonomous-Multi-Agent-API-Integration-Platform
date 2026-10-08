@@ -6,7 +6,7 @@ import uuid
 
 import pytest
 
-from app.api.v1.github import create_github_oauth_client
+from app.api.v1.github import create_github_app_client, create_github_oauth_client
 from app.models.github import GitHubConnection
 
 
@@ -57,6 +57,46 @@ class TestGitHubOAuth:
         data = response.json()
         assert data["connected"] is True
         assert data["github_username"] == "testuser"
+        assert data["installations"] == []
+
+    @pytest.mark.asyncio
+    async def test_status_returns_installations_from_github_app(
+        self, client, auth_headers, session_factory, fake_vault, app
+    ):
+        """GET /github/status retrieves accessible GitHub App installations."""
+        me = await client.get("/api/v1/auth/me", headers=auth_headers)
+        user_id = uuid.UUID(me.json()["user"]["id"])
+
+        access_path = f"secret/github/connections/{user_id}/access"
+        await fake_vault.write_secret(access_path, {"token": "ghu_token_123"})
+
+        async with session_factory() as session:
+            conn = GitHubConnection(
+                user_id=user_id,
+                github_user_id="12345",
+                github_username="testuser",
+                access_token_vault_path=access_path,
+            )
+            session.add(conn)
+            await session.commit()
+
+        class _StubAppClient:
+            async def get_user_installations(self, token: str):
+                assert token == "ghu_token_123"
+                return [
+                    {"id": 999, "account": {"login": "my-org", "type": "Organization"}},
+                    {"id": 1000, "account": {"login": "testuser", "type": "User"}},
+                ]
+
+        app.dependency_overrides[create_github_app_client] = lambda: _StubAppClient()
+
+        response = await client.get("/api/v1/github/status", headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["connected"] is True
+        assert len(data["installations"]) == 2
+        assert data["installations"][0] == {"id": 999, "account": "my-org", "account_type": "Organization"}
+        assert data["installations"][1] == {"id": 1000, "account": "testuser", "account_type": "User"}
 
     @pytest.mark.asyncio
     async def test_disconnect_revokes_connection(
