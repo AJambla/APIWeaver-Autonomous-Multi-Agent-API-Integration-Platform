@@ -6,6 +6,7 @@ dependency layer, so it earns its own module.
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -23,6 +24,14 @@ REQUEST_ID_HEADER = "X-Request-ID"
 # An inbound id is echoed into logs and error bodies, so it is length- and
 # charset-capped: an unbounded client-controlled string is a log-injection vector.
 MAX_INBOUND_REQUEST_ID_LENGTH = 64
+SAFE_REQUEST_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.:=]{1,64}$")
+
+
+def is_valid_request_id(request_id: str) -> bool:
+    """Validate that an inbound request ID is safe, bounded, and free of injection vectors."""
+    if not request_id or len(request_id) > MAX_INBOUND_REQUEST_ID_LENGTH:
+        return False
+    return bool(SAFE_REQUEST_ID_PATTERN.fullmatch(request_id))
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -36,7 +45,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         inbound = request.headers.get(REQUEST_ID_HEADER, "")
-        if inbound and len(inbound) <= MAX_INBOUND_REQUEST_ID_LENGTH and inbound.isprintable():
+        if is_valid_request_id(inbound):
             request_id = inbound
         else:
             request_id = f"req_{uuid.uuid4().hex[:12]}"
