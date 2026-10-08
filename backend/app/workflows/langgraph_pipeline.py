@@ -1306,6 +1306,9 @@ class LangGraphOrchestrator:
             except Exception as e:
                 logger.warning("failed_to_initialize_qdrant_client", error=str(e))
         self.qdrant_client = qdrant_client
+        # In-process step caching checkpointer for graph execution loops.
+        # Cross-step durable recovery and human-in-the-loop pause/resume are persisted
+        # across all workers via PostgreSQL WorkflowCheckpoint snapshots.
         self.checkpointer = checkpointer or MemorySaver()
         self.execution_mode = execution_mode
 
