@@ -19,7 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import health
 from app.api.v1.router import api_router
-from app.core.config import Settings, get_settings
+from app.core.config import Settings, get_settings, validate_startup_environment
 from app.core.errors import APIError, ErrorCode, build_error_body
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import registry as metrics_registry
@@ -55,6 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Open shared clients on startup, close them on shutdown."""
     settings = getattr(app.state, "settings", None) or get_settings()
 
+    validate_startup_environment(settings)
     load_keys(settings)
 
     app.state.redis = aioredis.from_url(
