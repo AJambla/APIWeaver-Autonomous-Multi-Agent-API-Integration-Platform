@@ -54,6 +54,7 @@ testpaths = ["tests"]
 pythonpath = [".", ".."]
 markers = [
     "postgres: requires a live PostgreSQL instance (partitioned DDL is Postgres-only)",
+    "integration: requires live containerized infrastructure services (Postgres, Redis, Qdrant, MinIO, Vault)",
 ]
 
 [tool.ruff]
