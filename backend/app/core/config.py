@@ -189,9 +189,6 @@ class Settings(BaseSettings):
     # In production, require Celery workers for async workflows rather than
     # silently running on API process BackgroundTasks (fail-loud queueing).
     require_celery_worker: bool = False
-    # Auto-run database migrations on API boot (alembic upgrade head).
-    # Useful for single-node / containerized setups without a separate k8s init-container.
-    run_migrations_on_startup: bool = False
 
     @field_validator("model_pricing_per_token", mode="before")
     @classmethod

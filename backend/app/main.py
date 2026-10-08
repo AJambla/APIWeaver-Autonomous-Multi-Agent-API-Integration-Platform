@@ -69,24 +69,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     instrument_app(app, engine)
 
-    if settings.run_migrations_on_startup:
-        import asyncio
-        from pathlib import Path
-
-        from alembic import command
-        from alembic.config import Config
-
-        def _run_upgrade() -> None:
-            backend_dir = Path(__file__).resolve().parent.parent
-            alembic_cfg = Config(str(backend_dir / "alembic.ini"))
-            alembic_cfg.set_main_option("script_location", str(backend_dir / "alembic"))
-            alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
-            command.upgrade(alembic_cfg, "head")
-
-        logger.info("running_database_migrations_on_startup")
-        await asyncio.to_thread(_run_upgrade)
-        logger.info("database_migrations_completed")
-
     logger.info("application_started", app_env=settings.app_env)
     try:
         yield

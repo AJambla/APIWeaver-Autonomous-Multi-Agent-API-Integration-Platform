@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pathlib import Path
 from pydantic import ValidationError
 
 from app.core.config import Settings
@@ -214,8 +215,8 @@ async def test_docs_and_spec_are_served_in_development(test_settings: Settings) 
         assert spec.json()["info"]["title"] == "APIWeaver Platform API"
 
 
-async def test_run_migrations_on_startup_triggers_upgrade(test_settings: Settings, monkeypatch) -> None:
-    """When run_migrations_on_startup=True, lifespan executes alembic upgrade head."""
+async def test_lifespan_does_not_run_migrations_on_startup(test_settings: Settings, monkeypatch) -> None:
+    """Lifespan must never execute alembic upgrade on startup, preventing multi-pod race conditions."""
     from unittest.mock import AsyncMock, MagicMock
 
     from alembic import command
@@ -231,22 +232,35 @@ async def test_run_migrations_on_startup_triggers_upgrade(test_settings: Setting
     monkeypatch.setattr("app.main.dispose_engine", AsyncMock())
     monkeypatch.setattr("app.main.instrument_app", MagicMock())
 
-    migration_settings = test_settings.model_copy(update={"run_migrations_on_startup": True})
-    app = create_app(migration_settings)
-
+    app = create_app(test_settings)
     async with lifespan(app):
         pass
 
+    assert len(executed) == 0, "Alembic upgrade must not be executed during application lifespan"
+
+
+def test_migration_runner_script(monkeypatch) -> None:
+    """Standalone scripts/migrate.py executes alembic upgrade head with proper configuration."""
+    import importlib.util
+
+    from alembic import command
+
+    executed = []
+
+    def _mock_upgrade(cfg, rev):
+        executed.append((cfg, rev))
+
+    monkeypatch.setattr(command, "upgrade", _mock_upgrade)
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "migrate.py"
+    spec = importlib.util.spec_from_file_location("migrate", script_path)
+    assert spec is not None and spec.loader is not None
+    migrate_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migrate_module)
+
+    migrate_module.run_migrations("head")
     assert len(executed) == 1
     assert executed[0][1] == "head"
-
-    # When False, no upgrade is run
-    executed.clear()
-    default_app = create_app(test_settings.model_copy(update={"run_migrations_on_startup": False}))
-    async with lifespan(default_app):
-        pass
-
-    assert len(executed) == 0
 
 
 async def test_llm_health_returns_config(client: AsyncClient) -> None:
