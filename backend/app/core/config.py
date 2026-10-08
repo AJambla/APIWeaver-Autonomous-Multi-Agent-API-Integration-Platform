@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     )
     sandbox_node_image: str = "node:22-alpine"
     sandbox_max_cpu: str = "1"
-    sandbox_max_memory: str = "4Gi"
+    sandbox_max_memory: str = "1Gi"
     sandbox_timeout_seconds: int = 300
     sandbox_pids_limit: int = 64
     sandbox_network_enabled: bool = True
