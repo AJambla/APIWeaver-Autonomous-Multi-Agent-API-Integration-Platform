@@ -91,12 +91,36 @@ async def _main() -> int:
         base_name = module_name.split(".")[-1]
         module = importlib.import_module(base_name)
 
+    client_classes = [
+        getattr(module, a)
+        for a in dir(module)
+        if isinstance(getattr(module, a), type) and "Client" in a
+    ]
+    if not client_classes:
+        client_classes = [
+            getattr(module, a)
+            for a in dir(module)
+            if isinstance(getattr(module, a), type)
+            and a not in ("BaseModel", "Exception", "APIWeaverError")
+            and not a.startswith("_")
+        ]
+
+    # Select the client class that implements the requested operation (or its variants)
+    op_id = payload.get("op_id", "")
+    op_norm = op_id.lower().replace("_", "").replace("-", "")
     client_class = None
-    for attr_name in dir(module):
-        attr = getattr(module, attr_name)
-        if isinstance(attr, type) and "Client" in attr_name:
-            client_class = attr
+    for cls in client_classes:
+        methods = {m.lower().replace("_", "").replace("-", "") for m in dir(cls) if not m.startswith("_")}
+        if op_norm in methods or hasattr(cls, op_id):
+            client_class = cls
             break
+
+    # If no specific match, choose the client class with the most public methods
+    if client_class is None and client_classes:
+        client_class = max(
+            client_classes,
+            key=lambda c: len([m for m in dir(c) if not m.startswith("_") and callable(getattr(c, m, None))]),
+        )
     if client_class is None:
         raise RuntimeError(f"no client class found in module {payload['module_name']}")
 
@@ -286,14 +310,29 @@ async function main() {
     const module = await import(fileUrl);
 
     let ClientClass = null;
+    const clientClasses = [];
     for (const [key, val] of Object.entries(module)) {
         if (typeof val === "function" && (key.endsWith("Client") || key.toLowerCase().includes("client"))) {
-            ClientClass = val;
+            clientClasses.push(val);
+        }
+    }
+    if (clientClasses.length === 0 && module.default && typeof module.default === "function") {
+        clientClasses.push(module.default);
+    }
+
+    const targetOpId = payload.op_id || "";
+    const opNorm = targetOpId.toLowerCase().replace(/[^a-z0-9]/g, "");
+    for (const cls of clientClasses) {
+        const protoMethods = Object.getOwnPropertyNames(cls.prototype || {}).map(m => m.toLowerCase().replace(/[^a-z0-9]/g, ""));
+        if (protoMethods.includes(opNorm)) {
+            ClientClass = cls;
             break;
         }
     }
-    if (!ClientClass && module.default && typeof module.default === "function") {
-        ClientClass = module.default;
+    if (!ClientClass && clientClasses.length > 0) {
+        ClientClass = clientClasses.sort((a, b) =>
+            Object.getOwnPropertyNames(b.prototype || {}).length - Object.getOwnPropertyNames(a.prototype || {}).length
+        )[0];
     }
     if (!ClientClass) {
         throw new Error(`no client class found in module ${relPath}`);
@@ -572,6 +611,11 @@ class DockerSandboxExecutor:
                 duration_ms=int((time.perf_counter() - started) * 1000),
             )
         target.parent.mkdir(parents=True, exist_ok=True)
+        if test_file.endswith((".ts", ".tsx")):
+            test_code = re.sub(r'''((?:from|import)\s+['"])(\.[^'"]*?)\.js(['"])''', r'\1\2.ts\3', test_code)
+            test_code = re.sub(r'''(import\s*\(\s*['"])(\.[^'"]*?)\.js(['"])''', r'\1\2.ts\3', test_code)
+            test_code = re.sub(r'''((?:from|import)\s+['"])(\.[^'"]*?)(?<!\.ts)(?<!\.js)(?<!\.json)(['"])''', r'\1\2.ts\3', test_code)
+            test_code = re.sub(r'''(import\s*\(\s*['"])(\.[^'"]*?)(?<!\.ts)(?<!\.js)(?<!\.json)(['"])''', r'\1\2.ts\3', test_code)
         target.write_text(test_code, encoding="utf-8")
 
         is_node = test_file.endswith((".ts", ".js", ".mjs"))
@@ -697,6 +741,11 @@ class DockerSandboxExecutor:
             if rel_path.endswith(".py"):
                 content = re.sub(r'^(from\s+)\.([a-zA-Z_][a-zA-Z0-9_]*\s+import)', r'\1\2', content, flags=re.MULTILINE)
                 content = re.sub(r'^from\s+\.\s+import\s+([a-zA-Z_][a-zA-Z0-9_]*)', r'import \1', content, flags=re.MULTILINE)
+            elif rel_path.endswith((".ts", ".tsx")):
+                content = re.sub(r'''((?:from|import)\s+['"])(\.[^'"]*?)\.js(['"])''', r'\1\2.ts\3', content)
+                content = re.sub(r'''(import\s*\(\s*['"])(\.[^'"]*?)\.js(['"])''', r'\1\2.ts\3', content)
+                content = re.sub(r'''((?:from|import)\s+['"])(\.[^'"]*?)(?<!\.ts)(?<!\.js)(?<!\.json)(['"])''', r'\1\2.ts\3', content)
+                content = re.sub(r'''(import\s*\(\s*['"])(\.[^'"]*?)(?<!\.ts)(?<!\.js)(?<!\.json)(['"])''', r'\1\2.ts\3', content)
             target.write_text(content, encoding="utf-8")
 
         # Determine target language: explicit parameter or inferred from extensions
