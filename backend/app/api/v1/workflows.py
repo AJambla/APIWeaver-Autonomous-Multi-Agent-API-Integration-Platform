@@ -100,6 +100,7 @@ async def trigger_workflow(
         metadata={"stages": payload.stages, "target_languages": payload.target_languages},
     )
 
+    settings = get_settings()
     initial_state: WorkflowState = {
         "project_id": str(project.id),
         "organization_id": str(project.organization_id),
@@ -110,19 +111,19 @@ async def trigger_workflow(
         "generated_files": [],
         "test_suite": [],
         "errors": [],
-        "token_budget": getattr(project, "token_budget", None) or 1_000_000,
+        "token_budget": getattr(project, "token_budget", None) or settings.default_token_budget,
     }
 
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
     event_publisher = EventPublisher(redis_client)
-    settings = get_settings()
 
     runner_instance = LangGraphOrchestrator(
         session_factory=engine_session_factory,
         event_publisher=event_publisher,
         execution_mode=payload.execution_mode,
+        settings=settings,
     )
 
     # Commit before dispatching background worker so concurrent sessions see all persisted rows

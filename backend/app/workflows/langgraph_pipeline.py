@@ -19,7 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.config import get_settings
+from app.core.config import DEFAULT_MODEL_PRICING_PER_TOKEN, Settings, get_settings
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
 from app.models.enums import ProjectStatus, WorkflowStatus
@@ -44,21 +44,25 @@ logger = get_logger(__name__)
 terminal_logger = LangGraphAgentLogger()
 
 DEFAULT_TOKEN_BUDGET = 1_000_000
-
-MODEL_PRICING_PER_TOKEN: dict[str, float] = {
-    "gpt-4o-mini": 0.0000003,
-    "gpt-4o": 0.000005,
-    "gpt-4-turbo": 0.00001,
-    "claude-3-5-sonnet": 0.000003,
-    "claude-3-5-sonnet-20241022": 0.000003,
-    "claude-3-haiku": 0.00000025,
-}
 DEFAULT_TOKEN_PRICE = 0.000003
+MODEL_PRICING_PER_TOKEN: dict[str, float] = DEFAULT_MODEL_PRICING_PER_TOKEN
 
 
-def calculate_token_cost_usd(tokens: int, model: str | None = None) -> Decimal:
-    """Calculate estimated cost in USD based on per-model pricing."""
-    price = MODEL_PRICING_PER_TOKEN.get(model or "", DEFAULT_TOKEN_PRICE)
+def calculate_token_cost_usd(
+    tokens: int,
+    model: str | None = None,
+    settings: Settings | None = None,
+    pricing_overrides: dict[str, float] | None = None,
+) -> Decimal:
+    """Calculate estimated cost in USD based on per-model pricing loaded from Settings or overrides."""
+    cfg = settings or get_settings()
+    pricing = (
+        pricing_overrides
+        or getattr(cfg, "model_pricing_per_token", None)
+        or MODEL_PRICING_PER_TOKEN
+    )
+    default_price = getattr(cfg, "default_token_price", DEFAULT_TOKEN_PRICE)
+    price = pricing.get(model or "", default_price)
     return Decimal(str(round(tokens * price, 6)))
 
 
@@ -67,9 +71,10 @@ class WorkflowCancelledError(Exception):
     pass
 
 
-def check_budget(state: WorkflowState) -> None:
+def check_budget(state: WorkflowState, settings: Settings | None = None) -> None:
     """Check whether token budget has been exceeded."""
-    budget = state.get("token_budget") or DEFAULT_TOKEN_BUDGET
+    cfg = settings or get_settings()
+    budget = state.get("token_budget") or getattr(cfg, "default_token_budget", DEFAULT_TOKEN_BUDGET)
     used = state.get("total_tokens_used", 0)
     if used >= budget:
         raise RuntimeError(f"token_budget_exceeded: {used}/{budget}")
@@ -1369,13 +1374,15 @@ class LangGraphOrchestrator:
         qdrant_client: QdrantClient | None = None,
         checkpointer: Any | None = None,
         execution_mode: Literal["sync", "async"] = "sync",
+        settings: Settings | None = None,
     ) -> None:
+        self.settings = settings or get_settings()
         self.session_factory = session_factory
         self.event_publisher = event_publisher
         if qdrant_client is None:
             try:
                 from app.services.qdrant_service import HttpQdrantClient
-                qdrant_client = HttpQdrantClient(get_settings())
+                qdrant_client = HttpQdrantClient(self.settings)
             except Exception as e:
                 logger.warning("failed_to_initialize_qdrant_client", error=str(e))
         self.qdrant_client = qdrant_client
@@ -1491,7 +1498,9 @@ class LangGraphOrchestrator:
                                 "progress_percent", 100 if final_status == WorkflowStatus.COMPLETED else 50
                             )
 
-                            cost_usd = calculate_token_cost_usd(total_tokens, get_settings().llm_model)
+                            cost_usd = calculate_token_cost_usd(
+                                total_tokens, self.settings.llm_model, settings=self.settings
+                            )
                             run_obj.estimated_cost_usd = cost_usd
 
                             if total_tokens > 0:
@@ -1575,7 +1584,9 @@ class LangGraphOrchestrator:
             )
             current["status"] = WorkflowStatus.CANCELLED
             total_tokens = current.get("total_tokens_used", 0)
-            cost_usd = calculate_token_cost_usd(total_tokens, get_settings().llm_model)
+            cost_usd = calculate_token_cost_usd(
+                total_tokens, self.settings.llm_model, settings=self.settings
+            )
             if self.session_factory:
                 async with self.session_factory() as session:
                     run_obj = await session.get(WorkflowRun, workflow_run_id)
@@ -1614,7 +1625,9 @@ class LangGraphOrchestrator:
             current["status"] = WorkflowStatus.FAILED
             current.setdefault("errors", []).append(str(exc))
             total_tokens = current.get("total_tokens_used", 0)
-            cost_usd = calculate_token_cost_usd(total_tokens, get_settings().llm_model)
+            cost_usd = calculate_token_cost_usd(
+                total_tokens, self.settings.llm_model, settings=self.settings
+            )
 
             if self.session_factory:
                 async with self.session_factory() as session:

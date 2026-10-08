@@ -8,13 +8,27 @@ falling back to something insecure (`Security.md §7`).
 from __future__ import annotations
 
 import functools
+import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AppEnv = Literal["development", "staging", "production"]
+
+DEFAULT_MODEL_PRICING_PER_TOKEN: dict[str, float] = {
+    "gpt-4o-mini": 0.0000003,
+    "gpt-4o": 0.000005,
+    "gpt-4-turbo": 0.00001,
+    "claude-3-5-sonnet": 0.000003,
+    "claude-3-5-sonnet-20241022": 0.000003,
+    "claude-3-haiku": 0.00000025,
+    "gemini-2.0-flash": 0.0000001,
+    "gemini-1.5-pro": 0.00000125,
+    "gemini-1.5-flash": 0.000000075,
+    "deepseek-chat": 0.00000014,
+}
 
 
 class Settings(BaseSettings):
@@ -86,6 +100,13 @@ class Settings(BaseSettings):
     # Chunks of a single document that get embedded and indexed. Without a ceiling, one
     # 50MB upload is ~100k provider calls (audit M8); the remainder is skipped loudly.
     max_embedding_chunks: int = 2000
+
+    # --- Token budget & model pricing (audit §2.4, item 15) -------------------
+    default_token_budget: int = 1_000_000
+    default_token_price: float = 0.000003
+    model_pricing_per_token: dict[str, float] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICING_PER_TOKEN)
+    )
 
     # --- LLM resilience (transient failures + provider circuit breaker) -------
     llm_max_retries: int = 2
@@ -171,6 +192,25 @@ class Settings(BaseSettings):
     # Auto-run database migrations on API boot (alembic upgrade head).
     # Useful for single-node / containerized setups without a separate k8s init-container.
     run_migrations_on_startup: bool = False
+
+    @field_validator("model_pricing_per_token", mode="before")
+    @classmethod
+    def _parse_model_pricing(cls, value: Any) -> dict[str, float]:
+        """Parse JSON string if set via environment variable, and merge with defaults."""
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except Exception as e:
+                raise ValueError(f"Invalid JSON string for model_pricing_per_token: {e}") from e
+            if not isinstance(parsed, dict):
+                raise ValueError("model_pricing_per_token JSON must be an object/dict")
+            value = parsed
+        if isinstance(value, dict):
+            merged = dict(DEFAULT_MODEL_PRICING_PER_TOKEN)
+            for k, v in value.items():
+                merged[str(k)] = float(v)
+            return merged
+        return value
 
     @field_validator("database_url")
     @classmethod
