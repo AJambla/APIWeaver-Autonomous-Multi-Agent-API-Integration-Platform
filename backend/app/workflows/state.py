@@ -5,7 +5,17 @@ Represents working memory passed between agent nodes and checkpointed to Postgre
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
+
+
+def add_errors(left: list[str] | None, right: list[str] | None) -> list[str]:
+    """Reducer that appends new errors while preserving previously accumulated errors."""
+    res = list(left or [])
+    if right:
+        for err in right:
+            if err and err not in res:
+                res.append(err)
+    return res
 
 
 class WorkflowState(TypedDict, total=False):
@@ -52,7 +62,7 @@ class WorkflowState(TypedDict, total=False):
     current_node: str
     progress_percent: int
     status: str
-    errors: list[str]
+    errors: Annotated[list[str], add_errors]
     total_tokens_used: int
     token_budget: int | None
     execution_mode: str | None

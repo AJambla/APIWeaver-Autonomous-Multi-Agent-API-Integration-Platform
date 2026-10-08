@@ -42,6 +42,17 @@ def test_workflow_state_channels_preserved():
     assert "spec_persisted" in channels
     assert "endpoints_discovered" in channels
     assert "github_repo_name" in channels
+    assert "errors" in channels
+
+
+def test_workflow_state_errors_reducer():
+    """Verify that add_errors appends errors without duplicates."""
+    from app.workflows.state import add_errors
+
+    assert add_errors(None, ["err1"]) == ["err1"]
+    assert add_errors(["err1"], ["err2"]) == ["err1", "err2"]
+    assert add_errors(["err1"], ["err1", "err2"]) == ["err1", "err2"]
+    assert add_errors(["err1"], None) == ["err1"]
 
 
 def test_route_after_planner():
