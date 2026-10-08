@@ -15,6 +15,8 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.constants import DEFAULT_WORKFLOW_NODE_PROGRESS
+
 AppEnv = Literal["development", "staging", "production"]
 
 DEFAULT_MODEL_PRICING_PER_TOKEN: dict[str, float] = {
@@ -193,6 +195,29 @@ class Settings(BaseSettings):
     # In production, require Celery workers for async workflows rather than
     # silently running on API process BackgroundTasks (fail-loud queueing).
     require_celery_worker: bool = False
+    # Workflow progress percentage mapping by node name
+    workflow_node_progress_map: dict[str, int] = Field(
+        default_factory=lambda: dict(DEFAULT_WORKFLOW_NODE_PROGRESS)
+    )
+
+    @field_validator("workflow_node_progress_map", mode="before")
+    @classmethod
+    def _parse_workflow_node_progress(cls, value: Any) -> dict[str, int]:
+        """Parse JSON string if set via environment variable, and merge with defaults."""
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except Exception as e:
+                raise ValueError(f"Invalid JSON string for workflow_node_progress_map: {e}") from e
+            if not isinstance(parsed, dict):
+                raise ValueError("workflow_node_progress_map JSON must be an object/dict")
+            value = parsed
+        if isinstance(value, dict):
+            merged = dict(DEFAULT_WORKFLOW_NODE_PROGRESS)
+            for k, v in value.items():
+                merged[str(k)] = int(v)
+            return merged
+        return dict(DEFAULT_WORKFLOW_NODE_PROGRESS)
 
     @field_validator("model_pricing_per_token", mode="before")
     @classmethod
