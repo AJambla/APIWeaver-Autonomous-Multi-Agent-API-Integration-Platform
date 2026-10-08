@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.config import get_settings
+from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
 from app.models.auth_config import AuthConfig, SecretRef
 from app.models.enums import AuthScheme
@@ -363,9 +364,9 @@ async def _create_sandbox(
     else:
         spec_dict = {}
 
-    target_languages = state.get("target_languages", ["python", "node"])
+    target_languages = state.get("target_languages", DEFAULT_TARGET_LANGUAGES)
     if not isinstance(target_languages, list):
-        target_languages = ["python", "node"]
+        target_languages = list(DEFAULT_TARGET_LANGUAGES)
 
     python_files: dict[str, str] = {}
     node_files: dict[str, str] = {}

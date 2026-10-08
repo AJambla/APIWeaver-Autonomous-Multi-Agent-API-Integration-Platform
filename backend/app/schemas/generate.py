@@ -6,14 +6,15 @@ import uuid
 
 from pydantic import Field
 
+from app.core.constants import DEFAULT_TARGET_LANGUAGES, DEFAULT_WORKFLOW_STAGES
 from app.schemas.common import ResponseModel, StrictModel
 
 
 class GenerateRequest(StrictModel):
     """Request to trigger code generation for a project."""
 
-    stages: list[str] = Field(default_factory=lambda: ["plan", "generate", "test", "export"])
-    target_languages: list[str] = Field(default_factory=lambda: ["python", "node"])
+    stages: list[str] = Field(default_factory=lambda: list(DEFAULT_WORKFLOW_STAGES))
+    target_languages: list[str] = Field(default_factory=lambda: list(DEFAULT_TARGET_LANGUAGES))
     export_types: list[str] | None = Field(default=None, description="Subset of exports to run.")
 
 

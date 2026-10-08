@@ -20,6 +20,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import DEFAULT_MODEL_PRICING_PER_TOKEN, Settings, get_settings
+from app.core.constants import DEFAULT_TARGET_LANGUAGES, DEFAULT_WORKFLOW_STAGES
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
 from app.models.enums import ProjectStatus, WorkflowStatus
@@ -144,7 +145,7 @@ def route_after_planner(state: WorkflowState) -> str:
 
 def route_after_code(state: WorkflowState) -> str:
     """Determine whether to proceed to testing, export, or finish after code gen."""
-    stages = state.get("stages", ["plan", "generate", "test", "export"])
+    stages = state.get("stages", DEFAULT_WORKFLOW_STAGES)
     if "test" in stages:
         return "test_agent"
     if "export" in stages:
@@ -154,7 +155,7 @@ def route_after_code(state: WorkflowState) -> str:
 
 def route_after_testing(state: WorkflowState) -> str:
     """Evaluate test results: export if passed, loop to repair if failing, or terminate."""
-    stages = state.get("stages", ["plan", "generate", "test", "export"])
+    stages = state.get("stages", DEFAULT_WORKFLOW_STAGES)
     test_summary = state.get("test_run_summary") or {}
     failed_count = test_summary.get("failed", 0)
 
@@ -662,7 +663,7 @@ def create_apiweaver_graph(
         run_id = state.get("workflow_run_id", "")
         plan = state.get("execution_plan", {})
         phases = plan.get("phases", [])
-        target_langs = state.get("target_languages") or ["python", "node"]
+        target_langs = state.get("target_languages") or list(DEFAULT_TARGET_LANGUAGES)
         terminal_logger.log_start(
             "code_agent",
             run_id,
@@ -808,7 +809,7 @@ def create_apiweaver_graph(
                         select(CodeGenerationRun).where(CodeGenerationRun.workflow_run_id == run_uuid)
                     )
                     if existing_run is None:
-                        primary_lang = target_langs[0] if (target_langs and target_langs[0] in ("python", "node")) else "python"
+                        primary_lang = target_langs[0] if (target_langs and target_langs[0] in DEFAULT_TARGET_LANGUAGES) else DEFAULT_TARGET_LANGUAGES[0]
                         existing_run = CodeGenerationRun(
                             workflow_run_id=run_uuid,
                             target_language=primary_lang,
