@@ -120,9 +120,11 @@ class Settings(BaseSettings):
     # If None, docker.from_env() resolves from DOCKER_HOST or local default.
     docker_host: str | None = None
     sandbox_image: str = (
-        "apiweaver/sandbox-python:latest"
+        "apiweaver/sandbox-python:latest@sha256:8229daed51eef8322c816159d0d25bcde92c259087bd5c86df9b98e47a3f2b74"
     )
-    sandbox_node_image: str = "node:22-alpine"
+    sandbox_node_image: str = (
+        "node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402"
+    )
     sandbox_max_cpu: str = "1"
     sandbox_max_memory: str = "1Gi"
     sandbox_timeout_seconds: int = 300

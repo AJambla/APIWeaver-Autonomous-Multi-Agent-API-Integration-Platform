@@ -13,7 +13,6 @@
 # software the already-running container reports, so the pinned image is the one this
 # stack already uses rather than a new upgrade. Re-pin by looking up the new version's
 # digest when you next intend to upgrade.
-# One image cannot be pinned: see the `minio` service.
 services:
   web:
     image: apiweaver/web:latest
@@ -293,17 +292,7 @@ services:
       start_period: 15s
 
   minio:
-    # Not pinned, deliberately: the registry can no longer be resolved anonymously, so a
-    # digest here could not be verified and would not pull on a clean machine either.
-    # Measured 2026-10-05: `docker pull quay.io/minio/minio:latest` and the same request for
-    # `@sha256:14cea493...` (the digest of the image this stack is running) both fail with
-    # `401 UNAUTHORIZED` from quay.io, even with a fresh anonymous pull token, and
-    # `docker.io/minio/minio`, `public.ecr.aws/minio/minio` and
-    # `public.ecr.aws/docker/library/minio` all return not-found / authorization failed.
-    # This works today only because the image is already in the local store; a fresh
-    # checkout cannot start it. Choose an object store with a public image, or vendor this
-    # one with `docker save`, before relying on this file for a new environment.
-    image: quay.io/minio/minio:latest
+    image: quay.io/minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     container_name: apiweaver-minio
     command: server /data --console-address ":9001"
     environment:

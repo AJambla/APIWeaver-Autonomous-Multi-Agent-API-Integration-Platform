@@ -452,14 +452,14 @@ async def {op_id}({sig}):
 
         docker_image_name = kwargs.get("docker_image_name") or f"apiweaver-{project_id}-api"
         if "python" not in target_languages and "node" in target_languages:
-            dockerfile = '''FROM node:22-alpine AS builder
+            dockerfile = '''FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci || npm install
 COPY . .
 RUN if npm run | grep -q ' build$'; then npm run build; fi
 
-FROM node:22-alpine
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
 WORKDIR /app
 COPY --from=builder /app ./
 EXPOSE 3000
