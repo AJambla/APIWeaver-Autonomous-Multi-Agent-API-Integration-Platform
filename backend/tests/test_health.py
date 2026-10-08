@@ -73,6 +73,22 @@ async def test_oversized_inbound_request_id_is_replaced(client: AsyncClient) -> 
     assert echoed.startswith("req_")
 
 
+async def test_unsafe_inbound_request_id_is_replaced(client: AsyncClient) -> None:
+    """Inbound IDs with injection chars, quotes, spaces, or script tags are replaced."""
+    unsafe_ids = [
+        'req"injection',
+        "req with spaces",
+        "<script>alert(1)</script>",
+        "req; DROP TABLE audit_logs;",
+        "req\nnewline",
+    ]
+    for bad_id in unsafe_ids:
+        response = await client.get("/healthz", headers={"X-Request-ID": bad_id})
+        echoed = response.headers["X-Request-ID"]
+        assert echoed != bad_id, f"Expected {bad_id} to be rejected"
+        assert echoed.startswith("req_")
+
+
 async def test_error_envelope_matches_api_spec(client: AsyncClient) -> None:
     """Every error uses the `API.md §5` shape, including FastAPI's own 404s."""
     response = await client.get("/api/v1/projects/not-a-uuid")
