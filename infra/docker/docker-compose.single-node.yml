@@ -233,55 +233,17 @@ services:
       - "6333:6333"
     volumes:
       - qdrantdata:/qdrant/storage
+      - ../../scripts/qdrant-healthcheck.sh:/qdrant-healthcheck.sh:ro
     networks:
       - apiweaver
     healthcheck:
-      # `audit M10`. The previous test was `[ -f /proc/self/cgroup ] && echo OK || exit 1`.
-      # That is not a healthcheck: /proc/self/cgroup exists in every container on every Linux
-      # host, so it printed OK for a process that had crashed, one still loading its
-      # collections, and one not listening on 6333 at all. Measured against the running
-      # container before this change, the old command's output was literally `always OK`.
-      #
-      # The replacement asks qdrant itself whether it is ready. It is a raw HTTP GET over
-      # bash's /dev/tcp because each of curl, wget, nc, python and python3 is absent from this
-      # image (checked one `command -v` per name - batching them reports only the last), while
-      # bash, `timeout` and grep are present (Debian 13 trixie).
-      #
-      # It must stay in exec form with an explicit `bash`, not CMD-SHELL: this image's
-      # /bin/sh is dash, which has no /dev/tcp, and the same script run through
-      # `/bin/sh -c` fails with `cannot create /dev/tcp/127.0.0.1/6333: Directory
-      # nonexistent` (rc=2). A CMD-SHELL form would leave the service permanently unhealthy.
-      #
-      # Controls. This script body against the live API on this host: 200 -> rc=0, a response
-      # that does not match -> rc=124 at the inner bound, nothing listening -> rc=1 with
-      # `Connection refused`. Inside this container, two earlier drafts of the same script
-      # (same request, different way of reading the status line) gave /readyz -> rc=0,
-      # /healthz -> rc=0, /notarealendpoint -> rc=1 and the closed port 6399 -> rc=1. The final
-      # form below has so far only been measured as /readyz -> rc=124, taken while this machine
-      # had 0 GB of 7.9 GB RAM free, so it is not yet a verdict on the check - re-run all four
-      # cases here on an idle machine and correct this note.
-      #
-      # The status line is matched with `grep <&3`, not `head -n 1 | grep`: bash waits for
-      # every stage of a pipeline, so `head` stays blocked on the socket until the server closes
-      # it. Measured: with the head form the check was killed by its own `timeout` (rc=124) even
-      # though /readyz answered in 287 ms at the same moment from outside the container.
-      #
-      # It also contains no `$`. Compose interpolates `$VAR` out of every value in this file
-      # before the daemon sees the command, and it does not know that this `$VAR` was meant for
-      # bash. Measured with an earlier draft of this line, which tested a shell variable:
-      # `docker compose config` rendered it as `case "" in *" 200 "*) ...` - the variable was
-      # gone, and the check could then only ever report a healthy Qdrant as unhealthy. `$$` is
-      # Compose's documented escape, but escaping it correctly is a second thing every future
-      # editor of this file has to know, so the command is written with no shell variables to
-      # interpolate: the path is a literal, and `grep -m1 -q` exits at the matching line itself.
-      test: [ "CMD", "timeout", "10", "bash", "-c", 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && timeout 5 grep -m1 -q " 200 " <&3' ]
+      # Probes Qdrant /readyz HTTP endpoint via dedicated healthcheck script.
+      # Replaces fragile inline shell socket redirections with dedicated mounted probe.
+      test: [ "CMD", "/bin/bash", "/qdrant-healthcheck.sh" ]
       interval: 10s
-      # Longer than the `timeout 10` above on purpose: the check must be able to fail with its
-      # own exit status (124), not be killed by the daemon. Docker's kill on timeout is not
-      # reliable on this engine - see the agent-worker note.
-      timeout: 20s
+      timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 15s
 
   vault:
     image: hashicorp/vault:2.1.1@sha256:47f14a6acb98f48d798a07df7c83f23a6e636e1cf724c5f8ff165cb32667a1e2
