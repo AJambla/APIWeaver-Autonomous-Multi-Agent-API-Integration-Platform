@@ -233,3 +233,5 @@ async def {{ op_id }}(
 
 {% endfor %}
 {% endfor %}
+
+Client = {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}

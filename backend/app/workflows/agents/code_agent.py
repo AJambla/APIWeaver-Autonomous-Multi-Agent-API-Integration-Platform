@@ -161,10 +161,35 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
             node.name: node for node in tree_orig.body if isinstance(node, ast.ClassDef)
         }
 
+        # Identify existing client class if any
+        existing_client_cls = None
+        for cname, cnode in orig_classes.items():
+            if "Client" in cname:
+                existing_client_cls = cnode
+                break
+
         for node in tree_new.body:
             if isinstance(node, ast.ClassDef):
+                target_cls = None
                 if node.name in orig_classes:
                     target_cls = orig_classes[node.name]
+                elif "Client" in node.name and existing_client_cls is not None:
+                    # Unify across generation phases: merge into existing client class
+                    target_cls = existing_client_cls
+                    alias_name = node.name
+                    alias_exists = any(
+                        isinstance(stmt, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == alias_name for t in stmt.targets)
+                        for stmt in tree_orig.body
+                    )
+                    if not alias_exists and alias_name != existing_client_cls.name:
+                        alias_assign = ast.Assign(
+                            targets=[ast.Name(id=alias_name, ctx=ast.Store())],
+                            value=ast.Name(id=existing_client_cls.name, ctx=ast.Load()),
+                        )
+                        tree_orig.body.append(alias_assign)
+
+                if target_cls is not None:
                     target_methods = {
                         m.name: idx
                         for idx, m in enumerate(target_cls.body)
@@ -178,6 +203,8 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
                                 target_cls.body.append(member)
                 else:
                     tree_orig.body.append(node)
+                    if "Client" in node.name and existing_client_cls is None:
+                        existing_client_cls = node
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 orig_funcs = {
                     fn.name: idx
@@ -189,6 +216,22 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
                 else:
                     tree_orig.body.append(node)
 
+        # Ensure Client alias exists if a specific named Client was generated
+        if existing_client_cls is not None and "Client" not in orig_classes:
+            has_client_alias = any(
+                isinstance(stmt, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "Client" for t in stmt.targets)
+                for stmt in tree_orig.body
+            )
+            if not has_client_alias and existing_client_cls.name != "Client":
+                tree_orig.body.append(
+                    ast.Assign(
+                        targets=[ast.Name(id="Client", ctx=ast.Store())],
+                        value=ast.Name(id=existing_client_cls.name, ctx=ast.Load()),
+                    )
+                )
+
+        ast.fix_missing_locations(tree_orig)
         return ast.unparse(tree_orig)
     except Exception as exc:
         logger.warning("python_ast_merge_failed", file_path=file_path, error=str(exc))
@@ -202,6 +245,7 @@ def _merge_ts_code(existing_code: str, new_code: str, file_path: str = "") -> st
     if not new_code.strip():
         return existing_code
 
+    result = existing_code
     if "class " in existing_code and "class " in new_code:
         new_methods = re.findall(
             r'(async\s+[a-zA-Z0-9_]+\([^)]*\)[\s\S]*?^  \})', new_code, re.MULTILINE
@@ -218,9 +262,15 @@ def _merge_ts_code(existing_code: str, new_code: str, file_path: str = "") -> st
                 last_brace = existing_code.rfind("}")
                 if last_brace != -1:
                     injection = "\n\n  " + "\n\n  ".join(added) + "\n"
-                    return existing_code[:last_brace] + injection + existing_code[last_brace:]
+                    result = existing_code[:last_brace] + injection + existing_code[last_brace:]
 
-    return new_code or existing_code
+    # Ensure Client alias is exported if class has a specific name like PetstoreClient
+    if "class " in result and "export class Client" not in result and "as Client" not in result:
+        cls_match = re.search(r'export\s+class\s+([a-zA-Z0-9_]*Client)', result)
+        if cls_match and cls_match.group(1) != "Client":
+            result += f"\n\nexport {{ {cls_match.group(1)} as Client }};\n"
+
+    return result
 
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 
@@ -233,9 +283,12 @@ the following endpoint group, following the project's style guide:
   CRITICAL CONSTRUCTOR REQUIREMENT: The main Client class __init__ MUST accept:
   def __init__(self, base_url: str | None = None, api_key: str | None = None, **kwargs: Any) -> None:
   Never omit api_key or **kwargs from __init__.
+  CRITICAL CLASS NAMING: Name the main client class `Client` (or alias `Client = <ApiName>Client`). Maintain consistent class naming across all execution phases.
   IMPORTANT IMPORT RULE: For Python sibling modules, always use top-level imports (e.g. `from models import *` or `import models`, NOT package-relative `from .models import *`) so modules can be imported directly when staged in sys.path without package parent context.
 - Node.js: TypeScript strict mode, Zod schemas, native fetch, ESM modules.
   Client constructor MUST accept an optional config object: constructor(config?: {{ baseUrl?: string; apiKey?: string; [key: string]: any }})
+  CRITICAL CLASS NAMING: Name or export the main client class as `Client` (or `export class Client` / `export {{ <Name>Client as Client }}`).
+  IMPORTANT IMPORT RULE: When importing sibling TypeScript modules (e.g. types, errors, schemas), use exact `.ts` extensions (e.g. `import {{ ApiError }} from './errors.ts'`, NOT `.js`) so Node.js native TypeScript execution loads them directly without missing modules.
 
 Always implement: retry with exponential backoff for 429/500/502/503,
 pagination helpers if the endpoint response indicates pagination

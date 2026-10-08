@@ -11,8 +11,9 @@ export {
   NotFoundError,
   ValidationError,
   {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }},
-} from "./client.js";
+  Client,
+} from "./client.ts";
 
-export * from "./types.js";
+export * from "./types.ts";
 
 export const version = "{{ version | default('0.1.0') }}";

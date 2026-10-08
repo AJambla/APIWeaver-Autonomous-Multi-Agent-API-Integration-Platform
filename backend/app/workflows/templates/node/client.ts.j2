@@ -12,7 +12,7 @@ import type {
 {% endif %}
 {% endfor %}
 {% endfor %}
-} from "./types.js";
+} from "./types.ts";
 
 export class APIWeaverError extends Error {
   readonly statusCode?: number;
@@ -257,3 +257,5 @@ export async function {{ op_id }}(
 
 {% endfor %}
 {% endfor %}
+
+export { {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }} as Client };
