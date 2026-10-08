@@ -63,274 +63,6 @@ Return a JSON object with:
 """
 
 
-class MockSandboxClient:
-    """In-process mock sandbox for executing generated Python code."""
-
-    def __init__(
-        self,
-        generated_files: list[dict[str, Any]],
-        spec: dict[str, Any],
-        project_id: str = "default",
-    ) -> None:
-        self.generated_files = generated_files
-        self.spec = spec
-        self.project_id = project_id
-        self._modules: dict[str, Any] = {}
-        self._temp_dirs: set[Path] = set()
-        self._loaded_module_names: set[str] = set()
-
-    async def _load_modules(self) -> None:
-        """Load generated Python modules into memory."""
-        # Create a temporary directory structure in memory
-        for file_meta in (self.generated_files if isinstance(self.generated_files, list) else []):
-            if not isinstance(file_meta, dict) or file_meta.get("language") != "python":
-                continue
-
-            try:
-                content = await storage_service.download(file_meta["content_s3_key"])
-                file_path = file_meta.get("file_path", "")
-                if not file_path:
-                    continue
-
-                # Write to a temporary location for import
-                import tempfile
-                proj_id = file_meta.get("project_id") or self.project_id or "default"
-                temp_dir = Path(tempfile.gettempdir()) / "apiweaver_sandbox" / str(proj_id)
-                temp_dir.mkdir(parents=True, exist_ok=True)
-                self._temp_dirs.add(temp_dir)
-
-                full_path = _safe_workspace_target(temp_dir, file_path)
-                if full_path is None:
-                    logger.warning("sandbox_path_rejected", file=file_path)
-                    continue
-                full_path.parent.mkdir(parents=True, exist_ok=True)
-                if file_path.endswith(".py"):
-                    try:
-                        text = content.decode("utf-8") if isinstance(content, bytes) else str(content)
-                        text = re.sub(r'^(from\s+)\.([a-zA-Z_][a-zA-Z0-9_]*\s+import)', r'\1\2', text, flags=re.MULTILINE)
-                        text = re.sub(r'^from\s+\.\s+import\s+([a-zA-Z_][a-zA-Z0-9_]*)', r'import \1', text, flags=re.MULTILINE)
-                        content = text.encode("utf-8")
-                    except Exception as e:
-                        logger.debug("test_agent_relative_import_rewrite_failed", error=str(e))
-                full_path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
-
-                # Add to sys.path if not already
-                if str(temp_dir) not in sys.path:
-                    sys.path.insert(0, str(temp_dir))
-
-            except Exception as e:
-                logger.warning("sandbox_module_load_failed", file=file_meta.get("file_path"), error=str(e))
-
-        importlib.invalidate_caches()
-
-    def _get_client_class(self) -> type | None:
-        """Find and return the generated client class."""
-        importlib.invalidate_caches()
-        classes = []
-        for file_meta in (self.generated_files if isinstance(self.generated_files, list) else []):
-            if not isinstance(file_meta, dict):
-                continue
-            fp = file_meta.get("file_path", "")
-            if file_meta.get("language") == "python" and "client" in fp:
-                module_name = fp.replace("/", ".").replace(".py", "")
-                try:
-                    if module_name in sys.modules:
-                        del sys.modules[module_name]
-                    module = importlib.import_module(module_name)
-                    self._loaded_module_names.add(module_name)
-                    for attr_name in dir(module):
-                        attr = getattr(module, attr_name)
-                        if isinstance(attr, type) and "Client" in attr_name:
-                            if "Echo" in attr_name or "Mock" in attr_name or "sandbox" in fp.lower():
-                                return attr
-                            classes.append(attr)
-                except Exception as e:
-                    logger.warning("client_class_load_failed", module=module_name, error=str(e))
-        return classes[0] if classes else None
-
-    async def cleanup(self) -> None:
-        """Clean up loaded modules and sys.path entries."""
-        for mod in list(self._loaded_module_names):
-            sys.modules.pop(mod, None)
-        self._loaded_module_names.clear()
-        for temp_dir in self._temp_dirs:
-            p_str = str(temp_dir)
-            while p_str in sys.path:
-                try:
-                    sys.path.remove(p_str)
-                except ValueError:
-                    break
-        importlib.invalidate_caches()
-
-    async def execute_test(self, endpoint: dict[str, Any], fixture: dict[str, Any]) -> dict[str, Any]:
-        """Execute a single test against the mock sandbox."""
-        if not isinstance(endpoint, dict):
-            endpoint = {}
-        if isinstance(fixture, list):
-            fixture = fixture[0] if (fixture and isinstance(fixture[0], dict)) else {}
-        elif not isinstance(fixture, dict):
-            fixture = {}
-
-        method = str(endpoint.get("method") or "GET").upper()
-        path = str(endpoint.get("path") or "/")
-
-        result = {
-            "endpoint_id": endpoint.get("id"),
-            "method": method,
-            "path": path,
-            "status": "passed",
-            "status_code": None,
-            "latency_ms": 0,
-            "response_snapshot": None,
-            "error": None,
-            "stack_trace": None,
-        }
-
-        try:
-            # Get the client class
-            ClientClass = self._get_client_class()
-            if not ClientClass:
-                result["status"] = "failed"
-                result["error"] = "Could not load generated client class"
-                return result
-
-            # Instantiate client with spec configuration
-            spec_base_url = self.spec.get("base_url") if isinstance(self.spec, dict) else None
-            client_kwargs: dict[str, Any] = {
-                "base_url": spec_base_url or "http://127.0.0.1:8000",
-            }
-            client_sig = inspect.signature(ClientClass.__init__)
-            if "api_key" in client_sig.parameters:
-                client_kwargs["api_key"] = (self.spec.get("auth") or {}).get("api_key") or "test-key"
-            client = ClientClass(**client_kwargs)
-
-            # Build request parameters from fixture
-            request_data = fixture.get("request", {}) if isinstance(fixture, dict) else {}
-            if not isinstance(request_data, dict):
-                request_data = {}
-            params = request_data.get("params", {}) if isinstance(request_data, dict) else {}
-            if not isinstance(params, dict):
-                params = {}
-            body = request_data.get("body")
-
-            # Call the appropriate method
-            op_id = (
-                endpoint.get("operationId")
-                or endpoint.get("operation_id")
-                or path.replace("/", "_").replace("{", "").replace("}", "").replace("-", "_")
-            )
-            method_func = getattr(client, op_id, None)
-            if not method_func:
-                snake = re.sub(r'(?<!^)(?=[A-Z])', '_', op_id).lower()
-                if hasattr(client, snake):
-                    method_func = getattr(client, snake)
-                else:
-                    for attr_name in dir(client):
-                        if not attr_name.startswith('_') and attr_name.lower().replace('_', '') == op_id.lower().replace('_', ''):
-                            method_func = getattr(client, attr_name)
-                            break
-
-            if not method_func:
-                result["status"] = "failed"
-                result["error"] = f"Method {op_id} not found on client"
-                return result
-
-            # Signature-safe argument binding
-            sig = inspect.signature(method_func)
-            call_kwargs = {}
-            params_normalized = {k: v for k, v in params.items()}
-            params_normalized.update({k.lower().replace("_", "").replace("-", ""): v for k, v in params.items()})
-
-            for p_name, p in sig.parameters.items():
-                if p.kind == inspect.Parameter.VAR_KEYWORD:
-                    call_kwargs.update(params)
-                    break
-                if p_name in params:
-                    call_kwargs[p_name] = params[p_name]
-                else:
-                    p_norm = p_name.lower().replace("_", "").replace("-", "")
-                    if p_norm in params_normalized:
-                        call_kwargs[p_name] = params_normalized[p_norm]
-
-            if "body" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-                if body is not None:
-                    call_kwargs["body"] = body
-
-            # Execute with timing
-            import time
-            start = time.perf_counter()
-            if asyncio.iscoroutinefunction(method_func):
-                response = await method_func(**call_kwargs)
-            else:
-                response = method_func(**call_kwargs)
-                if asyncio.iscoroutine(response):
-                    response = await response
-            result["latency_ms"] = int((time.perf_counter() - start) * 1000)
-
-            # Capture response
-            status_code = getattr(response, "status_code", None)
-            if status_code is None and isinstance(response, dict):
-                status_code = response.get("status_code") or response.get("status")
-            result["status_code"] = status_code
-            result["response_snapshot"] = {
-                "status_code": status_code,
-                "headers": dict(getattr(response, "headers", {})),
-                "body": response.json() if hasattr(response, "json") else getattr(response, "text", response if isinstance(response, dict) else None),
-            }
-
-            # Validate response
-            expected_status = fixture.get("expected_status") if isinstance(fixture, dict) else None
-            if expected_status is None:
-                resp_schemas = endpoint.get("response_schemas") or endpoint.get("responses") or {}
-                if isinstance(resp_schemas, dict):
-                    for code_str in resp_schemas.keys():
-                        try:
-                            c = int(code_str)
-                            if 200 <= c < 300:
-                                expected_status = c
-                                break
-                        except (ValueError, TypeError):
-                            pass
-                if expected_status is None:
-                    expected_status = 201 if method == "POST" else (204 if method == "DELETE" else 200)
-
-            if status_code is None:
-                result["status"] = "failed"
-                result["error"] = f"Response object has no status_code (got {type(response).__name__})"
-            else:
-                is_success_code = 200 <= status_code < 300
-                expected_is_2xx = isinstance(expected_status, int) and 200 <= expected_status < 300
-                if expected_is_2xx:
-                    if not is_success_code:
-                        result["status"] = "failed"
-                        result["error"] = f"Expected 2xx status, got {status_code}"
-                elif status_code != expected_status:
-                    result["status"] = "failed"
-                    result["error"] = f"Expected status {expected_status}, got {status_code}"
-
-            close_fn = getattr(client, "close", None)
-            if close_fn:
-                if asyncio.iscoroutinefunction(close_fn):
-                    await close_fn()
-                else:
-                    res = close_fn()
-                    if asyncio.iscoroutine(res):
-                        await res
-
-        except Exception as e:
-            result["status"] = "failed"
-            result["error"] = str(e)
-            result["stack_trace"] = traceback.format_exc()
-
-        return result
-
-    async def cleanup(self) -> None:
-        """Drop the sys.path entries added by _load_modules."""
-        for entry in list(sys.path):
-            if "apiweaver_sandbox" in entry:
-                sys.path.remove(entry)
-
-
 class FailureClassifier:
     """Classifies test failures using LLM."""
 
@@ -634,6 +366,7 @@ class MultiLanguageSandboxExecutor:
     """Executes endpoint tests across multiple language sandbox executors."""
 
     def __init__(self, executors: dict[str, DockerSandboxExecutor]) -> None:
+        self.executors = executors
         self._executors = executors
 
     async def execute_test(self, endpoint: dict[str, Any], fixture: dict[str, Any]) -> dict[str, Any]:
@@ -666,13 +399,8 @@ async def _create_sandbox(
     generated_files: list[dict[str, Any]],
     spec: dict[str, Any] | list[Any],
     auth: dict[str, Any] | None = None,
-) -> MockSandboxClient | DockerSandboxExecutor | MultiLanguageSandboxExecutor:
-    """Build the sandbox backend selected by settings (mock by default).
-
-    Live credentials are only handed to the Docker executor — the mock backend
-    runs generated code in-process, which must never see target-API secrets
-    (Security.md §19).
-    """
+) -> DockerSandboxExecutor | MultiLanguageSandboxExecutor:
+    """Build the production-level Docker sandbox executor."""
     settings = get_settings()
     if not isinstance(generated_files, list):
         generated_files = []
@@ -683,20 +411,6 @@ async def _create_sandbox(
         spec_dict = spec
     else:
         spec_dict = {}
-
-    if settings.sandbox_backend != "docker":
-        if getattr(settings, "app_env", "") in ("production", "staging"):
-            raise RuntimeError(
-                f"SANDBOX_BACKEND={settings.sandbox_backend} cannot be used in {settings.app_env} mode. "
-                "Docker sandbox executor is strictly required."
-            )
-        sandbox = MockSandboxClient(
-            generated_files,
-            spec_dict,
-            project_id=str(state.get("project_id") or "default"),
-        )
-        await sandbox._load_modules()
-        return sandbox
 
     target_languages = state.get("target_languages", ["python", "node"])
     if not isinstance(target_languages, list):
@@ -876,45 +590,61 @@ async def run_test_agent(
             raw_eps = list(raw_eps.values())
         endpoints_to_test = [ep for ep in raw_eps if isinstance(ep, dict)]
 
-        # Run tests for each endpoint
+        # Run tests for each endpoint across all configured language executors
         test_results = []
         all_passed = True
 
-        for i, ep in enumerate(endpoints_to_test):
-            method = str(ep.get("method") or "GET").upper()
-            path = str(ep.get("path") or "/")
-            ep_key = f"{method} {path}"
-            fixture = fixtures.get(ep_key, {})
+        language_executors: dict[str, Any]
+        if isinstance(sandbox, MultiLanguageSandboxExecutor):
+            language_executors = sandbox.executors
+        else:
+            language_executors = {"default": sandbox}
 
-            if on_activity:
-                try:
-                    await on_activity(
-                        "executing_test",
-                        f"Executing test {i + 1}/{len(endpoints_to_test)}: {method} {path}...",
-                        i + 1,
-                        len(endpoints_to_test),
-                    )
-                except Exception as e:
-                    logger.debug("on_activity_executing_test_failed", error=str(e))
+        total_tests = len(endpoints_to_test) * len(language_executors)
+        test_counter = 0
 
-            result = await sandbox.execute_test(ep, fixture)
-            test_results.append(result)
+        for lang, executor in language_executors.items():
+            for i, ep in enumerate(endpoints_to_test):
+                test_counter += 1
+                method = str(ep.get("method") or "GET").upper()
+                path = str(ep.get("path") or "/")
+                ep_key = f"{method} {path}"
+                fixture = fixtures.get(ep_key, {})
 
-            st = str(result.get("status", "unknown")).upper()
-            lat = result.get("latency_ms", 0)
-            if on_activity:
-                try:
-                    await on_activity(
-                        "test_result",
-                        f"Test {i + 1}/{len(endpoints_to_test)} {method} {path} → {st} ({lat}ms)",
-                        i + 1,
-                        len(endpoints_to_test),
-                    )
-                except Exception as e:
-                    logger.debug("on_activity_test_result_failed", error=str(e))
+                lang_tag = f"[{lang}] " if lang != "default" else ""
+                if on_activity:
+                    try:
+                        await on_activity(
+                            "executing_test",
+                            f"Executing test {test_counter}/{total_tests}: {lang_tag}{method} {path}...",
+                            test_counter,
+                            total_tests,
+                        )
+                    except Exception as e:
+                        logger.debug("on_activity_executing_test_failed", error=str(e))
 
-            if result.get("status") != "passed":
-                all_passed = False
+                result = await executor.execute_test(ep, fixture)
+                if lang != "default":
+                    result["language"] = lang
+                    if result.get("error"):
+                        result["error"] = f"[{lang}] {result['error']}"
+                test_results.append(result)
+
+                st = str(result.get("status", "unknown")).upper()
+                lat = result.get("latency_ms", 0)
+                if on_activity:
+                    try:
+                        await on_activity(
+                            "test_result",
+                            f"Test {test_counter}/{total_tests} {lang_tag}{method} {path} → {st} ({lat}ms)",
+                            test_counter,
+                            total_tests,
+                        )
+                    except Exception as e:
+                        logger.debug("on_activity_test_result_failed", error=str(e))
+
+                if result.get("status") != "passed":
+                    all_passed = False
 
         # Classify any failing tests so failure details and diagnosis are available
         failed_tests = [r for r in test_results if r.get("status") == "failed"]

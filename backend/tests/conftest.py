@@ -170,7 +170,7 @@ def test_settings(repo_root: Path) -> Iterator[Settings]:
     previous_openai_key = os.environ.get("OPENAI_API_KEY")
     previous_openai_base = os.environ.get("OPENAI_API_BASE_URL")
     previous_anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    os.environ["SANDBOX_BACKEND"] = "mock"
+    os.environ["SANDBOX_BACKEND"] = "docker"
     os.environ["APP_ENV"] = "development"
     os.environ["OPENAI_API_KEY"] = ""
     os.environ["OPENAI_API_BASE_URL"] = ""
@@ -183,7 +183,7 @@ def test_settings(repo_root: Path) -> Iterator[Settings]:
             jwt_public_key_path=public_key,
             app_env="development",
             log_level="WARNING",
-            sandbox_backend="mock",
+            sandbox_backend="docker",
             openai_api_key="",
             openai_api_base_url="",
             anthropic_api_key="",

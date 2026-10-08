@@ -7,9 +7,12 @@ Docker-backed executor that enforces per-run resource quotas.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import os
 import re
 import shutil
+import tarfile
 import tempfile
 import time
 import traceback
@@ -47,145 +50,6 @@ class SandboxClient(Protocol):
 
     async def cleanup(self, *, project_id: uuid.UUID) -> None: ...
 
-
-class MockSandboxClient:
-    """In-memory sandbox for unit/integration tests.
-
-    Executes Python code in-process with isolated globals.
-    For Node.js, validates syntax only (no actual execution).
-    """
-
-    def __init__(self) -> None:
-        self._workspaces: dict[uuid.UUID, dict[str, str]] = {}
-        self._fixtures: dict[uuid.UUID, list[dict[str, Any]]] = {}
-
-    async def prepare(self, *, project_id: uuid.UUID, language: str, files: dict[str, str]) -> None:
-        self._workspaces[project_id] = files
-        if language == "python":
-            self._fixtures[project_id] = self._generate_python_fixtures(files)
-
-    def _generate_python_fixtures(self, files: dict[str, str]) -> list[dict[str, Any]]:
-        fixtures = []
-        for path, content in files.items():
-            if path.endswith(".py") and "test_" in path:
-                continue
-            if "client" in path.lower() or "models" in path.lower() or "api" in path.lower():
-                fixtures.append({
-                    "module_path": path,
-                    "content": content,
-                })
-        return fixtures
-
-    async def run_test(
-        self,
-        *,
-        project_id: uuid.UUID,
-        test_file: str,
-        test_code: str,
-        env_vars: dict[str, str] | None = None,
-    ) -> SandboxResult:
-        import time
-
-        start = time.perf_counter()
-        workspace = self._workspaces.get(project_id, {})
-
-        if test_file.endswith(".py"):
-            return await self._run_python_test(workspace, test_code, start)
-        elif test_file.endswith((".ts", ".js")):
-            return await self._run_node_test(test_code, start)
-        else:
-            return SandboxResult(
-                exit_code=1,
-                stdout="",
-                stderr=f"Unsupported test file type: {test_file}",
-                duration_ms=int((time.perf_counter() - start) * 1000),
-            )
-
-    async def _run_python_test(
-        self, workspace: dict[str, str], test_code: str, start: float
-    ) -> SandboxResult:
-        import io
-        from contextlib import redirect_stderr, redirect_stdout
-
-        test_globals = {"__name__": "__main__"}
-
-        for path, content in workspace.items():
-            if path.endswith(".py"):
-                try:
-                    flattened = re.sub(r'^(from\s+)\.([a-zA-Z_][a-zA-Z0-9_]*\s+import)', r'\1\2', content, flags=re.MULTILINE)
-                    flattened = re.sub(r'^from\s+\.\s+import\s+([a-zA-Z_][a-zA-Z0-9_]*)', r'import \1', flattened, flags=re.MULTILINE)
-                    exec(flattened, test_globals)
-                except Exception as e:
-                    return SandboxResult(
-                        exit_code=1,
-                        stdout="",
-                        stderr=f"Module import failed ({path}): {e}",
-                        duration_ms=int((time.perf_counter() - start) * 1000),
-                    )
-
-        stdout_buf = io.StringIO()
-        stderr_buf = io.StringIO()
-        exit_code = 0
-
-        try:
-            with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
-                exec(test_code, test_globals)
-        except Exception:
-            exit_code = 1
-            stderr_buf.write(traceback.format_exc())
-
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        return SandboxResult(
-            exit_code=exit_code,
-            stdout=stdout_buf.getvalue(),
-            stderr=stderr_buf.getvalue(),
-            duration_ms=duration_ms,
-        )
-
-    async def _run_node_test(self, test_code: str, start: float) -> SandboxResult:
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["node", "--check", "-e", test_code],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            return SandboxResult(
-                exit_code=result.returncode,
-                stdout=result.stdout,
-                stderr=result.stderr,
-                duration_ms=int((time.perf_counter() - start) * 1000),
-            )
-        except FileNotFoundError:
-            return SandboxResult(
-                exit_code=127,
-                stdout="",
-                stderr="Node.js not available — syntax check cannot be performed",
-                duration_ms=int((time.perf_counter() - start) * 1000),
-            )
-        except subprocess.TimeoutExpired:
-            return SandboxResult(
-                exit_code=1,
-                stdout="",
-                stderr="Node.js syntax check timed out",
-                duration_ms=int((time.perf_counter() - start) * 1000),
-            )
-
-    async def cleanup(self, *, project_id: uuid.UUID) -> None:
-        self._workspaces.pop(project_id, None)
-        self._fixtures.pop(project_id, None)
-
-
-def create_sandbox_client(settings: Settings) -> SandboxClient:
-    if settings.sandbox_backend == "docker":
-        return DockerSandboxExecutor(settings)
-    if settings.app_env in ("production", "staging"):
-        raise RuntimeError(
-            f"SANDBOX_BACKEND={settings.sandbox_backend} cannot be used in {settings.app_env} mode. "
-            "Docker sandbox executor is strictly required."
-        )
-    return MockSandboxClient()
 
 
 # Marker the sandbox runner prints before its single-line JSON result. The host
@@ -622,7 +486,7 @@ class DockerSandboxExecutor:
         self._network_enabled = (
             network_enabled
             if network_enabled is not None
-            else settings.sandbox_network_enabled
+            else getattr(settings, "sandbox_network_enabled", False)
         )
         self._workspace: Path | None = None
         self._client_module: str | None = None
@@ -640,6 +504,172 @@ class DockerSandboxExecutor:
             else:
                 self._docker_client = docker.from_env()
         return self._docker_client
+
+    def _is_containerized(self) -> bool:
+        """Check if backend is running inside a Docker container (DooD environment)."""
+        return (
+            os.path.exists("/.dockerenv")
+            or bool(os.environ.get("APIWEAVER_IN_DOCKER"))
+            or bool(os.environ.get("DOCKER_CONTAINER"))
+        )
+
+    def _create_tar_archive(self, workspace: Path) -> io.BytesIO:
+        """Create an in-memory tar archive of workspace files for container injection."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for root, dirs, files in os.walk(workspace):
+                rel_dir = os.path.relpath(root, workspace)
+                if rel_dir != ".":
+                    norm_dir = rel_dir.replace("\\", "/")
+                    d_info = tarfile.TarInfo(name=norm_dir)
+                    d_info.type = tarfile.DIRTYPE
+                    d_info.mode = 0o777
+                    tar.addfile(d_info)
+                for f in files:
+                    file_path = Path(root) / f
+                    rel_file = os.path.relpath(file_path, workspace).replace("\\", "/")
+                    content = file_path.read_bytes()
+                    f_info = tarfile.TarInfo(name=rel_file)
+                    f_info.size = len(content)
+                    f_info.mode = 0o666
+                    tar.addfile(f_info, io.BytesIO(content))
+        buf.seek(0)
+        return buf
+
+    async def prepare(
+        self,
+        *,
+        project_id: Any,
+        language: str,
+        files: dict[str, str],
+    ) -> None:
+        """Satisfies the SandboxClient protocol."""
+        await self.load(project_id=project_id, files=files, language=language)
+
+    async def run_test(
+        self,
+        *,
+        project_id: Any,
+        test_file: str,
+        test_code: str,
+        env_vars: dict[str, str] | None = None,
+    ) -> SandboxResult:
+        """Execute a standalone test file inside a quota-enforced Docker container."""
+        started = time.perf_counter()
+        if self._workspace is None:
+            self._workspace = Path(tempfile.mkdtemp(prefix=f"apiweaver-sandbox-{project_id or 'run'}-"))
+
+        target = _safe_workspace_target(self._workspace, test_file)
+        if target is None:
+            return SandboxResult(
+                exit_code=1,
+                stdout="",
+                stderr=f"Unsafe test file path rejected: {test_file}",
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(test_code, encoding="utf-8")
+
+        is_node = test_file.endswith((".ts", ".js", ".mjs"))
+        if is_node:
+            sandbox_img = self._settings.sandbox_node_image
+            sandbox_cmd = ["node", "--experimental-strip-types", f"/sandbox/{test_file}"]
+        else:
+            sandbox_img = self._settings.sandbox_image
+            sandbox_cmd = ["python", f"/sandbox/{test_file}"]
+
+        environment = {
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        if env_vars:
+            environment.update(env_vars)
+
+        docker_client = self._get_docker_client()
+        container = None
+        volume = None
+        try:
+            if self._is_containerized() and hasattr(docker_client, "volumes") and hasattr(docker_client.containers, "create"):
+                volume = await asyncio.to_thread(docker_client.volumes.create)
+                run_volumes = {volume.name: {"bind": "/sandbox", "mode": "rw"}}
+                container = await asyncio.to_thread(
+                    docker_client.containers.create,
+                    image=sandbox_img,
+                    command=sandbox_cmd,
+                    environment=environment,
+                    volumes=run_volumes,
+                    tmpfs={"/tmp": "size=64m"},
+                    nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
+                    mem_limit=_memory_to_bytes(self._settings.sandbox_max_memory),
+                    pids_limit=self._settings.sandbox_pids_limit,
+                    cap_drop=["ALL"],
+                    user=_DOCKER_USER,
+                    network_disabled=not self._network_enabled,
+                    read_only=self._settings.sandbox_read_only_rootfs,
+                    security_opt=["no-new-privileges:true"],
+                )
+                archive_buf = self._create_tar_archive(self._workspace)
+                await asyncio.to_thread(container.put_archive, "/sandbox", archive_buf)
+                await asyncio.to_thread(container.start)
+            else:
+                run_kwargs = dict(
+                    image=sandbox_img,
+                    command=sandbox_cmd,
+                    environment=environment,
+                    volumes={str(self._workspace): {"bind": "/sandbox", "mode": "ro"}},
+                    tmpfs={"/tmp": "size=64m"},
+                    nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
+                    mem_limit=_memory_to_bytes(self._settings.sandbox_max_memory),
+                    pids_limit=self._settings.sandbox_pids_limit,
+                    cap_drop=["ALL"],
+                    user=_DOCKER_USER,
+                    network_disabled=not self._network_enabled,
+                    read_only=self._settings.sandbox_read_only_rootfs,
+                    security_opt=["no-new-privileges:true"],
+                    detach=True,
+                )
+                container = await asyncio.to_thread(docker_client.containers.run, **run_kwargs)
+
+            try:
+                wait_result = await asyncio.wait_for(
+                    asyncio.to_thread(container.wait),
+                    timeout=self._settings.sandbox_timeout_seconds,
+                )
+            except TimeoutError:
+                await asyncio.to_thread(container.kill)
+                return SandboxResult(
+                    exit_code=1,
+                    stdout="",
+                    stderr=f"sandbox_timeout: exceeded {self._settings.sandbox_timeout_seconds}s",
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
+
+            exit_code = wait_result.get("StatusCode", 0) if isinstance(wait_result, dict) else 0
+            logs = await asyncio.to_thread(container.logs)
+            text = logs.decode("utf-8", errors="replace") if isinstance(logs, bytes) else str(logs)
+            return SandboxResult(
+                exit_code=exit_code,
+                stdout=text if exit_code == 0 else "",
+                stderr=text if exit_code != 0 else "",
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+        except Exception as exc:
+            return SandboxResult(
+                exit_code=1,
+                stdout="",
+                stderr=str(exc),
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+        finally:
+            if container is not None:
+                try:
+                    await asyncio.to_thread(container.remove, force=True)
+                except Exception as rem_err:
+                    logger.warning("sandbox_container_remove_failed", error=str(rem_err))
+            if volume is not None:
+                try:
+                    await asyncio.to_thread(volume.remove, force=True)
+                except Exception as vol_err:
+                    logger.warning("sandbox_volume_remove_failed", error=str(vol_err))
 
     async def load(
         self,
@@ -676,16 +706,30 @@ class DockerSandboxExecutor:
 
         client_module = None
         client_file = None
+        # First priority: dedicated sandbox/mock client if provided
         for rel_path in files:
             normalized = rel_path.replace("\\", "/").lower()
-            if self._language == "python" and normalized.endswith(".py") and "client" in normalized:
+            if self._language == "python" and normalized.endswith(".py") and ("sandbox" in normalized or "mock" in normalized) and "client" in normalized:
                 client_module = (
                     rel_path.replace("\\", "/").removesuffix(".py").replace("/", ".")
                 )
                 break
-            elif self._language == "node" and normalized.endswith((".ts", ".js", ".mjs")) and "client" in normalized:
+            elif self._language == "node" and normalized.endswith((".ts", ".js", ".mjs")) and ("sandbox" in normalized or "mock" in normalized) and "client" in normalized:
                 client_file = rel_path.replace("\\", "/")
                 break
+
+        # Second priority: standard client module
+        if not client_module and not client_file:
+            for rel_path in files:
+                normalized = rel_path.replace("\\", "/").lower()
+                if self._language == "python" and normalized.endswith(".py") and "client" in normalized:
+                    client_module = (
+                        rel_path.replace("\\", "/").removesuffix(".py").replace("/", ".")
+                    )
+                    break
+                elif self._language == "node" and normalized.endswith((".ts", ".js", ".mjs")) and "client" in normalized:
+                    client_file = rel_path.replace("\\", "/")
+                    break
 
         if self._language == "node" and not client_file:
             for rel_path in files:
@@ -733,6 +777,7 @@ class DockerSandboxExecutor:
         docker_client = self._get_docker_client()
         started = time.perf_counter()
         container = None
+        volume = None
         try:
             op_id = (
                 endpoint.get("operationId")
@@ -793,23 +838,46 @@ class DockerSandboxExecutor:
                 sandbox_img = self._settings.sandbox_image
                 sandbox_cmd = ["python", "/sandbox/runner.py"]
 
-            run_kwargs = dict(
-                image=sandbox_img,
-                command=sandbox_cmd,
-                environment=environment,
-                volumes={str(self._workspace): {"bind": "/sandbox", "mode": "ro"}},
-                tmpfs={"/tmp": "size=64m"},
-                nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
-                mem_limit=_memory_to_bytes(self._settings.sandbox_max_memory),
-                pids_limit=self._settings.sandbox_pids_limit,
-                cap_drop=["ALL"],
-                user=_DOCKER_USER,
-                network_disabled=not self._network_enabled,
-                read_only=self._settings.sandbox_read_only_rootfs,
-                security_opt=["no-new-privileges:true"],
-                detach=True,
-            )
-            container = await asyncio.to_thread(docker_client.containers.run, **run_kwargs)
+            if self._is_containerized() and hasattr(docker_client, "volumes") and hasattr(docker_client.containers, "create"):
+                volume = await asyncio.to_thread(docker_client.volumes.create)
+                run_volumes = {volume.name: {"bind": "/sandbox", "mode": "rw"}}
+                container = await asyncio.to_thread(
+                    docker_client.containers.create,
+                    image=sandbox_img,
+                    command=sandbox_cmd,
+                    environment=environment,
+                    volumes=run_volumes,
+                    tmpfs={"/tmp": "size=64m"},
+                    nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
+                    mem_limit=_memory_to_bytes(self._settings.sandbox_max_memory),
+                    pids_limit=self._settings.sandbox_pids_limit,
+                    cap_drop=["ALL"],
+                    user=_DOCKER_USER,
+                    network_disabled=not self._network_enabled,
+                    read_only=self._settings.sandbox_read_only_rootfs,
+                    security_opt=["no-new-privileges:true"],
+                )
+                archive_buf = self._create_tar_archive(self._workspace)
+                await asyncio.to_thread(container.put_archive, "/sandbox", archive_buf)
+                await asyncio.to_thread(container.start)
+            else:
+                run_kwargs = dict(
+                    image=sandbox_img,
+                    command=sandbox_cmd,
+                    environment=environment,
+                    volumes={str(self._workspace): {"bind": "/sandbox", "mode": "ro"}},
+                    tmpfs={"/tmp": "size=64m"},
+                    nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
+                    mem_limit=_memory_to_bytes(self._settings.sandbox_max_memory),
+                    pids_limit=self._settings.sandbox_pids_limit,
+                    cap_drop=["ALL"],
+                    user=_DOCKER_USER,
+                    network_disabled=not self._network_enabled,
+                    read_only=self._settings.sandbox_read_only_rootfs,
+                    security_opt=["no-new-privileges:true"],
+                    detach=True,
+                )
+                container = await asyncio.to_thread(docker_client.containers.run, **run_kwargs)
             try:
                 wait_result = await asyncio.wait_for(
                     asyncio.to_thread(container.wait),
@@ -848,8 +916,23 @@ class DockerSandboxExecutor:
                     await asyncio.to_thread(container.remove, force=True)
                 except Exception as remove_error:
                     logger.warning("sandbox_container_remove_failed", error=str(remove_error))
+            if volume is not None:
+                try:
+                    await asyncio.to_thread(volume.remove, force=True)
+                except Exception as vol_error:
+                    logger.warning("sandbox_volume_remove_failed", error=str(vol_error))
 
     async def cleanup(self, *, project_id: Any = None) -> None:
         if self._workspace is not None:
             shutil.rmtree(self._workspace, ignore_errors=True)
             self._workspace = None
+
+
+def create_sandbox_client(settings: Settings) -> SandboxClient:
+    """Instantiate a production-level Docker sandbox executor."""
+    if settings.sandbox_backend != "docker":
+        raise RuntimeError(
+            f"SANDBOX_BACKEND={settings.sandbox_backend} cannot be used in {settings.app_env} mode. "
+            "Docker sandbox executor is strictly required."
+        )
+    return DockerSandboxExecutor(settings)

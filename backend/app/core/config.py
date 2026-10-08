@@ -114,18 +114,17 @@ class Settings(BaseSettings):
     github_webhook_secret: str | None = None
 
     # --- Sandbox quotas (required by §9; enforced in Phase 4) -----------------
-    # "docker" isolates generated code in a quota-enforced container; "mock"
-    # execs LLM-generated code inside the API process (test-only opt-in).
-    sandbox_backend: Literal["mock", "docker"] = "docker"
+    # Production-level sandbox isolates generated code in a 4GB Docker container.
+    sandbox_backend: Literal["docker", "mock"] = "docker"
     # Explicit Docker daemon URL (e.g. "unix:///var/run/docker.sock" or "tcp://docker-dind:2375").
     # If None, docker.from_env() resolves from DOCKER_HOST or local default.
     docker_host: str | None = None
     sandbox_image: str = (
-        "python:3.12.15-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d"
+        "apiweaver/sandbox-python:latest"
     )
     sandbox_node_image: str = "node:22-alpine"
     sandbox_max_cpu: str = "1"
-    sandbox_max_memory: str = "256Mi"
+    sandbox_max_memory: str = "4Gi"
     sandbox_timeout_seconds: int = 300
     sandbox_pids_limit: int = 64
     sandbox_network_enabled: bool = True
@@ -181,10 +180,10 @@ class Settings(BaseSettings):
         it is a test-only opt-in; a production or staging deployment that asks for it is a
         misconfiguration, not a supported mode.
         """
-        if self.app_env in ("production", "staging") and self.sandbox_backend != "docker":
+        if self.sandbox_backend != "docker":
             raise ValueError(
-                f"SANDBOX_BACKEND={self.sandbox_backend} runs LLM-generated code in this process and is "
-                f"test-only; {self.app_env} must use SANDBOX_BACKEND=docker."
+                f"SANDBOX_BACKEND={self.sandbox_backend} cannot be used in "
+                f"{self.app_env} mode. A real Docker daemon is strictly required."
             )
         return self
 

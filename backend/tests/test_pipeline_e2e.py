@@ -59,7 +59,8 @@ import httpx
 
 
 def _mock_handler(request: httpx.Request) -> httpx.Response:
-    return httpx.Response(200, json={"ok": True})
+    status = 201 if request.method == "POST" else 200
+    return httpx.Response(status, json={"ok": True})
 
 
 class SandboxEchoClient:
@@ -81,6 +82,17 @@ class SandboxEchoClient:
         return operation
 '''
 
+SANDBOX_NODE_CLIENT_CODE = '''\
+export class SandboxEchoClient {
+    async listUsers(options) {
+        return { status_code: 200, status: 200, data: { ok: true } };
+    }
+    async createUser(options) {
+        return { status_code: 201, status: 201, data: { ok: true } };
+    }
+}
+'''
+
 
 async def _fake_generate_json(
     self: LLMClient,
@@ -97,6 +109,8 @@ async def _fake_generate_json(
         ]
         return plan, 42
     if system_prompt.startswith("You are the Code Generator Agent"):
+        if "generate node" in system_prompt.lower():
+            return {"sandbox_e2e_client.ts": SANDBOX_NODE_CLIENT_CODE}, 42
         return {"sandbox_e2e_client.py": SANDBOX_CLIENT_CODE}, 42
     return (fallback_json if fallback_json is not None else {}), 42
 
@@ -194,8 +208,8 @@ async def test_full_pipeline_end_to_end(client: AsyncClient) -> None:
     test_events = [e for e in events if e["agent_name"] == "test_agent"]
     assert test_events, "expected a test_agent event"
     test_summary = test_events[0]["payload"]["test_summary"]
-    assert test_summary["total"] == 2
-    assert test_summary["passed"] == 2
+    assert test_summary["total"] == 4
+    assert test_summary["passed"] == 4
     assert test_summary["failed"] == 0
 
     export_events = [e for e in events if e["agent_name"] == "export_agent"]
@@ -207,5 +221,5 @@ async def test_full_pipeline_end_to_end(client: AsyncClient) -> None:
     uploads = [c for c in calls if c["tool_name"] == "storage.upload"]
     assert uploads, "expected storage.upload tool calls"
     sandbox_calls = [c for c in calls if c["tool_name"] == "sandbox.execute_test"]
-    assert len(sandbox_calls) == 2
+    assert len(sandbox_calls) == 4
     assert all(c["result"]["status"] == "passed" for c in sandbox_calls)
