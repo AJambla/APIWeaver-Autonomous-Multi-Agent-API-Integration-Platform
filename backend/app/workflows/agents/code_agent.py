@@ -421,8 +421,12 @@ async def _render_templates(
     author_name = contact_info.get("name") if isinstance(contact_info, dict) else "APIWeaver"
     author_email = contact_info.get("email") if isinstance(contact_info, dict) else "support@apiweaver.dev"
 
+    clean_title = re.sub(r'[^a-zA-Z0-9]', '', title)
+    client_class_name = f"{clean_title}Client" if clean_title else "APIClient"
+
     context = {
         "title": title,
+        "client_class_name": client_class_name,
         "base_url": base_url,
         "endpoints": endpoints,
         "resources": resources,

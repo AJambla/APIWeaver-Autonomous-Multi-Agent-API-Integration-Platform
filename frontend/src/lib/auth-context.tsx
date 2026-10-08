@@ -62,7 +62,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const register = async (email: string, password: string, fullName?: string, organizationName?: string) => {
     const userPart = fullName?.trim() || email.split('@')[0] || 'User';
     const domainPart = email.split('@')[1]?.split('.')[0] || 'workspace';
-    const resolvedOrgName = organizationName?.trim() || `${userPart}'s ${domainPart}`;
+    const randomSuffix = Math.random().toString(36).substring(2, 6);
+    const resolvedOrgName = organizationName?.trim() || `${userPart}'s ${domainPart} ${randomSuffix}`;
     const tokens = await apiFetch<AuthTokens>('/auth/register', {
       method: 'POST',
       body: JSON.stringify({

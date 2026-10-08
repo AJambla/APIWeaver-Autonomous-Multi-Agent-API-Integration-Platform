@@ -12,10 +12,10 @@ pip install .
 
 ```python
 import asyncio
-from client import {{ title.replace(' ', '').replace('-', '') }}Client
+from client import {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}
 
 async def main():
-    client = {{ title.replace(' ', '').replace('-', '') }}Client(base_url="{{ base_url }}")
+    client = {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}(base_url="{{ base_url }}")
     # Call client methods
     await client.close()
 

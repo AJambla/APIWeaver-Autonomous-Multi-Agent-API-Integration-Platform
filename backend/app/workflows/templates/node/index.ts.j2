@@ -10,7 +10,7 @@ export {
   ServerError,
   NotFoundError,
   ValidationError,
-  {{ title.replace(' ', '').replace('-', '') }}Client,
+  {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }},
 } from "./client.js";
 
 export * from "./types.js";
