@@ -189,26 +189,8 @@ async def _run_to_response(run: WorkflowRun, session: AsyncSession) -> WorkflowR
     ):
         progress = int(latest_checkpoint.state_snapshot.get("progress_percent", 0))
     else:
-        node_progress_map = {
-            "doc_node": 15,
-            "doc_agent": 15,
-            "planner_node": 30,
-            "planner_agent": 30,
-            "approval_gate": 30,
-            "approval_gate_node": 30,
-            "codegen_node": 60,
-            "code_agent": 60,
-            "test_node": 75,
-            "test_agent": 75,
-            "repair_node": 80,
-            "repair_agent": 80,
-            "export_node": 95,
-            "export_agent": 95,
-            "completed": 100,
-            "finalize": 100,
-            "finalize_node": 100,
-        }
-        progress = node_progress_map.get(current_node, run.progress_percent or 0)
+        settings = get_settings()
+        progress = settings.workflow_node_progress_map.get(current_node, run.progress_percent or 0)
 
     return WorkflowRunResponse(
         id=run.id,
