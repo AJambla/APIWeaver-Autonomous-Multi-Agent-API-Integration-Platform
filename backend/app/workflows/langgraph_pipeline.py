@@ -10,6 +10,7 @@ import asyncio
 import datetime
 from decimal import Decimal
 import json
+import time
 import uuid
 from typing import Any, Literal, cast
 
@@ -165,6 +166,54 @@ def route_after_testing(state: WorkflowState) -> str:
 
     # Exhausted repair attempts: escalate to human approval gate
     return "approval_gate"
+
+
+async def _wait_for_celery_task(
+    result: Any,
+    timeout: float = 300.0,
+    initial_poll_interval: float = 0.2,
+    max_poll_interval: float = 1.0,
+) -> Any:
+    """Asynchronously poll for Celery task completion without blocking an executor thread.
+
+    `asyncio.to_thread(result.get, timeout=300)` blocks an OS worker thread in Python's
+    default ThreadPoolExecutor for up to 5 minutes, leading to thread pool exhaustion
+    under concurrent execution. This async helper polls `result.ready()` with cooperative
+    `asyncio.sleep` intervals, yielding execution back to the event loop.
+    """
+    if hasattr(result, "ready"):
+        start_time = time.monotonic()
+        deadline = start_time + timeout
+        poll_interval = initial_poll_interval
+
+        while time.monotonic() < deadline:
+            if result.ready():
+                if hasattr(result, "successful") and not result.successful():
+                    if hasattr(result, "failed") and result.failed():
+                        task_err = getattr(result, "result", None)
+                        if isinstance(task_err, BaseException):
+                            raise task_err
+                        raise RuntimeError(
+                            f"Celery task {getattr(result, 'id', 'unknown')} failed: {task_err}"
+                        )
+                if hasattr(result, "result") and result.result is not None:
+                    return result.result
+                if hasattr(result, "get"):
+                    return result.get(timeout=0.1)
+                return getattr(result, "result", None)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(poll_interval, remaining))
+            poll_interval = min(poll_interval * 1.5, max_poll_interval)
+
+        task_id = getattr(result, "id", "unknown")
+        raise TimeoutError(f"Celery task {task_id} timed out after {timeout}s")
+
+    if hasattr(result, "get"):
+        return await asyncio.to_thread(result.get, timeout=timeout)
+    return result
 
 
 # --- Graph Factory ------------------------------------------------------------------
@@ -637,7 +686,7 @@ def create_apiweaver_graph(
                         args=[str(run_id), {**state, "generated_files": generated_files, "total_tokens_used": total_tokens}, phase_num],
                         task_id=f"run_code_agent:{run_id}:phase_{phase_num}",
                     )
-                    phase_result = await asyncio.to_thread(result.get, timeout=300)
+                    phase_result = await _wait_for_celery_task(result, timeout=300)
                 else:
                     from app.workflows.agents import code_agent as code_agent_module
                     phase_result = await code_agent_module.run_code_agent(
@@ -675,7 +724,7 @@ def create_apiweaver_graph(
                         args=[str(run_id), {**state, "generated_files": generated_files, "total_tokens_used": total_tokens}, None],
                         task_id=f"run_code_agent:{run_id}:consistency",
                     )
-                    consistency_result = await asyncio.to_thread(result.get, timeout=300)
+                    consistency_result = await _wait_for_celery_task(result, timeout=300)
                 else:
                     from app.workflows.agents import code_agent as code_agent_module
                     consistency_result = await code_agent_module.run_code_agent(
