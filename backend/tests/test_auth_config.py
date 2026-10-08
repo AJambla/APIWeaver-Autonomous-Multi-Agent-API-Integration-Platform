@@ -101,3 +101,55 @@ async def test_qdrant_service_mock() -> None:
     assert len(search_results) == 1
     assert search_results[0].chunk_id == "c1"
     assert "orders" in search_results[0].text
+
+
+async def test_delete_auth_config_purges_vault_and_database(
+    client: AsyncClient, fake_vault: FakeVaultClient, session_factory
+) -> None:
+    """DELETE /projects/{id}/auth purges Vault secrets and removes DB rows."""
+    from sqlalchemy import select
+    from app.models.auth_config import AuthConfig, SecretRef
+
+    project_id, _, headers = await _setup_project(client)
+
+    # 1. Create auth config with credentials in Vault
+    put_payload = {
+        "scheme": AuthScheme.API_KEY,
+        "config_json": {"header_name": "X-API-Key"},
+        "credentials": {"api_key": "target_secret_token_abc"},
+    }
+    put_res = await client.put(
+        f"/api/v1/projects/{project_id}/auth",
+        json=put_payload,
+        headers=headers,
+    )
+    assert put_res.status_code == 200
+
+    vault_path = f"apiweaver/projects/{project_id}/auth"
+    # Verify secret was written to Vault
+    stored = await fake_vault.read_secret(vault_path)
+    assert stored == {"api_key": "target_secret_token_abc"}
+
+    # 2. Delete auth config via DELETE endpoint
+    del_res = await client.delete(f"/api/v1/projects/{project_id}/auth", headers=headers)
+    assert del_res.status_code == 204
+
+    # 3. Verify secret is completely purged from Vault (no orphaned secrets)
+    assert await fake_vault.read_secret(vault_path) is None
+
+    # 4. Verify GET now returns 404
+    get_res = await client.get(f"/api/v1/projects/{project_id}/auth", headers=headers)
+    assert get_res.status_code == 404
+
+    # 5. Verify DB rows are deleted
+    async with session_factory() as session:
+        auth_row = await session.scalar(
+            select(AuthConfig).where(AuthConfig.project_id == uuid.UUID(project_id))
+        )
+        assert auth_row is None
+
+        ref_rows = (
+            await session.scalars(select(SecretRef).where(SecretRef.vault_path == vault_path))
+        ).all()
+        assert len(ref_rows) == 0
+
