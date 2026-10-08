@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError
+from app.core.logging import get_logger
 from app.models.codegen import CodeGenerationRun, GeneratedFile
+
+logger = get_logger(__name__)
 from app.models.enums import ActorType, WorkflowStatus
 from app.models.project import Project
 from app.models.versioning import ArtifactVersion
@@ -124,8 +127,8 @@ async def list_generated_files(
             manifest = json.loads(raw.decode("utf-8"))
             if manifest.get("workflow_run_id"):
                 active_run_id = uuid.UUID(manifest["workflow_run_id"])
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("artifact_manifest_read_failed", diff_ref=active_ver.diff_ref, error=str(exc))
 
     stmt = (
         select(GeneratedFile, WorkflowRun.created_at.label("workflow_created_at"))

@@ -13,9 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError
+from app.core.logging import get_logger
+from app.core.metrics import pipeline_error_total
 from app.models.workflow import WorkflowRun
 from app.rbac.enforce import load_project_for_principal
 from app.rbac.policy import Principal
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["events"])
 
@@ -48,7 +52,9 @@ async def _stream_redis_events(
             )
         except asyncio.CancelledError:
             break
-        except Exception:
+        except Exception as exc:
+            pipeline_error_total.labels(subsystem="sse_events", error_type=type(exc).__name__).inc()
+            logger.error("sse_redis_read_failed", stream_key=stream_key, error=str(exc), exc_info=True)
             await asyncio.sleep(1)
             continue
 

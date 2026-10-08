@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import DependencyUnavailableError, NotFoundError, UnprocessableEntityError
 from app.core.logging import get_logger
+from app.core.metrics import pipeline_error_total
 from app.models.enums import ActorType, WorkflowStatus
 from app.models.project import Project
 from app.models.spec import APISpec
@@ -362,7 +363,8 @@ async def cancel_workflow_run(
         )
         await session.flush()
     except Exception as exc:
-        logger.warning("cancel_audit_event_failed", run_id=str(run.id), error=str(exc))
+        pipeline_error_total.labels(subsystem="workflow_cancel_audit", error_type=type(exc).__name__).inc()
+        logger.error("cancel_audit_event_failed", run_id=str(run.id), error=str(exc), exc_info=True)
 
     try:
         from app.services.event_publisher import EventPublisher
@@ -373,7 +375,8 @@ async def cancel_workflow_run(
             status=WorkflowStatus.CANCELLED.value,
         )
     except Exception as exc:
-        logger.warning("cancel_event_publish_failed", run_id=str(run.id), error=str(exc))
+        pipeline_error_total.labels(subsystem="workflow_cancel_event", error_type=type(exc).__name__).inc()
+        logger.error("cancel_event_publish_failed", run_id=str(run.id), error=str(exc), exc_info=True)
 
     return {"status": WorkflowStatus.CANCELLED, "message": "Workflow cancelled."}
 

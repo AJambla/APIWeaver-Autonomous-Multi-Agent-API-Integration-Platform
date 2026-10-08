@@ -16,6 +16,7 @@ from fastapi import Depends
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
+from app.core.metrics import pipeline_error_total
 
 logger = get_logger(__name__)
 
@@ -85,7 +86,9 @@ class HttpQdrantClient:
                 put_res = await client.put(url, json=payload)
                 put_res.raise_for_status()
             except Exception as exc:
-                logger.warning("qdrant_ensure_collection_failed", error=str(exc))
+                pipeline_error_total.labels(subsystem="qdrant", error_type=type(exc).__name__).inc()
+                logger.error("qdrant_ensure_collection_failed", error=str(exc), exc_info=True)
+                raise
 
     async def upsert_chunks(
         self,
@@ -158,8 +161,9 @@ class HttpQdrantClient:
                     )
                 return results
             except Exception as exc:
-                logger.error("qdrant_search_failed", error=str(exc))
-                return []
+                pipeline_error_total.labels(subsystem="qdrant", error_type=type(exc).__name__).inc()
+                logger.error("qdrant_search_failed", error=str(exc), exc_info=True)
+                raise
 
     async def delete_by_document(
         self,
@@ -183,7 +187,9 @@ class HttpQdrantClient:
                 if res.status_code != 404:
                     res.raise_for_status()
             except Exception as exc:
-                logger.error("qdrant_delete_failed", error=str(exc))
+                pipeline_error_total.labels(subsystem="qdrant", error_type=type(exc).__name__).inc()
+                logger.error("qdrant_delete_failed", error=str(exc), exc_info=True)
+                raise
 
 
 def create_qdrant_client(settings: Settings = Depends(get_settings)) -> QdrantClient:

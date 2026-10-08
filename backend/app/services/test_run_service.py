@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.logging import get_logger
+from app.core.metrics import pipeline_error_total
 from app.models.enums import RepairOutcome, TestEnvironment, TestResultStatus
 from app.models.spec import APISpec, Endpoint
 from app.models.testing import RepairAttempt, TestResult, TestRun
@@ -223,5 +224,6 @@ async def _mark_failed(
             test_run.summary = {"errors": [error]}
             test_run.completed_at = datetime.datetime.now(datetime.UTC)
             await session.commit()
-    except Exception:
+    except Exception as exc:
+        pipeline_error_total.labels(subsystem="test_run_service", error_type=type(exc).__name__).inc()
         logger.exception("test_run_failure_marking_failed", workflow_run_id=str(workflow_run_id))

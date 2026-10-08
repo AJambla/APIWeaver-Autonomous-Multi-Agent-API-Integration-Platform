@@ -61,3 +61,10 @@ auth_failure_total = Counter(
     ["reason"],
     registry=registry,
 )
+
+pipeline_error_total = Counter(
+    "apiweaver_pipeline_error_total",
+    "Total errors encountered in background tasks or pipeline nodes",
+    ["subsystem", "error_type"],
+    registry=registry,
+)

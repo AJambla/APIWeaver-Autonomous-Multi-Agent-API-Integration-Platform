@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.metrics import pipeline_error_total
 
 logger = get_logger(__name__)
 
@@ -51,8 +52,9 @@ class EventPublisher:
             await self._redis.expire(workflow_stream, 86400)
             if project_stream:
                 await self._redis.expire(project_stream, 86400 * 7)
-        except Exception:
-            logger.warning("event_publish_failed", run_id=run_id, event_type=event_type)
+        except Exception as exc:
+            pipeline_error_total.labels(subsystem="event_publisher", error_type=type(exc).__name__).inc()
+            logger.error("event_publish_failed", run_id=run_id, event_type=event_type, error=str(exc), exc_info=True)
 
     async def publish_workflow_started(
         self,
