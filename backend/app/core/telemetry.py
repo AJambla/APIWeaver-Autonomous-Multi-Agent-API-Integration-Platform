@@ -16,6 +16,9 @@ import os
 from typing import Any
 
 from app.core.config import get_settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def _build_resource() -> Any:
@@ -62,8 +65,10 @@ def instrument_app(app: Any, engine: Any) -> None:
         FastAPIInstrumentor.instrument_app(app)
         SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
         _setup_langsmith_correlation()
-    except (ImportError, ModuleNotFoundError):
-        pass
+    except (ImportError, ModuleNotFoundError) as err:
+        logger.debug("opentelemetry_packages_missing", error=str(err))
+    except Exception as exc:
+        logger.warning("opentelemetry_instrumentation_failed", error=str(exc))
 
 
 
@@ -93,9 +98,11 @@ def _setup_langsmith_correlation() -> None:
                     else "error",
                     error=span.status.description or None,
                 )
-            except Exception:  # noqa: BLE001 — non-critical correlation
-                pass
+            except Exception as err:
+                logger.debug("langsmith_span_export_failed", error=str(err))
 
         trace.get_tracer_provider().add_span_processor(langsmith_span_processor)
-    except ImportError:
-        pass
+    except (ImportError, ModuleNotFoundError) as err:
+        logger.debug("langsmith_client_missing", error=str(err))
+    except Exception as exc:
+        logger.warning("langsmith_correlation_failed", error=str(exc))

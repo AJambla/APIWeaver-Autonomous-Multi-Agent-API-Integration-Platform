@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.metrics import pipeline_error_total
 from app.models.enums import ProjectStatus, WorkflowStatus
 from app.models.metrics import UsageMetric
 from app.models.project import Project
@@ -201,7 +202,8 @@ def create_apiweaver_graph(
                 )
                 await session.commit()
         except Exception as exc:
-            logger.warning("langgraph_event_record_failed", error=str(exc))
+            pipeline_error_total.labels(subsystem="event_record", error_type=type(exc).__name__).inc()
+            logger.error("langgraph_event_record_failed", error=str(exc), exc_info=True)
 
     async def _emit_thought(
         state: WorkflowState,
@@ -272,7 +274,8 @@ def create_apiweaver_graph(
                         run_obj.total_tokens_used = int(state["total_tokens_used"])
                 await session.commit()
         except Exception as exc:
-            logger.warning("langgraph_checkpoint_save_failed", error=str(exc))
+            pipeline_error_total.labels(subsystem="checkpoint", error_type=type(exc).__name__).inc()
+            logger.error("langgraph_checkpoint_save_failed", error=str(exc), exc_info=True)
 
     async def _set_project_status(state: WorkflowState, status: ProjectStatus) -> None:
         """Move the project's lifecycle status as a stage starts or the run ends.
@@ -293,11 +296,13 @@ def create_apiweaver_graph(
                 project.status = status
                 await session.commit()
         except Exception as exc:
-            logger.warning(
+            pipeline_error_total.labels(subsystem="project_status", error_type=type(exc).__name__).inc()
+            logger.error(
                 "project_status_update_failed",
                 project_id=str(state.get("project_id")),
                 status=str(status),
                 error=str(exc),
+                exc_info=True,
             )
 
     async def _assert_not_cancelled(state: WorkflowState) -> None:
@@ -383,7 +388,8 @@ def create_apiweaver_graph(
                     await session.commit()
                 updates["spec_persisted"] = True
             except Exception as e:
-                logger.warning("langgraph_spec_persist_failed", error=str(e))
+                pipeline_error_total.labels(subsystem="spec_persist", error_type=type(e).__name__).inc()
+                logger.error("langgraph_spec_persist_failed", error=str(e), exc_info=True)
 
         if event_publisher and run_id:
             await event_publisher.publish_workflow_progress(
@@ -530,7 +536,8 @@ def create_apiweaver_graph(
                     )
                     await session.commit()
             except Exception as e:
-                logger.warning("langgraph_dependency_persist_failed", error=str(e))
+                pipeline_error_total.labels(subsystem="dependency_persist", error_type=type(e).__name__).inc()
+                logger.error("langgraph_dependency_persist_failed", error=str(e), exc_info=True)
 
         if event_publisher and run_id:
             await event_publisher.publish_workflow_progress(
@@ -787,7 +794,8 @@ def create_apiweaver_graph(
                             existing_entries.add(entry_key)
                     await session.commit()
             except Exception as exc:
-                logger.warning("codegen_files_persist_failed", error=str(exc))
+                pipeline_error_total.labels(subsystem="codegen_persist", error_type=type(exc).__name__).inc()
+                logger.error("codegen_files_persist_failed", error=str(exc), exc_info=True)
 
         return updates
 
@@ -1148,7 +1156,8 @@ def create_apiweaver_graph(
                         session.add(exp_row)
                     await session.commit()
             except Exception as e:
-                logger.warning("pipeline_export_records_save_failed", error=str(e))
+                pipeline_error_total.labels(subsystem="export_records_persist", error_type=type(e).__name__).inc()
+                logger.error("pipeline_export_records_save_failed", error=str(e), exc_info=True)
 
         return updates
 
@@ -1341,7 +1350,8 @@ class LangGraphOrchestrator:
                 )
                 await session.commit()
         except Exception as exc:
-            logger.warning("langgraph_event_record_failed", error=str(exc))
+            pipeline_error_total.labels(subsystem="event_record", error_type=type(exc).__name__).inc()
+            logger.error("langgraph_event_record_failed", error=str(exc), exc_info=True)
 
     async def run(
         self,

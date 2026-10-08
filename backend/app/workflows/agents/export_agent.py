@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.metrics import pipeline_error_total
 from app.models.enums import ExportType
 from app.models.github import GitHubConnection
 from app.models.project import ProjectMember
@@ -91,7 +92,8 @@ class ExportAgent:
                 if artifact:
                     artifacts.append(artifact)
             except Exception as e:
-                logger.error("export_failed", export_type=export_type, error=str(e))
+                pipeline_error_total.labels(subsystem="export_agent", error_type=type(e).__name__).inc()
+                logger.error("export_failed", export_type=export_type, error=str(e), exc_info=True)
                 artifacts.append({
                     "type": export_type,
                     "status": "failed",
@@ -272,7 +274,8 @@ describe("{client_cls}", () => {{
                         session.add(ver)
                         await session.commit()
                 except Exception as db_err:
-                    logger.warning("sdk_package_db_save_failed", error=str(db_err))
+                    pipeline_error_total.labels(subsystem="export_agent_db", error_type=type(db_err).__name__).inc()
+                    logger.error("sdk_package_db_save_failed", error=str(db_err), exc_info=True)
 
         return {
             "type": "sdk",

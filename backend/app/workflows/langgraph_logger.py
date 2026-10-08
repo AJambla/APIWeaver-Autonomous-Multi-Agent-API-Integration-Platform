@@ -41,8 +41,8 @@ class LangGraphAgentLogger:
         try:
             sys.stdout.write(text + "\n")
             sys.stdout.flush()
-        except Exception:
-            pass
+        except (OSError, UnicodeEncodeError) as err:
+            logger.debug("terminal_stdout_write_failed", error=str(err))
 
     def log_start(
         self,
