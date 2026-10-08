@@ -23,7 +23,6 @@ from app.services.sandbox_service import (
     _parse_runner_result,
 )
 from app.workflows.agents import test_agent as test_agent_module
-from app.workflows.agents.test_agent import MockSandboxClient
 
 
 class FakeContainer:
@@ -33,6 +32,8 @@ class FakeContainer:
         self.wait_delay = wait_delay
         self.killed = False
         self.removed = False
+        self.archives: list[tuple[str, Any]] = []
+        self.started = False
 
     def wait(self) -> dict:
         if self.wait_delay:
@@ -48,19 +49,37 @@ class FakeContainer:
     def remove(self, force: bool = False) -> None:
         self.removed = True
 
+    def put_archive(self, path: str, data: Any) -> None:
+        self.archives.append((path, data))
+
+    def start(self) -> None:
+        self.started = True
+
 
 class FakeDockerClient:
     def __init__(self, container: FakeContainer) -> None:
         self.container = container
         self.run_kwargs: dict = {}
+        self.create_kwargs: dict = {}
 
     @property
     def containers(self) -> SimpleNamespace:
-        return SimpleNamespace(run=self._run)
+        return SimpleNamespace(run=self._run, create=self._create)
+
+    @property
+    def volumes(self) -> SimpleNamespace:
+        return SimpleNamespace(create=self._create_volume)
 
     def _run(self, image=None, command=None, **kwargs) -> FakeContainer:
         self.run_kwargs = {"image": image, "command": command, **kwargs}
         return self.container
+
+    def _create(self, image=None, command=None, **kwargs) -> FakeContainer:
+        self.create_kwargs = {"image": image, "command": command, **kwargs}
+        return self.container
+
+    def _create_volume(self, **kwargs) -> SimpleNamespace:
+        return SimpleNamespace(name="fake-vol", remove=lambda force=False: None)
 
 
 def _make_settings(**overrides) -> Settings:
@@ -407,18 +426,18 @@ async def test_create_sandbox_passes_resolved_credential(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_sandbox_defaults_to_mock(monkeypatch):
+async def test_create_sandbox_selects_docker_by_default(monkeypatch):
     monkeypatch.setattr(
         test_agent_module,
         "get_settings",
-        lambda: SimpleNamespace(sandbox_backend="mock"),
+        lambda: SimpleNamespace(sandbox_backend="docker"),
     )
 
     sandbox = await test_agent_module._create_sandbox(
         {"project_id": "proj-1"}, [], {"title": "T"}
     )
 
-    assert isinstance(sandbox, MockSandboxClient)
+    assert isinstance(sandbox, DockerSandboxExecutor)
 
 
 # --- C2 regression tests: path traversal + sandbox backend default -----------
@@ -468,39 +487,27 @@ async def test_load_skips_path_traversal(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mock_load_modules_skips_path_traversal(tmp_path, monkeypatch):
-    import tempfile
+async def test_docker_executor_prepare_and_run_test():
+    container = FakeContainer(exit_code=0, output="test passed")
+    client = FakeDockerClient(container)
+    settings = _make_settings()
+    executor = DockerSandboxExecutor(settings, docker_client=client)
 
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-    downloads = {"good-key": b"class Good:\n    pass\n", "evil-key": b"bad"}
-    monkeypatch.setattr(
-        test_agent_module,
-        "storage_service",
-        SimpleNamespace(download=AsyncMock(side_effect=lambda key: downloads[key])),
+    await executor.prepare(
+        project_id="proj-1",
+        language="python",
+        files={"client.py": "class Client: pass"},
     )
+    assert (executor._workspace / "client.py").exists()
 
-    sandbox = MockSandboxClient(
-        [
-            {
-                "language": "python",
-                "file_path": "client.py",
-                "content_s3_key": "good-key",
-                "project_id": "proj1",
-            },
-            {
-                "language": "python",
-                "file_path": "../evil.py",
-                "content_s3_key": "evil-key",
-                "project_id": "proj1",
-            },
-        ],
-        {},
+    res = await executor.run_test(
+        project_id="proj-1",
+        test_file="test_client.py",
+        test_code="def test_ok(): pass",
     )
-    await sandbox._load_modules()
-
-    assert (tmp_path / "apiweaver_sandbox" / "proj1" / "client.py").exists()
-    assert not (tmp_path / "evil.py").exists()
-    await sandbox.cleanup()
+    assert res.exit_code == 0
+    assert res.stdout == "test passed"
+    await executor.cleanup()
 
 
 @pytest.mark.asyncio
@@ -579,19 +586,20 @@ def test_docker_sandbox_custom_docker_host(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_node_syntax_check_reports_failure_when_node_unavailable(monkeypatch):
-    """Verify _run_node_test returns non-zero exit code when node executable is not found."""
-    import subprocess
-    from app.services.sandbox_service import MockSandboxClient as ServiceMockSandboxClient
+async def test_docker_executor_run_test_reports_failure_on_exception():
+    """Verify run_test returns non-zero exit code when docker execution encounters an exception."""
+    container = FakeContainer(exit_code=1, output="Traceback: SyntaxError")
+    client = FakeDockerClient(container)
+    settings = _make_settings()
+    executor = DockerSandboxExecutor(settings, docker_client=client)
 
-    def _mock_subprocess_run(*args, **kwargs):
-        raise FileNotFoundError("node not found")
-
-    monkeypatch.setattr(subprocess, "run", _mock_subprocess_run)
-    client = ServiceMockSandboxClient()
-    res = await client._run_node_test("console.log('hi')", time.perf_counter())
-    assert res.exit_code != 0
-    assert "not available" in res.stderr
+    res = await executor.run_test(
+        project_id="proj-1",
+        test_file="test_invalid.py",
+        test_code="def invalid syntax :::: ",
+    )
+    assert res.exit_code == 1
+    await executor.cleanup()
 
 
 def test_deterministic_fixtures_use_spec_examples_and_enums():
