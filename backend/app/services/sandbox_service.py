@@ -448,9 +448,13 @@ def _cpu_to_nano_cpus(raw: str) -> int:
 
 
 def _memory_to_bytes(raw: str) -> int:
-    """Convert a quota string ("512Ki", "256Mi", "1Gi", bare bytes) to bytes."""
+    """Convert a quota string ("512Ki", "256Mi", "1Gi", "1g", "512m", bare bytes) to bytes."""
     text = str(raw).strip()
-    for suffix, multiplier in (("Ki", 2**10), ("Mi", 2**20), ("Gi", 2**30)):
+    for suffix, multiplier in (
+        ("Gi", 2**30), ("gi", 2**30), ("GB", 2**30), ("gb", 2**30), ("G", 2**30), ("g", 2**30),
+        ("Mi", 2**20), ("mi", 2**20), ("MB", 2**20), ("mb", 2**20), ("M", 2**20), ("m", 2**20),
+        ("Ki", 2**10), ("ki", 2**10), ("KB", 2**10), ("kb", 2**10), ("K", 2**10), ("k", 2**10),
+    ):
         if text.endswith(suffix):
             return int(float(text[: -len(suffix)]) * multiplier)
     return int(float(text))
