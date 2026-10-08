@@ -264,9 +264,10 @@ async def github_disconnect(
 async def github_repos(
     principal: Principal = Depends(require_own_org_permission(Permission.GITHUB_CONNECT)),
     session: AsyncSession = Depends(get_db),
+    vault: VaultClient = Depends(create_vault_client),
     app_client: GitHubAppClient = Depends(create_github_app_client),
 ) -> GitHubReposResponse:
-    """List user's GitHub repositories (requires GitHub connection)."""
+    """List user's GitHub repositories (requires active GitHub connection and Vault token)."""
     result = await session.execute(
         select(GitHubConnection).where(
             GitHubConnection.user_id == principal.user_id,
@@ -278,7 +279,45 @@ async def github_repos(
     if connection is None:
         raise ConflictError("No active GitHub connection. Connect first via /github/connect")
 
-    # Get installations
-    # Need to get user's OAuth token from Vault first
-    # For now, return empty - requires Vault integration
-    return GitHubReposResponse(repos=[])
+    if not connection.access_token_vault_path:
+        return GitHubReposResponse(repos=[])
+
+    try:
+        token_secret = await vault.read_secret(connection.access_token_vault_path)
+    except Exception as exc:
+        logger.warning("failed_to_read_github_vault_token", error=str(exc))
+        return GitHubReposResponse(repos=[])
+
+    if not token_secret or "token" not in token_secret:
+        return GitHubReposResponse(repos=[])
+
+    user_token = token_secret["token"]
+    try:
+        raw_repos = await app_client.get_user_repositories(user_token)
+    except Exception as exc:
+        logger.warning("failed_to_fetch_github_repos", error=str(exc))
+        return GitHubReposResponse(repos=[])
+
+    from app.schemas.github import GitHubRepo
+
+    repos: list[GitHubRepo] = []
+    for r in raw_repos:
+        if isinstance(r, dict) and "id" in r and "name" in r:
+            owner_val = r.get("owner", {})
+            owner_name = (
+                owner_val.get("login", "")
+                if isinstance(owner_val, dict)
+                else str(owner_val or "")
+            )
+            repos.append(
+                GitHubRepo(
+                    id=r["id"],
+                    name=r["name"],
+                    full_name=r.get("full_name") or f"{owner_name}/{r['name']}",
+                    private=bool(r.get("private", True)),
+                    owner=owner_name,
+                    default_branch=r.get("default_branch") or "main",
+                )
+            )
+
+    return GitHubReposResponse(repos=repos)

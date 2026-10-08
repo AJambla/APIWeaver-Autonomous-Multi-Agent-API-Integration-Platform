@@ -141,3 +141,57 @@ class TestGitHubOAuth:
         """GET /github/repos requires an active GitHub connection."""
         response = await client.get("/api/v1/github/repos", headers=auth_headers)
         assert response.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_repos_returns_repositories_from_github(
+        self, client, auth_headers, session_factory, fake_vault, app
+    ):
+        """GET /github/repos returns user repositories using Vault token."""
+        me = await client.get("/api/v1/auth/me", headers=auth_headers)
+        user_id = uuid.UUID(me.json()["user"]["id"])
+
+        access_path = f"secret/github/connections/{user_id}/access"
+        await fake_vault.write_secret(access_path, {"token": "ghu_repo_token"})
+
+        async with session_factory() as session:
+            conn = GitHubConnection(
+                user_id=user_id,
+                github_user_id="12345",
+                github_username="testuser",
+                access_token_vault_path=access_path,
+            )
+            session.add(conn)
+            await session.commit()
+
+        class _StubAppClient:
+            async def get_user_repositories(self, token: str):
+                assert token == "ghu_repo_token"
+                return [
+                    {
+                        "id": 101,
+                        "name": "api-weaver",
+                        "full_name": "testuser/api-weaver",
+                        "private": True,
+                        "owner": {"login": "testuser"},
+                        "default_branch": "main",
+                    },
+                    {
+                        "id": 102,
+                        "name": "docs-site",
+                        "full_name": "my-org/docs-site",
+                        "private": False,
+                        "owner": {"login": "my-org"},
+                        "default_branch": "master",
+                    },
+                ]
+
+        app.dependency_overrides[create_github_app_client] = lambda: _StubAppClient()
+
+        response = await client.get("/api/v1/github/repos", headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["repos"]) == 2
+        assert data["repos"][0]["name"] == "api-weaver"
+        assert data["repos"][0]["private"] is True
+        assert data["repos"][1]["full_name"] == "my-org/docs-site"
+        assert data["repos"][1]["default_branch"] == "master"

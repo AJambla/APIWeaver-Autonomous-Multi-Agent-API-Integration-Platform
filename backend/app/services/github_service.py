@@ -87,6 +87,22 @@ class GitHubAppClient:
             response.raise_for_status()
             return response.json().get("installations", [])
 
+    async def get_user_repositories(self, user_token: str) -> list[dict[str, Any]]:
+        """List repositories accessible to the user (using their OAuth token)."""
+        url = f"{self.api_base_url}/user/repos"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                url,
+                params={"sort": "updated", "per_page": 100},
+                headers={
+                    "Authorization": f"Bearer {user_token}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, list) else []
+
     async def create_repository(
         self, installation_token: str, org: str | None, name: str, private: bool = True
     ) -> dict[str, Any]:
