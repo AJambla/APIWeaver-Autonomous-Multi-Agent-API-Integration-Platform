@@ -28,6 +28,7 @@ from app.services.sandbox_service import DockerSandboxExecutor, _safe_workspace_
 from app.services.storage_service import storage_service
 from app.services.test_run_service import record_test_run_results
 from app.services.vault_service import create_vault_client
+from app.workflows.agents.schema_synthesizer import synthesize_schema_data
 from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.state import WorkflowState
 
@@ -196,66 +197,16 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
                 params[name] = p_schema["enum"][0]
                 continue
 
-            p_type = str(p.get("type", p_schema.get("type", "string"))).lower()
-            if p_type in ("integer", "int"):
-                val: Any = 1
-            elif p_type in ("number", "float"):
-                val = 1.0
-            elif p_type in ("boolean", "bool"):
-                val = True
-            elif p_type == "array":
-                items_spec = p.get("items") or p_schema.get("items") or {}
-                item_val = "test"
-                if isinstance(items_spec, dict):
-                    if "example" in items_spec:
-                        item_val = items_spec["example"]
-                    elif items_spec.get("enum") and isinstance(items_spec["enum"], list) and items_spec["enum"]:
-                        item_val = items_spec["enum"][0]
-                val = [item_val]
-            else:
-                val = f"test_{name}"
-            params[name] = val
+            combined_spec = {**p, **p_schema}
+            params[name] = synthesize_schema_data(combined_spec, defs, field_name=name)
 
     def _mock_schema(schema: dict[str, Any], depth: int = 0) -> Any:
-        if depth > 3 or not isinstance(schema, dict):
-            return {}
-
-        if "example" in schema:
-            return schema["example"]
-        if "default" in schema:
-            return schema["default"]
-        if schema.get("enum") and isinstance(schema["enum"], list) and schema["enum"]:
-            return schema["enum"][0]
-
-        ref = schema.get("$ref")
-        if ref and isinstance(ref, str):
-            ref_name = ref.split("/")[-1]
-            if ref_name in defs and isinstance(defs[ref_name], dict):
-                return _mock_schema(defs[ref_name], depth + 1)
-            return {"name": ref_name.lower()}
-
-        s_type = schema.get("type")
-        if s_type == "object" or "properties" in schema:
-            obj: dict[str, Any] = {}
-            for prop_name, prop_spec in schema.get("properties", {}).items():
-                if isinstance(prop_spec, dict):
-                    obj[prop_name] = _mock_schema(prop_spec, depth + 1)
-            return obj
-        elif s_type == "array":
-            items = schema.get("items", {})
-            return [_mock_schema(items, depth + 1)] if isinstance(items, dict) else []
-        elif s_type in ("integer", "int"):
-            return 1
-        elif s_type in ("number", "float"):
-            return 1.0
-        elif s_type in ("boolean", "bool"):
-            return True
-        return schema.get("example", "test")
+        return synthesize_schema_data(schema, defs, depth=depth)
 
     body = None
     req_schema = ep.get("request_schema")
     if isinstance(req_schema, dict) and req_schema:
-        body = _mock_schema(req_schema)
+        body = synthesize_schema_data(req_schema, defs, field_name="body")
 
     expected_status = 200
     resp_schemas = ep.get("response_schemas") or ep.get("responses")
