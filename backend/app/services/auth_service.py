@@ -150,11 +150,13 @@ async def register(
 
     base_slug = slugify(organization_name)
     slug = base_slug
-    existing = await session.execute(
-        select(Organization.id).where(Organization.slug == slug)
-    )
-    if existing.scalar_one_or_none() is not None:
-        slug = f"{base_slug[:90]}-{secrets.token_hex(3)}"
+    while True:
+        existing = await session.execute(
+            select(Organization.id).where(Organization.slug == slug)
+        )
+        if existing.scalar_one_or_none() is None:
+            break
+        slug = f"{base_slug[:84]}-{secrets.token_hex(3)}"
 
     organization = Organization(name=organization_name, slug=slug)
     user = User(

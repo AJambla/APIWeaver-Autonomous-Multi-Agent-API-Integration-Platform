@@ -10,7 +10,7 @@ from .client import (
     ServerError,
     NotFoundError,
     ValidationError,
-    {{ title.replace(' ', '').replace('-', '') }}Client,
+    {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }},
 )
 
 __all__ = [
@@ -20,7 +20,7 @@ __all__ = [
     "ServerError",
     "NotFoundError",
     "ValidationError",
-    "{{ title.replace(' ', '').replace('-', '') }}Client",
+    "{{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}",
 ]
 
 __version__ = "{{ version | default('0.1.0') }}"

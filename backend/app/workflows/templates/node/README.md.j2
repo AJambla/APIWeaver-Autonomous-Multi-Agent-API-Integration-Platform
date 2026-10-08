@@ -11,7 +11,7 @@ npm install .
 ## Quick Start
 
 ```typescript
-import { {{ title.replace(' ', '').replace('-', '') }}Client } from './index.js';
+import { {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }} } from './index.js';
 
-const client = new {{ title.replace(' ', '').replace('-', '') }}Client({ baseUrl: "{{ base_url }}" });
+const client = new {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}({ baseUrl: "{{ base_url }}" });
 ```

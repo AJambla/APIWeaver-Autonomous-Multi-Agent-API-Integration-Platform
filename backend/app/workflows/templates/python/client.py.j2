@@ -54,7 +54,7 @@ class ValidationError(APIWeaverError):
     pass
 
 
-class {{ title.replace(' ', '').replace('-', '') }}Client:
+class {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}:
     """Async client for {{ title }} API."""
 
     def __init__(
@@ -215,10 +215,10 @@ async def {{ op_id }}(
     {% if ep.get('request_schema') %}
     body: Optional[{{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | dict[str, Any]] = None,
     {% endif %}
-    *, client: Optional[{{ title.replace(' ', '').replace('-', '') }}Client] = None,
+    *, client: Optional[{{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}] = None,
 ) -> httpx.Response:
     """{{ ep.summary or ep.path }}."""
-    async with (client or {{ title.replace(' ', '').replace('-', '') }}Client()) as c:
+    async with (client or {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}()) as c:
         return await c.{{ op_id }}(
             {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
             {{ param.name }}={{ param.name }},

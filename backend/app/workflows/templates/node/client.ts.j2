@@ -69,7 +69,7 @@ export interface ClientConfig {
   maxRetries?: number;
 }
 
-export class {{ title.replace(' ', '').replace('-', '') }}Client {
+export class {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }} {
   private baseUrl: string;
   private apiKey?: string;
   private timeout: number;
@@ -239,9 +239,9 @@ export async function {{ op_id }}(
   {% if ep.get('request_schema') %}
   body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | Record<string, unknown>,
   {% endif %}
-  client?: {{ title.replace(' ', '').replace('-', '') }}Client
+  client?: {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}
 ): Promise<{ data: unknown; response: Response }> {
-  const c = client || new {{ title.replace(' ', '').replace('-', '') }}Client();
+  const c = client || new {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}();
   return c.{{ op_id }}(
     {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
     {{ param.name }},
