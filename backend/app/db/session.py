@@ -25,15 +25,16 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 def _engine_kwargs(settings: Settings) -> dict[str, object]:
     kwargs: dict[str, object] = {
-        "echo": False,
+        "echo": settings.db_echo,
         "pool_pre_ping": True,
         "future": True,
     }
     if settings.database_url.startswith("postgresql+asyncpg://"):
         kwargs.update(
-            pool_size=10,
-            max_overflow=5,
-            pool_recycle=1800,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_timeout=settings.db_pool_timeout,
+            pool_recycle=settings.db_pool_recycle,
             # Required behind PgBouncer transaction pooling (Architecture.md §9).
             connect_args={"statement_cache_size": 0},
         )

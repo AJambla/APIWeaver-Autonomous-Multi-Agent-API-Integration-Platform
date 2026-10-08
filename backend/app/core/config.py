@@ -36,6 +36,11 @@ class Settings(BaseSettings):
 
     # --- Database (Deployment.md §9, required) ---------------------------------
     database_url: str
+    db_pool_size: int = 10
+    db_max_overflow: int = 5
+    db_pool_timeout: float = 30.0
+    db_pool_recycle: int = 1800
+    db_echo: bool = False
 
     # --- Redis (required) ------------------------------------------------------
     redis_url: str
