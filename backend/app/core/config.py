@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_api_base_url: str = "https://api.openai.com/v1"
     anthropic_api_key: str | None = None
+    anthropic_api_base_url: str = "https://api.anthropic.com/v1"
     llm_model: str = "gpt-4o-mini"
     anthropic_model: str = "claude-3-5-sonnet-20241022"
     embedding_model: str = "text-embedding-3-small"
@@ -117,6 +118,9 @@ class Settings(BaseSettings):
     github_app_client_secret_vault_path: str | None = None
     github_oauth_redirect_uri: str | None = None
     github_webhook_secret: str | None = None
+    github_api_base_url: str = "https://api.github.com"
+    github_oauth_authorize_url: str = "https://github.com/login/oauth/authorize"
+    github_oauth_token_url: str = "https://github.com/login/oauth/access_token"
 
     # --- Sandbox quotas (required by §9; enforced in Phase 4) -----------------
     # Production-level sandbox isolates generated code in a 4GB Docker container.

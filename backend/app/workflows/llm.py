@@ -529,7 +529,8 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
         return await self._call_provider("openai", send)
 
     async def _call_anthropic(self, system: str, user: str) -> tuple[dict[str, Any], int]:
-        url = "https://api.anthropic.com/v1/messages"
+        base_url = (getattr(self.settings, "anthropic_api_base_url", None) or "https://api.anthropic.com/v1").rstrip("/")
+        url = f"{base_url}/messages"
         headers = {
             "x-api-key": self.settings.anthropic_api_key or "",
             "anthropic-version": "2023-06-01",

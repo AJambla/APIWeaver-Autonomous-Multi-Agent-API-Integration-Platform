@@ -33,6 +33,7 @@ class GitHubAppClient:
         self.app_id = settings.github_app_id
         self._private_key: str | None = None
         self.timeout = getattr(settings, "github_timeout_seconds", 30.0)
+        self.api_base_url = (getattr(settings, "github_api_base_url", None) or GITHUB_API_BASE).rstrip("/")
 
     def _load_private_key(self) -> str:
         if self._private_key is not None:
@@ -59,7 +60,7 @@ class GitHubAppClient:
     async def get_installation_token(self, installation_id: int) -> str:
         """Get an installation access token for the given installation ID."""
         jwt_token = self._generate_jwt()
-        url = f"{GITHUB_API_BASE}/app/installations/{installation_id}/access_tokens"
+        url = f"{self.api_base_url}/app/installations/{installation_id}/access_tokens"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 url,
@@ -74,7 +75,7 @@ class GitHubAppClient:
 
     async def get_user_installations(self, user_token: str) -> list[dict[str, Any]]:
         """List installations accessible to the user (using their OAuth token)."""
-        url = f"{GITHUB_API_BASE}/user/installations"
+        url = f"{self.api_base_url}/user/installations"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(
                 url,
@@ -90,7 +91,7 @@ class GitHubAppClient:
         self, installation_token: str, org: str | None, name: str, private: bool = True
     ) -> dict[str, Any]:
         """Create a new repository via GitHub App installation token."""
-        url = f"{GITHUB_API_BASE}/user/repos" if org is None else f"{GITHUB_API_BASE}/orgs/{org}/repos"
+        url = f"{self.api_base_url}/user/repos" if org is None else f"{self.api_base_url}/orgs/{org}/repos"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 url,
@@ -113,7 +114,7 @@ class GitHubAppClient:
     ) -> dict[str, Any] | None:
         """Get repository by name."""
         full_name = f"{org}/{name}" if org else name
-        url = f"{GITHUB_API_BASE}/repos/{full_name}"
+        url = f"{self.api_base_url}/repos/{full_name}"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(
                 url,
@@ -171,7 +172,7 @@ class GitHubAppClient:
         return commit_sha
 
     async def _get_head_sha(self, token: str, repo: str, branch: str) -> str:
-        url = f"{GITHUB_API_BASE}/repos/{repo}/git/refs/heads/{branch}"
+        url = f"{self.api_base_url}/repos/{repo}/git/refs/heads/{branch}"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(url, headers=self._auth_headers(token))
             if response.status_code == 404:
@@ -181,7 +182,7 @@ class GitHubAppClient:
             return response.json()["object"]["sha"]
 
     async def _get_tree_sha(self, token: str, repo: str, commit_sha: str) -> str:
-        url = f"{GITHUB_API_BASE}/repos/{repo}/git/commits/{commit_sha}"
+        url = f"{self.api_base_url}/repos/{repo}/git/commits/{commit_sha}"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(url, headers=self._auth_headers(token))
             response.raise_for_status()
@@ -190,7 +191,7 @@ class GitHubAppClient:
     async def _create_blob(
         self, token: str, repo: str, content: str, encoding: str = "utf-8"
     ) -> str:
-        url = f"{GITHUB_API_BASE}/repos/{repo}/git/blobs"
+        url = f"{self.api_base_url}/repos/{repo}/git/blobs"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 url,
@@ -203,7 +204,7 @@ class GitHubAppClient:
     async def _create_tree(
         self, token: str, repo: str, base_tree_sha: str, blobs: list[dict]
     ) -> str:
-        url = f"{GITHUB_API_BASE}/repos/{repo}/git/trees"
+        url = f"{self.api_base_url}/repos/{repo}/git/trees"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 url,
@@ -216,7 +217,7 @@ class GitHubAppClient:
     async def _create_commit(
         self, token: str, repo: str, message: str, parent_sha: str, tree_sha: str
     ) -> str:
-        url = f"{GITHUB_API_BASE}/repos/{repo}/git/commits"
+        url = f"{self.api_base_url}/repos/{repo}/git/commits"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 url,
@@ -227,7 +228,7 @@ class GitHubAppClient:
             return response.json()["sha"]
 
     async def _update_ref(self, token: str, repo: str, branch: str, commit_sha: str) -> None:
-        url = f"{GITHUB_API_BASE}/repos/{repo}/git/refs/heads/{branch}"
+        url = f"{self.api_base_url}/repos/{repo}/git/refs/heads/{branch}"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.patch(
                 url,
@@ -251,6 +252,10 @@ class GitHubOAuthClient:
         self.client_id = settings.github_app_client_id
         self._client_secret: str | None = None
         self.vault_client: VaultClient | None = None
+        self.api_base_url = (getattr(settings, "github_api_base_url", None) or GITHUB_API_BASE).rstrip("/")
+        self.authorize_url = getattr(settings, "github_oauth_authorize_url", None) or GITHUB_OAUTH_AUTHORIZE_URL
+        self.token_url = getattr(settings, "github_oauth_token_url", None) or GITHUB_OAUTH_TOKEN_URL
+        self.timeout = getattr(settings, "github_timeout_seconds", 30.0)
 
     async def _get_client_secret(self) -> str:
         if self._client_secret is not None:
@@ -276,14 +281,14 @@ class GitHubOAuthClient:
             "allow_signup": "false",
         }
         query = "&".join(f"{k}={v}" for k, v in params.items())
-        return f"{GITHUB_OAUTH_AUTHORIZE_URL}?{query}"
+        return f"{self.authorize_url}?{query}"
 
     async def exchange_code(self, code: str) -> dict[str, Any]:
         """Exchange authorization code for access token."""
         client_secret = await self._get_client_secret()
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
-                GITHUB_OAUTH_TOKEN_URL,
+                self.token_url,
                 data={
                     "client_id": self.client_id,
                     "client_secret": client_secret,
@@ -299,7 +304,7 @@ class GitHubOAuthClient:
         """Get authenticated user info."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(
-                f"{GITHUB_API_BASE}/user",
+                f"{self.api_base_url}/user",
                 headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
             )
             response.raise_for_status()
@@ -309,7 +314,7 @@ class GitHubOAuthClient:
         """Get user's email addresses."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(
-                f"{GITHUB_API_BASE}/user/emails",
+                f"{self.api_base_url}/user/emails",
                 headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
             )
             response.raise_for_status()
