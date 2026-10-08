@@ -202,8 +202,8 @@ async def test_fastapi_export_still_declares_the_spec_endpoints():
     assert "FastAPI router for Test_API." in router_code
     assert 'router = APIRouter(prefix="/test-api")' in router_code
     assert '@router.get("/users/{id}", summary="Fetch a user")' in router_code
-    assert "async def getUser():" in router_code
-    assert 'return {"message": "Not implemented"}' in router_code
+    assert "async def getUser(id: str = Path(...)):" in router_code
+    assert "target_url = TARGET_BASE_URL.rstrip(\"/\") + target_path" in router_code
 
 
 def test_path_slots_keep_url_shape_and_drop_literals():
