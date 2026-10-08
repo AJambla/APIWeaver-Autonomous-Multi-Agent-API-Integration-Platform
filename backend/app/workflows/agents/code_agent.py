@@ -845,6 +845,7 @@ async def run_code_agent(
                 "file_type": file_type,
                 "size_bytes": size_bytes,
                 "phase_number": current_phase.get("phase_number") if current_phase else None,
+                "project_id": state.get("project_id"),
             }
             existing_idx = next(
                 (

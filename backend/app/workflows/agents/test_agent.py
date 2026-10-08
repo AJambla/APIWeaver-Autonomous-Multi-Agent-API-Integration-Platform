@@ -66,10 +66,18 @@ Return a JSON object with:
 class MockSandboxClient:
     """In-process mock sandbox for executing generated Python code."""
 
-    def __init__(self, generated_files: list[dict[str, Any]], spec: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        generated_files: list[dict[str, Any]],
+        spec: dict[str, Any],
+        project_id: str = "default",
+    ) -> None:
         self.generated_files = generated_files
         self.spec = spec
+        self.project_id = project_id
         self._modules: dict[str, Any] = {}
+        self._temp_dirs: set[Path] = set()
+        self._loaded_module_names: set[str] = set()
 
     async def _load_modules(self) -> None:
         """Load generated Python modules into memory."""
@@ -86,8 +94,10 @@ class MockSandboxClient:
 
                 # Write to a temporary location for import
                 import tempfile
-                temp_dir = Path(tempfile.gettempdir()) / "apiweaver_sandbox" / str(file_meta.get("project_id", "default"))
+                proj_id = file_meta.get("project_id") or self.project_id or "default"
+                temp_dir = Path(tempfile.gettempdir()) / "apiweaver_sandbox" / str(proj_id)
                 temp_dir.mkdir(parents=True, exist_ok=True)
+                self._temp_dirs.add(temp_dir)
 
                 full_path = _safe_workspace_target(temp_dir, file_path)
                 if full_path is None:
@@ -111,8 +121,11 @@ class MockSandboxClient:
             except Exception as e:
                 logger.warning("sandbox_module_load_failed", file=file_meta.get("file_path"), error=str(e))
 
+        importlib.invalidate_caches()
+
     def _get_client_class(self) -> type | None:
         """Find and return the generated client class."""
+        importlib.invalidate_caches()
         classes = []
         for file_meta in (self.generated_files if isinstance(self.generated_files, list) else []):
             if not isinstance(file_meta, dict):
@@ -121,7 +134,10 @@ class MockSandboxClient:
             if file_meta.get("language") == "python" and "client" in fp:
                 module_name = fp.replace("/", ".").replace(".py", "")
                 try:
+                    if module_name in sys.modules:
+                        del sys.modules[module_name]
                     module = importlib.import_module(module_name)
+                    self._loaded_module_names.add(module_name)
                     for attr_name in dir(module):
                         attr = getattr(module, attr_name)
                         if isinstance(attr, type) and "Client" in attr_name:
@@ -131,6 +147,20 @@ class MockSandboxClient:
                 except Exception as e:
                     logger.warning("client_class_load_failed", module=module_name, error=str(e))
         return classes[0] if classes else None
+
+    async def cleanup(self) -> None:
+        """Clean up loaded modules and sys.path entries."""
+        for mod in list(self._loaded_module_names):
+            sys.modules.pop(mod, None)
+        self._loaded_module_names.clear()
+        for temp_dir in self._temp_dirs:
+            p_str = str(temp_dir)
+            while p_str in sys.path:
+                try:
+                    sys.path.remove(p_str)
+                except ValueError:
+                    break
+        importlib.invalidate_caches()
 
     async def execute_test(self, endpoint: dict[str, Any], fixture: dict[str, Any]) -> dict[str, Any]:
         """Execute a single test against the mock sandbox."""
@@ -660,7 +690,11 @@ async def _create_sandbox(
                 f"SANDBOX_BACKEND={settings.sandbox_backend} cannot be used in {settings.app_env} mode. "
                 "Docker sandbox executor is strictly required."
             )
-        sandbox = MockSandboxClient(generated_files, spec_dict)
+        sandbox = MockSandboxClient(
+            generated_files,
+            spec_dict,
+            project_id=str(state.get("project_id") or "default"),
+        )
         await sandbox._load_modules()
         return sandbox
 
