@@ -1215,13 +1215,13 @@ def create_apiweaver_graph(
         run_id = state.get("workflow_run_id", "")
         current_status = state.get("status")
 
-        if (state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(state.get("repair_attempts", [])) >= 3:
+        if current_status == WorkflowStatus.PAUSED_FOR_APPROVAL:
+            final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+        elif (state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(state.get("repair_attempts", [])) >= 3:
             final_status = WorkflowStatus.FAILED
             state.setdefault("errors", []).append(
                 f"Self-healing repair loop exhausted (3/3 attempts failed). {(state.get('test_run_summary') or {}).get('failed')} test(s) failed."
             )
-        elif current_status == WorkflowStatus.PAUSED_FOR_APPROVAL:
-            final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
         elif (
             state.get("execution_plan")
             and not state.get("plan_approved")
@@ -1237,9 +1237,24 @@ def create_apiweaver_graph(
             final_status = WorkflowStatus.COMPLETED
 
         if final_status == WorkflowStatus.COMPLETED:
-            await _set_project_status(state, ProjectStatus.READY)
+            stages = state.get("stages", [])
+            if stages == ["plan"]:
+                await _set_project_status(state, ProjectStatus.PLANNING)
+            else:
+                await _set_project_status(state, ProjectStatus.READY)
         elif final_status == WorkflowStatus.FAILED:
             await _set_project_status(state, ProjectStatus.FAILED)
+        elif final_status == WorkflowStatus.PAUSED_FOR_APPROVAL:
+            # Preserve the project status corresponding to where the workflow paused
+            if (state.get("test_run_summary") or {}).get("failed", 0) > 0 or state.get("repair_attempts"):
+                await _set_project_status(state, ProjectStatus.TESTING)
+            elif state.get("generated_files"):
+                await _set_project_status(state, ProjectStatus.BUILDING)
+            else:
+                await _set_project_status(state, ProjectStatus.PLANNING)
+        elif final_status == WorkflowStatus.CANCELLED:
+            # Do not overwrite project status with PLANNING on cancellation
+            pass
         else:
             await _set_project_status(state, ProjectStatus.PLANNING)
 
@@ -1254,7 +1269,7 @@ def create_apiweaver_graph(
 
         updates: dict[str, Any] = {
             "status": final_status,
-            "progress_percent": 100 if final_status == WorkflowStatus.COMPLETED else (30 if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else int(state.get("progress_percent") or 0)),
+            "progress_percent": 100 if final_status == WorkflowStatus.COMPLETED else int(state.get("progress_percent") or (30 if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else 0)),
             "current_node": "completed",
         }
 

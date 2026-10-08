@@ -235,3 +235,90 @@ async def test_cancelled_run_costs_and_metrics(session_factory, db) -> None:
         )
         assert metric is not None
         assert metric.value == refreshed_run.estimated_cost_usd
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_preserves_testing_status_on_approval_pause(session_factory, db) -> None:
+    """A workflow paused for approval after testing must preserve ProjectStatus.TESTING, not revert to PLANNING."""
+    from app.models.enums import ProjectStatus, WorkflowStatus
+    from app.models.organization import Organization
+    from app.models.project import Project
+    from app.models.workflow import WorkflowRun
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator
+
+    org_id = uuid.uuid4()
+    proj_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+
+    async with db as session:
+        org = Organization(id=org_id, name="Test Org", slug=f"test-org-{uuid.uuid4().hex[:6]}")
+        proj = Project(id=proj_id, name="Test Proj", organization_id=org_id, status=ProjectStatus.TESTING)
+        run = WorkflowRun(id=run_id, project_id=proj_id, status=WorkflowStatus.RUNNING)
+        session.add_all([org, proj, run])
+        await session.commit()
+
+    orchestrator = LangGraphOrchestrator(session_factory=session_factory)
+    state: WorkflowState = {
+        "project_id": str(proj_id),
+        "organization_id": str(org_id),
+        "workflow_run_id": str(run_id),
+        "status": WorkflowStatus.PAUSED_FOR_APPROVAL,
+        "progress_percent": 80,
+        "test_run_summary": {"failed": 2, "passed": 5},
+        "repair_attempts": [{"attempt": 1}, {"attempt": 2}, {"attempt": 3}],
+        "stages": [],
+    }
+
+    # Execute graph up to finalize
+    graph = orchestrator.graph
+    res = await graph.ainvoke(state, config={"configurable": {"thread_id": str(run_id)}})
+
+    assert res["status"] == WorkflowStatus.PAUSED_FOR_APPROVAL
+    assert res["progress_percent"] == 80
+
+    async with db as session:
+        refreshed_proj = await session.get(Project, proj_id)
+        assert refreshed_proj.status == ProjectStatus.TESTING
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_preserves_building_status_on_approval_pause(session_factory, db) -> None:
+    """A workflow paused for approval with generated files must preserve ProjectStatus.BUILDING, not revert to PLANNING."""
+    from app.models.enums import ProjectStatus, WorkflowStatus
+    from app.models.organization import Organization
+    from app.models.project import Project
+    from app.models.workflow import WorkflowRun
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator
+
+    org_id = uuid.uuid4()
+    proj_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+
+    async with db as session:
+        org = Organization(id=org_id, name="Build Org", slug=f"build-org-{uuid.uuid4().hex[:6]}")
+        proj = Project(id=proj_id, name="Build Proj", organization_id=org_id, status=ProjectStatus.BUILDING)
+        run = WorkflowRun(id=run_id, project_id=proj_id, status=WorkflowStatus.RUNNING)
+        session.add_all([org, proj, run])
+        await session.commit()
+
+    orchestrator = LangGraphOrchestrator(session_factory=session_factory)
+    state: WorkflowState = {
+        "project_id": str(proj_id),
+        "organization_id": str(org_id),
+        "workflow_run_id": str(run_id),
+        "status": WorkflowStatus.PAUSED_FOR_APPROVAL,
+        "progress_percent": 60,
+        "generated_files": [{"file_path": "client.py", "language": "python"}],
+        "stages": [],
+    }
+
+    graph = orchestrator.graph
+    res = await graph.ainvoke(state, config={"configurable": {"thread_id": str(run_id)}})
+
+    assert res["status"] == WorkflowStatus.PAUSED_FOR_APPROVAL
+    assert res["progress_percent"] == 60
+
+    async with db as session:
+        refreshed_proj = await session.get(Project, proj_id)
+        assert refreshed_proj.status == ProjectStatus.BUILDING
+
