@@ -192,10 +192,10 @@ def test_production_boots_with_the_docker_sandbox(test_settings: Settings) -> No
     assert settings.sandbox_backend == "docker"
 
 
-def test_development_may_opt_into_the_in_process_sandbox(test_settings: Settings) -> None:
-    """The suite and local runs rely on the in-process sandbox."""
-    settings = _boot_settings(test_settings, sandbox_backend="mock")
-    assert settings.sandbox_backend == "mock"
+def test_development_also_refuses_the_in_process_sandbox(test_settings: Settings) -> None:
+    """Mock sandbox is completely deprecated; real Docker is strictly required in all environments."""
+    with pytest.raises(ValidationError, match="SANDBOX_BACKEND=mock"):
+        _boot_settings(test_settings, app_env="development", sandbox_backend="mock")
 
 
 async def test_docs_and_spec_are_not_served_in_production(test_settings: Settings) -> None:
