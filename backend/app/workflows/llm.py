@@ -428,6 +428,10 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             try:
                 async with httpx.AsyncClient(timeout=self.settings.llm_request_timeout) as client:
                     res = await client.post(url, json=payload, headers=headers)
+                    if res.status_code == 400 and "response_format" in payload:
+                        # Fallback for OpenAI-compatible providers that reject 'response_format'
+                        del payload["response_format"]
+                        res = await client.post(url, json=payload, headers=headers)
                     res.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code

@@ -316,7 +316,7 @@ async def test_openai_compatible_custom_base_url_and_model(monkeypatch):
     assert len(captured_requests) == 1
     assert captured_requests[0]["url"] == "http://localhost:11434/v1/chat/completions"
     assert captured_requests[0]["json"]["model"] == "qwen2.5-coder:7b"
-    assert captured_requests[0]["headers"]["Authorization"] == "Bearer local"
+    assert captured_requests[0]["headers"]["Authorization"] == "Bearer none"
 
 
 async def test_openai_compatible_custom_embedding_endpoint(monkeypatch):
