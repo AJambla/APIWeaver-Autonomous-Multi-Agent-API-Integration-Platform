@@ -343,20 +343,23 @@ async def _main() -> int:
     try:
         result["status_code"] = response.status_code
     except AttributeError:
-        pass
+        if isinstance(response, dict):
+            result["status_code"] = response.get("status_code") or response.get("status")
     try:
-        snapshot = {"status_code": response.status_code, "headers": dict(response.headers)}
+        snapshot = {"status_code": result.get("status_code"), "headers": dict(getattr(response, "headers", {}))}
         if hasattr(response, "json"):
             try:
                 snapshot["body"] = response.json()
             except Exception:
                 snapshot["body"] = getattr(response, "text", None)
+        elif isinstance(response, dict):
+            snapshot["body"] = response
         result["response_snapshot"] = snapshot
     except Exception as snapshot_error:
         result["response_snapshot"] = {"snapshot_error": str(snapshot_error)}
 
     expected_status = payload.get("expected_status")
-    status_code = getattr(response, "status_code", None)
+    status_code = result.get("status_code")
     is_success_code = status_code is not None and 200 <= status_code < 300
     expected_is_2xx = expected_status is None or (isinstance(expected_status, int) and 200 <= expected_status < 300)
 
@@ -479,9 +482,17 @@ async function main() {
     }
     const latencyMs = Math.round(performance.now() - started);
 
+    const extractStatusCode = (res) => {
+        if (res == null) return null;
+        if (typeof res.status === "number") return res.status;
+        if (typeof res.statusCode === "number") return res.statusCode;
+        if (typeof res.status_code === "number") return res.status_code;
+        return null;
+    };
+
     const result = {
         status: "passed",
-        status_code: response?.status ?? 200,
+        status_code: extractStatusCode(response),
         latency_ms: latencyMs,
         response_snapshot: null,
         error: null,
@@ -499,9 +510,12 @@ async function main() {
     }
 
     const expectedStatus = payload.expected_status;
-    const isSuccess = result.status_code >= 200 && result.status_code < 300;
+    const isSuccess = result.status_code !== null && result.status_code >= 200 && result.status_code < 300;
     const expectedIs2xx = !expectedStatus || (expectedStatus >= 200 && expectedStatus < 300);
-    if (expectedStatus) {
+    if (result.status_code === null && !response) {
+        result.status = "failed";
+        result.error = "No response returned from client method";
+    } else if (expectedStatus) {
         if (expectedIs2xx) {
             if (!isSuccess) {
                 result.status = "failed";
@@ -511,7 +525,7 @@ async function main() {
             result.status = "failed";
             result.error = `Expected status ${expectedStatus}, got ${result.status_code}`;
         }
-    } else if (!isSuccess) {
+    } else if (!isSuccess && result.status_code !== null) {
         result.status = "failed";
         result.error = `HTTP error status ${result.status_code}`;
     }

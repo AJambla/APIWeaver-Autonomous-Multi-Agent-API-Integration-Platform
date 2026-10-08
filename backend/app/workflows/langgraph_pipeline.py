@@ -673,6 +673,7 @@ def create_apiweaver_graph(
                     consistency_result = await code_agent_module.run_code_agent(
                         {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
                         phase_number=None,
+                        qdrant_client=qdrant_client,
                     )
 
                 if consistency_result.get("generated_files"):
