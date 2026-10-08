@@ -402,3 +402,47 @@ async def test_gemini_via_openai_compatible_endpoint(monkeypatch):
     assert captured_requests[0]["headers"]["Authorization"] == "Bearer AIzaSyTestKey"
 
 
+async def test_anthropic_custom_base_url(monkeypatch):
+    """Test custom Anthropic API base URL configuration."""
+    captured_requests = []
+
+    class _CaptureClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _CaptureClient:
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> bool:
+            return False
+
+        async def post(self, url: str, json: Any = None, headers: Any = None) -> Any:
+            captured_requests.append({"url": url, "json": json, "headers": headers})
+            return FakeResponse(
+                200,
+                payload={
+                    "content": [{"text": '{"anthropic_custom": true}'}],
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            )
+
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", _CaptureClient)
+
+    client = LLMClient(
+        _make_settings(
+            openai_api_key=None,
+            anthropic_api_key="sk-ant-test",
+            anthropic_api_base_url="https://mock-anthropic.internal/v1",
+        )
+    )
+
+    parsed, tokens = await client.generate_json(system_prompt="s", user_prompt="u")
+
+    assert parsed == {"anthropic_custom": True}
+    assert tokens == 15
+    assert len(captured_requests) == 1
+    assert captured_requests[0]["url"] == "https://mock-anthropic.internal/v1/messages"
+    assert captured_requests[0]["headers"]["x-api-key"] == "sk-ant-test"
+
+
+
