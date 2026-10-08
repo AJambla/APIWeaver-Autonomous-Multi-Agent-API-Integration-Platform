@@ -43,15 +43,20 @@ class EventPublisher:
         project_stream = f"project_events:{project_id}" if project_id else None
 
         try:
-            tasks = [self._redis.xadd(workflow_stream, message, maxlen=1000, approximate=True)]
+            workflow_maxlen = self._settings.redis_stream_workflow_maxlen
+            project_maxlen = self._settings.redis_stream_project_maxlen
+            workflow_ttl = self._settings.redis_stream_workflow_ttl_seconds
+            project_ttl = self._settings.redis_stream_project_ttl_seconds
+
+            tasks = [self._redis.xadd(workflow_stream, message, maxlen=workflow_maxlen, approximate=True)]
             if project_stream:
-                tasks.append(self._redis.xadd(project_stream, message, maxlen=2000, approximate=True))
+                tasks.append(self._redis.xadd(project_stream, message, maxlen=project_maxlen, approximate=True))
             await tasks[0]
             if len(tasks) > 1:
                 await tasks[1]
-            await self._redis.expire(workflow_stream, 86400)
+            await self._redis.expire(workflow_stream, workflow_ttl)
             if project_stream:
-                await self._redis.expire(project_stream, 86400 * 7)
+                await self._redis.expire(project_stream, project_ttl)
         except Exception as exc:
             pipeline_error_total.labels(subsystem="event_publisher", error_type=type(exc).__name__).inc()
             logger.error("event_publish_failed", run_id=run_id, event_type=event_type, error=str(exc), exc_info=True)

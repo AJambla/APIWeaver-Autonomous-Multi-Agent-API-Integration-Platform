@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     redis_url: str
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
+    redis_stream_workflow_maxlen: int = 1000
+    redis_stream_project_maxlen: int = 2000
+    redis_stream_workflow_ttl_seconds: int = 86400
+    redis_stream_project_ttl_seconds: int = 604800  # 7 days
 
     # --- Qdrant (required by §9; unused until Phase 2) ------------------------
     qdrant_url: str = "http://localhost:6333"
