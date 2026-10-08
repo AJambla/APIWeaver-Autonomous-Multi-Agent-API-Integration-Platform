@@ -25,7 +25,10 @@ from app.services.github_service import (
     create_github_app_client,
     create_github_oauth_client,
 )
+from app.core.logging import get_logger
 from app.services.vault_service import VaultClient, create_vault_client
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/github", tags=["github"])
 
@@ -176,8 +179,10 @@ async def github_callback(
 async def github_status(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
+    vault: VaultClient = Depends(create_vault_client),
+    app_client: GitHubAppClient = Depends(create_github_app_client),
 ) -> GitHubStatusResponse:
-    """Get current GitHub connection status."""
+    """Get current GitHub connection status including accessible App installations."""
     result = await session.execute(
         select(GitHubConnection).where(
             GitHubConnection.user_id == principal.user_id,
@@ -191,10 +196,37 @@ async def github_status(
 
     # Return the first active connection
     conn = connections[0]
+    installations: list[dict[str, Any]] = []
+
+    if conn.access_token_vault_path:
+        try:
+            token_secret = await vault.read_secret(conn.access_token_vault_path)
+            if token_secret and "token" in token_secret:
+                raw_inst = await app_client.get_user_installations(token_secret["token"])
+                installations = [
+                    {
+                        "id": inst["id"],
+                        "account": (
+                            inst.get("account", {}).get("login", "")
+                            if isinstance(inst.get("account"), dict)
+                            else ""
+                        ),
+                        "account_type": (
+                            inst.get("account", {}).get("type", "User")
+                            if isinstance(inst.get("account"), dict)
+                            else "User"
+                        ),
+                    }
+                    for inst in raw_inst
+                    if isinstance(inst, dict) and "id" in inst
+                ]
+        except Exception as exc:
+            logger.warning("failed_to_fetch_github_installations", error=str(exc))
+
     return GitHubStatusResponse(
         connected=True,
         github_username=conn.github_username,
-        installations=[],  # Would need to fetch from GitHub API
+        installations=installations,
     )
 
 
