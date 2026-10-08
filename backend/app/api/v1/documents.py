@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
+from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import client_ip, get_current_principal, get_db, get_object_storage, get_redis
 from app.core.errors import UnprocessableEntityError
 from app.models.enums import ActorType, HTTPMethod, WorkflowStatus
@@ -143,7 +144,7 @@ async def upload_document(
         "document_filename": file.filename,
         "format_hint": format_hint,
         "stages": ["plan"],
-        "target_languages": ["python", "node"],
+        "target_languages": list(DEFAULT_TARGET_LANGUAGES),
         "normalized_spec": normalized_spec_dict,
         "spec_persisted": api_spec is not None,
         "endpoints_discovered": len(normalized.endpoints) if normalized else 0,

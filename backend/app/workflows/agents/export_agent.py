@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.config import get_settings
+from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
 from app.models.enums import ExportType
@@ -65,7 +66,7 @@ class ExportAgent:
         project_id = state.get("project_id")
         generated_files = state.get("generated_files", [])
         test_run_summary = state.get("test_run_summary", {})
-        target_languages = state.get("target_languages") or ["python", "node"]
+        target_languages = state.get("target_languages") or list(DEFAULT_TARGET_LANGUAGES)
         normalized_spec = state.get("normalized_spec", {})
 
         if export_types is None:
@@ -292,7 +293,7 @@ describe("{client_cls}", () => {{
         """Flatten generated files to a single-module client."""
         artifacts = []
 
-        for language in ["python", "node"]:
+        for language in DEFAULT_TARGET_LANGUAGES:
             lang_files = [f for f in generated_files if f.get("language") == language]
             if not lang_files:
                 continue

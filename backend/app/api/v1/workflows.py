@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
+from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import DependencyUnavailableError, NotFoundError, UnprocessableEntityError
 from app.core.logging import get_logger
@@ -295,7 +296,7 @@ async def approve_workflow_gate(
         if payload.target_languages:
             resume_state["target_languages"] = payload.target_languages
         elif not resume_state.get("target_languages"):
-            resume_state["target_languages"] = ["python", "node"]
+            resume_state["target_languages"] = list(DEFAULT_TARGET_LANGUAGES)
         if (resume_state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(resume_state.get("repair_attempts", [])) >= 3:
             resume_state["stages"] = ["export"]
         else:

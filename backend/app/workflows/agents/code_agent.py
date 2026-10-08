@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
 from app.services.qdrant_service import QdrantClient
 from app.services.storage_service import storage_service
@@ -484,7 +485,7 @@ async def run_code_agent(
 
     spec = state.get("normalized_spec")
     execution_plan = state.get("execution_plan")
-    target_languages = state.get("target_languages") or ["python", "node"]
+    target_languages = state.get("target_languages") or list(DEFAULT_TARGET_LANGUAGES)
     generated_files = state.get("generated_files", [])
 
     if not spec:

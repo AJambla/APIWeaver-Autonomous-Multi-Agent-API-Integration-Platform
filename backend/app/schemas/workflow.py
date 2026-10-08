@@ -8,12 +8,13 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from app.core.constants import DEFAULT_TARGET_LANGUAGES, DEFAULT_WORKFLOW_STAGES
 from app.schemas.common import ResponseModel, StrictModel
 
 
 class TriggerWorkflowRequest(StrictModel):
-    stages: list[str] = Field(default_factory=lambda: ["plan", "generate", "test", "export"])
-    target_languages: list[str] = Field(default_factory=lambda: ["python", "node"])
+    stages: list[str] = Field(default_factory=lambda: list(DEFAULT_WORKFLOW_STAGES))
+    target_languages: list[str] = Field(default_factory=lambda: list(DEFAULT_TARGET_LANGUAGES))
     execution_mode: Literal["sync", "async"] = "sync"
 
 

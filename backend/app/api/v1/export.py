@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.models.enums import ActorType, ExportType, WorkflowStatus
 from app.models.export import Export
@@ -101,7 +102,7 @@ async def trigger_export(
         "organization_id": str(project.organization_id),
         "workflow_run_id": str(run.id),
         "stages": ["export"],
-        "target_languages": payload.target_languages or ["python", "node"],
+        "target_languages": payload.target_languages or list(DEFAULT_TARGET_LANGUAGES),
         "normalized_spec": normalized_spec,
         "generated_files": generated_files,
         "test_suite": test_suite,
@@ -176,7 +177,7 @@ async def export_mcp(
         "organization_id": str(project.organization_id),
         "workflow_run_id": str(uuid.uuid4()),
         "stages": ["export"],
-        "target_languages": ["python", "node"],
+        "target_languages": list(DEFAULT_TARGET_LANGUAGES),
         "normalized_spec": normalized_spec,
         "generated_files": [],
         "test_suite": [],

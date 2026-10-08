@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError
 from app.models.enums import ActorType, TestEnvironment, WorkflowStatus
@@ -105,7 +106,7 @@ async def trigger_test(
         "workflow_run_id": str(run.id),
         "environment": env,
         "stages": ["test"],
-        "target_languages": ["python", "node"],
+        "target_languages": list(DEFAULT_TARGET_LANGUAGES),
         "normalized_spec": normalized_spec,
         "generated_files": generated_files,
         "test_suite": [],
