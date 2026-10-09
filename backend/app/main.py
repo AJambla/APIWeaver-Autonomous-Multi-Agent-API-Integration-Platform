@@ -26,7 +26,11 @@ from app.core.config import Settings, get_settings, validate_startup_environment
 from app.core.errors import APIError, ErrorCode, build_error_body
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import registry as metrics_registry
-from app.core.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
+from app.core.middleware import (
+    BodySizeLimitMiddleware,
+    RequestIDMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.core.ratelimit import RateLimitMiddleware
 from app.core.security import load_keys
 from app.core.telemetry import instrument_backends, instrument_http
@@ -45,6 +49,7 @@ _STATUS_TO_CODE = {
     403: ErrorCode.FORBIDDEN,
     404: ErrorCode.NOT_FOUND,
     409: ErrorCode.CONFLICT,
+    413: ErrorCode.PAYLOAD_TOO_LARGE,
     422: ErrorCode.UNPROCESSABLE_ENTITY,
     429: ErrorCode.RATE_LIMIT_EXCEEDED,
     503: ErrorCode.DEPENDENCY_UNAVAILABLE,
@@ -250,6 +255,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Middleware is applied bottom-up, so the request-id middleware is added last to run
     # first — the rate limiter's error body needs a request_id already assigned.
+    # Innermost: refuses an oversized body before any route parses it.
+    app.add_middleware(BodySizeLimitMiddleware, max_upload_bytes=settings.max_upload_bytes)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RequestIDMiddleware)

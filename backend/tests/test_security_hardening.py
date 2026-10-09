@@ -344,3 +344,30 @@ def test_llm_probe_reports_a_category_not_the_raw_provider_error() -> None:
     assert "401" in message and "rejected" in message
     assert "sk-secret" not in message
     assert "sk-secret" not in describe_provider_error(RuntimeError("boom sk-secret-x"))
+
+
+async def test_oversized_bodies_are_refused_before_parsing(client, test_settings) -> None:
+    """Only nginx bounded bodies; reached directly, the API spooled them to disk first."""
+    from app.core.middleware import MAX_JSON_BODY_BYTES
+
+    declared = await client.post(
+        "/api/v1/auth/login",
+        content=b"{" + b" " * (MAX_JSON_BODY_BYTES + 10) + b"}",
+        headers={"content-type": "application/json"},
+    )
+    assert declared.status_code == 413, declared.text
+    assert declared.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
+
+    async def chunks():
+        for _ in range(3):
+            yield b" " * (MAX_JSON_BODY_BYTES // 2 + 1)
+
+    streamed = await client.post(
+        "/api/v1/auth/login", content=chunks(), headers={"content-type": "application/json"}
+    )
+    assert streamed.status_code == 413, streamed.text
+
+    small = await client.post(
+        "/api/v1/auth/login", json={"email": "a@example.com", "password": "wrong-password"}
+    )
+    assert small.status_code == 401
