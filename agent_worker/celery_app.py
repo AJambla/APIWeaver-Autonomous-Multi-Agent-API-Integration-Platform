@@ -85,20 +85,12 @@ def _unbind_correlation_ids(task_id: str | None = None, **_: Any) -> None:
 
 
 # Imported after `app` exists: the tasks register against it.
-from agent_worker.tasks.codegen_tasks import run_code_agent_task  # noqa: E402
+# Only what the API dispatches: whole runs, plus the dead-letter sink. Per-stage tasks
+# (document, planner, codegen, testing, export) were registered but never sent.
 from agent_worker.tasks.dlq_tasks import dead_letter_task  # noqa: E402
-from agent_worker.tasks.document_tasks import run_document_agent  # noqa: E402
-from agent_worker.tasks.export_tasks import run_export_agent  # noqa: E402
-from agent_worker.tasks.planner_tasks import run_planner_agent_task  # noqa: E402
-from agent_worker.tasks.testing_tasks import run_testing_agent  # noqa: E402
 from agent_worker.tasks.workflow_tasks import run_workflow  # noqa: E402
 
 for task in (
-    run_document_agent,
-    run_planner_agent_task,
-    run_code_agent_task,
-    run_testing_agent,
-    run_export_agent,
     run_workflow,
     dead_letter_task,
 ):
