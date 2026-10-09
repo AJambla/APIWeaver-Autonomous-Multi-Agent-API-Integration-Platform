@@ -419,7 +419,7 @@ export const ProjectWorkspace: React.FC = () => {
   /* --- plan tab --- */
   const [dagPlan, setDagPlan] = useState('');
   const [planDocOpen, setPlanDocOpen] = useState(false);
-  const [planApproved, setPlanApproved] = useState(false);
+  const [approvedRunId, setApprovedRunId] = useState<string | null>(null);
   const [planBusy, setPlanBusy] = useState(false);
   const [planError, setPlanError] = useState('');
 
@@ -835,10 +835,10 @@ export const ProjectWorkspace: React.FC = () => {
     (activeRun?.status === 'paused_for_approval' ? activeRun.id : null) ||
     (latestRun?.status === 'paused_for_approval' ? latestRun.workflow_run_id : null);
 
-  /* An approval belongs to one run; a new run starts unapproved. */
-  useEffect(() => {
-    setPlanApproved(false);
-  }, [pausedRunId]);
+  /* An approval belongs to one run; a different run pausing starts unapproved. Approving
+     moves the run out of the gate (pausedRunId becomes null), which used to reset this flag
+     and flip the button straight back to a disabled "Approve Plan". */
+  const planApproved = approvedRunId !== null && (pausedRunId === null || pausedRunId === approvedRunId);
 
   const approvePlan = async () => {
     if (!pausedRunId) return;
@@ -854,7 +854,7 @@ export const ProjectWorkspace: React.FC = () => {
       });
       setActiveRunId(pausedRunId);
       setActiveRun(prev => (prev ? { ...prev, status: 'running' } : null));
-      setPlanApproved(true);
+      setApprovedRunId(pausedRunId);
       await loadProjectData();
     } catch (err) {
       setPlanError(errorMessage(err));
