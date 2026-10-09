@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { asUuid } from '../lib/ids';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -387,7 +388,8 @@ const formatExportType = (type: string) => {
 /* Main page ------------------------------------------------------------------- */
 
 export const ProjectWorkspace: React.FC = () => {
-  const { id } = useParams<{ id: string }>();
+  // Only a UUID ever reaches an API path (see lib/ids.ts); anything else is "not found".
+  const id = asUuid(useParams<{ id: string }>().id);
   const navigate = useNavigate();
 
   /* --- shared data --- */

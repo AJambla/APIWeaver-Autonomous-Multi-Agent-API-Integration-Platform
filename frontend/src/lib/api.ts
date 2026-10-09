@@ -58,6 +58,20 @@ export function refreshAccessToken(): Promise<string> {
   return refreshInFlight;
 }
 
+/** True when the path part of `endpoint` has a `.` or `..` segment, encoded or not. */
+export function hasDotSegment(endpoint: string): boolean {
+  const path = endpoint.split(/[?#]/, 1)[0];
+  return path.split('/').some((segment) => {
+    let decoded = segment;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      // A malformed escape is not a dot segment; the server will reject it.
+    }
+    return decoded === '.' || decoded === '..';
+  });
+}
+
 /** The request `endpoint` resolves to, and whether this origin owns it.
  *
  * An endpoint is either a path under `API_PREFIX` or, for a caller that really does mean
@@ -66,6 +80,10 @@ export function refreshAccessToken(): Promise<string> {
  * `http-fault/list` and false of a protocol-relative `//host/path`.
  */
 export function resolveEndpoint(endpoint: string): { url: string; sameOrigin: boolean } {
+  if (hasDotSegment(endpoint)) {
+    // `new URL` would resolve `..` and send the bearer token to wherever it led.
+    throw new Error('Refusing a request path with "." or ".." segments.');
+  }
   const candidate =
     endpoint.startsWith('http') || endpoint.startsWith(`${API_PREFIX}/`)
       ? endpoint

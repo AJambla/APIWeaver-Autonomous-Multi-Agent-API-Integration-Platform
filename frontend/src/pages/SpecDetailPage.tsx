@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { asUuid } from '../lib/ids';
 import { apiFetch } from '../lib/api';
 import { ApiSpec, ProjectSummary, SpecEndpoint } from '../lib/types';
 import { NormalizedSpec, formatPercent, specFormat, specVersion } from '../lib/format';
@@ -33,7 +34,7 @@ const InfoRow: React.FC<{ label: string; value: React.ReactNode }> = ({ label, v
 );
 
 export const SpecDetailPage: React.FC = () => {
-  const { projectId } = useParams<{ projectId: string }>();
+  const projectId = asUuid(useParams<{ projectId: string }>().projectId);
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [spec, setSpec] = useState<ApiSpec | null>(null);
   const [endpoints, setEndpoints] = useState<SpecEndpoint[]>([]);
@@ -42,7 +43,11 @@ export const SpecDetailPage: React.FC = () => {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId) {
+      setError('Project not found or access denied.');
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     Promise.allSettled([
