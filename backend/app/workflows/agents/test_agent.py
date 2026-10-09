@@ -621,6 +621,27 @@ async def _load_executors(
     return MultiLanguageSandboxExecutor(executors)
 
 
+def _failed_update(error: str, *, total_tokens: int | None = None) -> dict[str, Any]:
+    """State update for a test stage that could not run.
+
+    `test_run_summary` and `test_suite` are explicitly cleared. Graph state channels keep
+    their last value, so omitting them left the *previous* run's summary in place: after
+    a repair, a sandbox outage was then routed back into the repair loop on stale
+    failures and finally reported as "repairs exhausted" instead of FAILED.
+    """
+    update: dict[str, Any] = {
+        "current_node": "test_agent",
+        "progress_percent": 50,
+        "status": "failed",
+        "errors": [error],
+        "test_run_summary": None,
+        "test_suite": [],
+    }
+    if total_tokens is not None:
+        update["total_tokens_used"] = total_tokens
+    return update
+
+
 async def run_test_agent(
     state: WorkflowState,
     llm_client: LLMClient | None = None,
@@ -662,21 +683,13 @@ async def run_test_agent(
 
     if not spec or not spec.get("endpoints"):
         await _record_failure("Cannot run tests without a normalized API spec containing endpoints.")
-        return {
-            "current_node": "test_agent",
-            "progress_percent": 50,
-            "status": "failed",
-            "errors": ["Cannot run tests without a normalized API spec containing endpoints."],
-        }
+        return _failed_update(
+            "Cannot run tests without a normalized API spec containing endpoints."
+        )
 
     if not generated_files:
         await _record_failure("No generated files to test.")
-        return {
-            "current_node": "test_agent",
-            "progress_percent": 50,
-            "status": "failed",
-            "errors": ["No generated files to test."],
-        }
+        return _failed_update("No generated files to test.")
 
     sandbox = None
     test_start_time = time.perf_counter()
@@ -902,13 +915,7 @@ async def run_test_agent(
     except Exception as exc:
         logger.error("test_agent_unhandled_failure", error=str(exc), traceback=traceback.format_exc())
         await _record_failure(f"Test agent failure: {exc}")
-        return {
-            "current_node": "test_agent",
-            "progress_percent": 50,
-            "status": "failed",
-            "errors": [f"Test agent execution failed: {exc}"],
-            "total_tokens_used": total_tokens,
-        }
+        return _failed_update(f"Test agent execution failed: {exc}", total_tokens=total_tokens)
     finally:
         if sandbox is not None:
             try:
