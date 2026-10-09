@@ -1,20 +1,27 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { RouteErrorBoundary } from './components/ErrorBoundary';
 import { AuthProvider, useAuth } from './lib/auth-context';
-import { LandingPage } from './pages/LandingPage';
-import { LoginPage } from './pages/LoginPage';
-import { RegisterPage } from './pages/RegisterPage';
-import { DashboardPage } from './pages/DashboardPage';
-import { OverviewPage } from './pages/OverviewPage';
-import { SpecsPage } from './pages/SpecsPage';
-import { SpecDetailPage } from './pages/SpecDetailPage';
-import { AgentsPage } from './pages/AgentsPage';
-import { RunsPage } from './pages/RunsPage';
-import { RunDetailPage } from './pages/RunDetailPage';
-import { SettingsPage } from './pages/SettingsPage';
-import { ProjectWorkspace } from './pages/ProjectWorkspace';
-import { DashboardLayout } from './components/DashboardLayout';
+
+const LandingPage = React.lazy(() => import('./pages/LandingPage').then(m => ({ default: m.LandingPage })));
+const LoginPage = React.lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })));
+const RegisterPage = React.lazy(() => import('./pages/RegisterPage').then(m => ({ default: m.RegisterPage })));
+const DashboardLayout = React.lazy(() => import('./components/DashboardLayout').then(m => ({ default: m.DashboardLayout })));
+const DashboardPage = React.lazy(() => import('./pages/DashboardPage').then(m => ({ default: m.DashboardPage })));
+const OverviewPage = React.lazy(() => import('./pages/OverviewPage').then(m => ({ default: m.OverviewPage })));
+const SpecsPage = React.lazy(() => import('./pages/SpecsPage').then(m => ({ default: m.SpecsPage })));
+const SpecDetailPage = React.lazy(() => import('./pages/SpecDetailPage').then(m => ({ default: m.SpecDetailPage })));
+const AgentsPage = React.lazy(() => import('./pages/AgentsPage').then(m => ({ default: m.AgentsPage })));
+const RunsPage = React.lazy(() => import('./pages/RunsPage').then(m => ({ default: m.RunsPage })));
+const RunDetailPage = React.lazy(() => import('./pages/RunDetailPage').then(m => ({ default: m.RunDetailPage })));
+const SettingsPage = React.lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
+const ProjectWorkspace = React.lazy(() => import('./pages/ProjectWorkspace').then(m => ({ default: m.ProjectWorkspace })));
+
+const PageFallback: React.FC = () => (
+  <div className="min-h-[50vh] flex items-center justify-center">
+    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
+  </div>
+);
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, loading, connectionError, retrySession } = useAuth();
@@ -48,39 +55,43 @@ export const App: React.FC = () => {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <RouteErrorBoundary>
-        <Routes>
-          <Route path="/" element={<LandingPage />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
-          <Route
-            path="/dashboard"
-            element={
-              <ProtectedRoute>
-                <DashboardLayout />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<DashboardPage />} />
-            <Route path="overview" element={<OverviewPage />} />
-            <Route path="specs" element={<SpecsPage />} />
-            <Route path="specs/:projectId" element={<SpecDetailPage />} />
-            <Route path="agents" element={<AgentsPage />} />
-            <Route path="runs" element={<RunsPage />} />
-            <Route path="runs/:runId" element={<RunDetailPage />} />
-            <Route path="settings" element={<SettingsPage />} />
-          </Route>
-          <Route
-            path="/projects/:id"
-            element={
-              <ProtectedRoute>
-                <ProjectWorkspace />
-              </ProtectedRoute>
-            }
-          />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-        </RouteErrorBoundary>
+        <Suspense fallback={<PageFallback />}>
+          <Routes>
+            <Route path="/" element={<RouteErrorBoundary><LandingPage /></RouteErrorBoundary>} />
+            <Route path="/login" element={<RouteErrorBoundary><LoginPage /></RouteErrorBoundary>} />
+            <Route path="/register" element={<RouteErrorBoundary><RegisterPage /></RouteErrorBoundary>} />
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute>
+                  <RouteErrorBoundary>
+                    <DashboardLayout />
+                  </RouteErrorBoundary>
+                </ProtectedRoute>
+              }
+            >
+              <Route index element={<RouteErrorBoundary compact><DashboardPage /></RouteErrorBoundary>} />
+              <Route path="overview" element={<RouteErrorBoundary compact><OverviewPage /></RouteErrorBoundary>} />
+              <Route path="specs" element={<RouteErrorBoundary compact><SpecsPage /></RouteErrorBoundary>} />
+              <Route path="specs/:projectId" element={<RouteErrorBoundary compact><SpecDetailPage /></RouteErrorBoundary>} />
+              <Route path="agents" element={<RouteErrorBoundary compact><AgentsPage /></RouteErrorBoundary>} />
+              <Route path="runs" element={<RouteErrorBoundary compact><RunsPage /></RouteErrorBoundary>} />
+              <Route path="runs/:runId" element={<RouteErrorBoundary compact><RunDetailPage /></RouteErrorBoundary>} />
+              <Route path="settings" element={<RouteErrorBoundary compact><SettingsPage /></RouteErrorBoundary>} />
+            </Route>
+            <Route
+              path="/projects/:id"
+              element={
+                <ProtectedRoute>
+                  <RouteErrorBoundary>
+                    <ProjectWorkspace />
+                  </RouteErrorBoundary>
+                </ProtectedRoute>
+              }
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
       </BrowserRouter>
     </AuthProvider>
   );

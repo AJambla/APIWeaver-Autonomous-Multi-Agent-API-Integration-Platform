@@ -72,6 +72,8 @@ import {
   Td,
   Th,
 } from '../components/ui';
+import { LogsTab } from './workspace/LogsTab';
+import { SettingsTab } from './workspace/SettingsTab';
 
 type TabId = 'upload' | 'plan' | 'build' | 'test' | 'export' | 'logs' | 'settings';
 type UploadMode = 'file' | 'paste' | 'url';
@@ -522,7 +524,9 @@ export const ProjectWorkspace: React.FC = () => {
     let cancelled = false;
     apiFetch<WorkflowRunInfo>(`/workflows/${activeRunId}`)
       .then(info => { if (!cancelled) setActiveRun(info); })
-      .catch(() => { /* live events still drive the panel */ });
+      .catch(err => {
+        console.warn('Could not fetch active run status; live events will continue driving the panel', err);
+      });
     return () => { cancelled = true; };
   }, [activeRunId]);
 
@@ -555,7 +559,7 @@ export const ProjectWorkspace: React.FC = () => {
         return {
           ...prev,
           status: 'paused_for_approval',
-          progress_percent: 50,
+          progress_percent: typeof payload.progress_percent === 'number' ? payload.progress_percent : prev.progress_percent,
         };
       }
       return prev;
@@ -593,7 +597,9 @@ export const ProjectWorkspace: React.FC = () => {
     const timer = setTimeout(() => {
       apiFetch<Page<AgentEventLog>>(`/projects/${id}/logs?limit=100`)
         .then(res => setLogs(res.data ?? []))
-        .catch(() => { /* the next event retries */ });
+        .catch(err => {
+          console.warn('Could not refresh logs for run', err);
+        });
     }, 500);
     return () => clearTimeout(timer);
   }, [runEvents, activeRunId, id]);
@@ -723,7 +729,9 @@ export const ProjectWorkspace: React.FC = () => {
     if (activeTab === 'test' && id && !testSummary) {
       apiFetch<TestRunSummary>(`/projects/${id}/test-runs/latest`)
         .then(ts => { if (ts) setTestSummary(ts); })
-        .catch(() => {});
+        .catch(err => {
+          console.warn('Could not fetch latest test summary', err);
+        });
     }
   }, [activeTab, id, testSummary]);
 
@@ -2030,101 +2038,30 @@ export const ProjectWorkspace: React.FC = () => {
 
         {/* =============================== LOGS =============================== */}
         {activeTab === 'logs' && (
-          <div className="space-y-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-medium tracking-tight">Real-Time Event Stream</h2>
-                <p className="text-xs text-neutral-500">{logs.length} agent event{logs.length === 1 ? '' : 's'} recorded for this project.</p>
-              </div>
-              <button onClick={loadProjectData} className={btnGhost}>
-                <RefreshCw className="h-4 w-4" /> Refresh
-              </button>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <SearchInput value={logQuery} onChange={setLogQuery} placeholder="Search events…" className="min-w-[220px] flex-1" />
-              <FilterSelect
-                value={logAgent}
-                onChange={setLogAgent}
-                options={[{ value: 'all', label: 'All agents' }, ...agentNames.map(n => ({ value: n, label: n }))]}
-              />
-              <FilterSelect
-                value={logType}
-                onChange={setLogType}
-                options={[{ value: 'all', label: 'All events' }, ...eventTypes.map(t => ({ value: t, label: t.replace(/_/g, ' ') }))]}
-              />
-            </div>
-
-            <div className="max-h-[520px] overflow-y-auto rounded-2xl border border-white/15 bg-neutral-950 p-4 font-mono text-xs">
-              {visibleLogs.length === 0 ? (
-                <p className="py-10 text-center text-neutral-500">
-                  {logs.length === 0
-                    ? 'No events recorded yet. Upload a specification or run the build pipeline to generate agent events.'
-                    : 'No events match the current filters.'}
-                </p>
-              ) : (
-                visibleLogs.map(ev => (
-                  <div key={ev.id} className="flex items-start gap-3 border-b border-white/5 py-2 last:border-0">
-                    <span className="shrink-0 text-neutral-500">[{formatEventTime(ev.created_at)}]</span>
-                    {ev.workflow_run_id && (
-                      <span
-                        className="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 font-mono text-[10px] text-blue-400"
-                        title={`Run ID: ${ev.workflow_run_id}`}
-                      >
-                        {ev.workflow_run_id.slice(0, 8)}
-                      </span>
-                    )}
-                    <span className="shrink-0 rounded bg-white/10 px-2 py-0.5 text-[10px] text-neutral-300">{ev.agent_name || 'System'}</span>
-                    <span className="shrink-0 rounded bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wider text-neutral-400">{ev.event_type}</span>
-                    <span className="min-w-0 flex-1 break-words text-neutral-200">{eventMessage(ev.payload) || '—'}</span>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
+          <LogsTab
+            logs={logs}
+            visibleLogs={visibleLogs}
+            logQuery={logQuery}
+            setLogQuery={setLogQuery}
+            logAgent={logAgent}
+            setLogAgent={setLogAgent}
+            logType={logType}
+            setLogType={setLogType}
+            agentNames={agentNames}
+            eventTypes={eventTypes}
+            loadProjectData={loadProjectData}
+            formatEventTime={formatEventTime}
+            eventMessage={eventMessage}
+          />
         )}
 
         {/* ============================= SETTINGS ============================= */}
         {activeTab === 'settings' && (
-          <div className={`${cardCls} p-6`}>
-            <h2 className="text-lg font-medium tracking-tight">Project Settings & Details</h2>
-            <p className="mb-5 text-xs text-neutral-500">Project metadata and execution parameters.</p>
-            <div className="divide-y divide-white/5">
-              {[
-                { label: 'Project name', value: project.name },
-                { label: 'Specification', value: spec ? spec.title || specFormat(rawSpec) : 'None uploaded' },
-                { label: 'Status', value: project.status },
-                { label: 'Project ID', value: project.id, mono: true },
-                { label: 'Organization ID', value: project.organization_id, mono: true },
-                { label: 'Endpoints discovered', value: String(project.endpoint_count) },
-                { label: 'Created', value: new Date(project.created_at).toLocaleString() },
-                { label: 'Updated', value: new Date(project.updated_at).toLocaleString() },
-              ].map(row => (
-                <div key={row.label} className="flex flex-wrap items-center justify-between gap-2 py-3">
-                  <span className="text-sm text-neutral-500">{row.label}</span>
-                  <span className={`text-sm capitalize ${row.mono ? 'font-mono text-xs text-neutral-300' : ''}`}>
-                    {row.value}
-                    {row.mono && (
-                      <button
-                        onClick={() => navigator.clipboard.writeText(row.value)}
-                        className="ml-2 inline-flex rounded p-1 text-neutral-500 hover:bg-white/5 hover:text-white"
-                        title="Copy"
-                      >
-                        <Copy className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div className="mt-6 flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
-              <GitBranch className="h-4 w-4 shrink-0 text-neutral-500" />
-              <p className="text-xs text-neutral-500">
-                Retry policy, target languages, and workflow triggers are configured when a run is triggered from the
-                Build step. Short ID <span className="font-mono">{shortId(project.id)}</span>.
-              </p>
-            </div>
-          </div>
+          <SettingsTab
+            project={project}
+            spec={spec}
+            rawSpec={rawSpec}
+          />
         )}
       </main>
 
