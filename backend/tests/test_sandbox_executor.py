@@ -35,6 +35,8 @@ class FakeContainer:
         self.removed = False
         self.archives: list[tuple[str, Any]] = []
         self.started = False
+        # Set by FakeDockerClient: the environment the container was created with.
+        self.environment: dict[str, str] = {}
 
     def wait(self) -> dict:
         if self.wait_delay:
@@ -44,8 +46,11 @@ class FakeContainer:
     def kill(self) -> None:
         self.killed = True
 
-    def logs(self) -> bytes:
-        return self.output.encode("utf-8")
+    def logs(self, **kwargs: Any) -> bytes:
+        # Sentinels are written with a `{NONCE}` placeholder; the real runner prints the
+        # nonce the host passed in APIWEAVER_RESULT_NONCE.
+        nonce = self.environment.get("APIWEAVER_RESULT_NONCE", "")
+        return self.output.replace("{NONCE}", nonce).encode("utf-8")
 
     def remove(self, force: bool = False) -> None:
         self.removed = True
@@ -73,10 +78,12 @@ class FakeDockerClient:
 
     def _run(self, image=None, command=None, **kwargs) -> FakeContainer:
         self.run_kwargs = {"image": image, "command": command, **kwargs}
+        self.container.environment = kwargs.get("environment") or {}
         return self.container
 
     def _create(self, image=None, command=None, **kwargs) -> FakeContainer:
         self.create_kwargs = {"image": image, "command": command, **kwargs}
+        self.container.environment = kwargs.get("environment") or {}
         return self.container
 
     def _create_volume(self, **kwargs) -> SimpleNamespace:
@@ -116,7 +123,7 @@ def test_memory_quota_parsing():
 
 @pytest.mark.asyncio
 async def test_execute_test_enforces_quotas_and_parses_result():
-    sentinel = _RESULT_PREFIX + json.dumps(
+    sentinel = _RESULT_PREFIX + "{NONCE}:" + json.dumps(
         {
             "status": "passed",
             "status_code": 200,
@@ -147,7 +154,7 @@ async def test_execute_test_enforces_quotas_and_parses_result():
 
     kwargs = client.run_kwargs
     assert kwargs["image"] == "python:3.12-slim"
-    assert kwargs["command"] == ["python", "/sandbox/runner.py"]
+    assert kwargs["command"] == ["python", "-P", "/sandbox/runner.py"]
     assert kwargs["nano_cpus"] == 500_000_000
     assert kwargs["mem_limit"] == 256 * 1024**2
     assert kwargs["pids_limit"] == 64
@@ -194,7 +201,7 @@ async def test_execute_test_injects_credential_via_env():
 
 @pytest.mark.asyncio
 async def test_execute_test_reports_failed_sentinel():
-    sentinel = _RESULT_PREFIX + json.dumps(
+    sentinel = _RESULT_PREFIX + "{NONCE}:" + json.dumps(
         {
             "status": "failed",
             "status_code": 500,
@@ -356,7 +363,7 @@ async def test_create_sandbox_selects_docker_executor(monkeypatch):
     captured: dict = {}
 
     class StubExecutor:
-        def __init__(self, settings) -> None:
+        def __init__(self, settings, *, network_enabled=False) -> None:
             captured["settings"] = settings
 
         async def load(self, *, project_id, files, base_url=None, api_key=None) -> None:
@@ -394,7 +401,7 @@ async def test_create_sandbox_passes_resolved_credential(monkeypatch):
     captured: dict = {}
 
     class StubExecutor:
-        def __init__(self, settings) -> None:
+        def __init__(self, settings, *, network_enabled=False) -> None:
             pass
 
         async def load(self, *, project_id, files, base_url=None, api_key=None) -> None:
@@ -514,7 +521,7 @@ async def test_docker_executor_prepare_and_run_test():
 @pytest.mark.asyncio
 async def test_execute_node_test_selects_node_image_and_runner():
     """Verify that staged Node.js/TS files select node:22-alpine and runner.mjs."""
-    sentinel = _RESULT_PREFIX + json.dumps(
+    sentinel = _RESULT_PREFIX + "{NONCE}:" + json.dumps(
         {
             "status": "passed",
             "status_code": 200,
@@ -632,3 +639,139 @@ def test_deterministic_fixtures_use_spec_examples_and_enums():
     assert fixture["request"]["body"]["count"] == 42
     assert fixture["expected_status"] == 201
 
+
+
+# --- Hardening: result nonce, target vetting, path matching, reaping ----------------
+
+from app.services.sandbox_service import (  # noqa: E402
+    SANDBOX_CREATED_LABEL,
+    SANDBOX_LABEL,
+    SandboxResultTampered,
+    assert_public_target,
+    endpoint_path_regex,
+    reap_orphaned_sandboxes,
+)
+
+
+def test_result_lines_must_carry_the_nonce_exactly_once():
+    good = _RESULT_PREFIX + "abc:" + json.dumps({"status": "passed"})
+    forged = _RESULT_PREFIX + "zzz:" + json.dumps({"status": "passed"})
+    assert _parse_runner_result(f"noise\n{forged}\n", "abc") is None
+    assert _parse_runner_result(f"{forged}\n{good}\n", "abc") == {"status": "passed"}
+    with pytest.raises(SandboxResultTampered):
+        _parse_runner_result(f"{good}\n{good}\n", "abc")
+
+
+@pytest.mark.parametrize(
+    ("path", "request_path", "matches"),
+    [
+        ("/pets/{petId}", "/v2/pets/7", True),
+        ("/pets/{petId}", "/pets/7/", True),
+        ("/pets/{petId}", "/pets", False),
+        ("/pets/{petId}", "/animals/7", False),
+        ("/a.b/{x}", "/aXb/1", False),
+    ],
+)
+def test_endpoint_path_regex(path, request_path, matches):
+    import re
+
+    assert bool(re.search(endpoint_path_regex(path), request_path)) is matches
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8000",
+        "http://169.254.169.254/latest/meta-data",
+        "http://10.0.0.5",
+        "http://[::1]/",
+        "ftp://example.com",
+        "/relative/only",
+    ],
+)
+async def test_live_targets_on_private_addresses_are_refused(url):
+    with pytest.raises(ValueError):
+        await assert_public_target(url)
+
+
+@pytest.mark.asyncio
+async def test_private_targets_allowed_only_when_opted_in():
+    await assert_public_target("http://127.0.0.1:8000", allow_private=True)
+
+
+@pytest.mark.asyncio
+async def test_public_targets_pass(monkeypatch):
+    import asyncio as _asyncio
+
+    async def fake_getaddrinfo(host, port, **kwargs):
+        return [(None, None, None, "", ("93.184.216.34", port))]
+
+    loop = _asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "getaddrinfo", fake_getaddrinfo)
+    await assert_public_target("https://api.example.com/v1")
+
+
+def test_reaper_removes_only_old_labelled_sandboxes():
+    now = time.time()
+
+    class Item:
+        def __init__(self, age: float) -> None:
+            self.labels = {SANDBOX_LABEL: "true", SANDBOX_CREATED_LABEL: str(now - age)}
+            self.attrs = {"Labels": self.labels}
+            self.removed = False
+
+        def remove(self, force: bool = False) -> None:
+            self.removed = True
+
+    old, fresh, old_volume = Item(4000), Item(10), Item(4000)
+    seen_filters: list = []
+
+    def list_containers(all: bool = False, filters=None):
+        seen_filters.append(filters)
+        return [old, fresh]
+
+    client = SimpleNamespace(
+        containers=SimpleNamespace(list=list_containers),
+        volumes=SimpleNamespace(list=lambda filters=None: [old_volume]),
+    )
+
+    assert reap_orphaned_sandboxes(client, max_age_seconds=600) == 2
+    assert old.removed and old_volume.removed and not fresh.removed
+    assert seen_filters == [{"label": SANDBOX_LABEL}]
+
+
+@pytest.mark.asyncio
+async def test_containers_are_labelled_and_swap_capped():
+    container = FakeContainer(exit_code=0, output="")
+    client = FakeDockerClient(container)
+    executor = DockerSandboxExecutor(_make_settings(), docker_client=client)
+    await executor.load(project_id="p", files={"client.py": "x = 1\n"})
+
+    await executor.execute_test({"method": "GET", "path": "/users"}, {})
+
+    kwargs = client.run_kwargs
+    assert kwargs["labels"][SANDBOX_LABEL] == "true"
+    assert kwargs["memswap_limit"] == kwargs["mem_limit"]
+    assert kwargs["environment"]["APIWEAVER_RESULT_NONCE"]
+    payload = json.loads((executor._workspace / "payload.json").read_text(encoding="utf-8"))
+    assert payload["mock"]["method"] == "GET"
+    assert payload["mock"]["path"] == "/users"
+
+
+@pytest.mark.asyncio
+async def test_live_executor_sends_no_mock_and_uses_configured_egress():
+    container = FakeContainer(exit_code=0, output="")
+    client = FakeDockerClient(container)
+    settings = _make_settings(sandbox_network="sandbox-egress", sandbox_egress_proxy="http://proxy:3128")
+    executor = DockerSandboxExecutor(settings, docker_client=client, network_enabled=True)
+    await executor.load(project_id="p", files={"client.py": "x = 1\n"})
+
+    await executor.execute_test({"method": "GET", "path": "/users"}, {})
+
+    kwargs = client.run_kwargs
+    assert kwargs["network_disabled"] is False
+    assert kwargs["network"] == "sandbox-egress"
+    assert kwargs["environment"]["HTTPS_PROXY"] == "http://proxy:3128"
+    payload = json.loads((executor._workspace / "payload.json").read_text(encoding="utf-8"))
+    assert payload["mock"] is None
