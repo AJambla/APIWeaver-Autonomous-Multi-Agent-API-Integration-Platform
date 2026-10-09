@@ -40,6 +40,9 @@ from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
 
+# Stages that run after the human approval gate, in pipeline order.
+_POST_PLAN_STAGES = ("generate", "test", "export")
+
 router = APIRouter(tags=["workflows"])
 
 
@@ -275,7 +278,14 @@ async def approve_workflow_gate(
             resume_state["stages"] = ["export"]
             resume_state["export_override_approved"] = True
         else:
-            resume_state["stages"] = ["generate", "test", "export"]
+            # Resume with the stages the caller asked for after planning. Overwriting
+            # them made a ["plan", "generate"] run also test and run every export
+            # packager. A run that requested nothing past "plan" (the upload auto-plan)
+            # means "approve and build", so it gets the full post-plan pipeline.
+            requested = [
+                s for s in (resume_state.get("stages") or []) if s in _POST_PLAN_STAGES
+            ]
+            resume_state["stages"] = requested or list(_POST_PLAN_STAGES)
 
         await session.commit()
         await dispatch_run(
