@@ -404,12 +404,58 @@ def _build_endpoint_group(
     return {**spec, "endpoints": filtered_endpoints}
 
 
+_HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+_QUERY_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_BEARER: dict[str, str] = {"type": "bearer", "location": "header", "name": "Authorization"}
+
+
+def resolve_auth(spec: dict[str, Any]) -> dict[str, str]:
+    """How the target API authenticates, from the spec's security schemes.
+
+    `{"type": "bearer" | "api_key" | "basic", "location": "header" | "query", "name": ...}`.
+    The old lookup read `spec["auth_schemes"]`, which nothing writes, or OpenAPI
+    `security` entries (`{"name": []}`, no `type`), so every SDK sent
+    `Authorization: Bearer` - wrong for API-key-header, API-key-query and basic-auth APIs.
+    Header and query names come from the (untrusted) spec, so they are allow-listed;
+    anything unusual falls back to bearer.
+    """
+    components = spec.get("components") if isinstance(spec.get("components"), dict) else {}
+    schemes: dict[str, Any] = {}
+    for source in (components.get("securitySchemes"), spec.get("securityDefinitions")):
+        if isinstance(source, dict):
+            schemes.update({k: v for k, v in source.items() if isinstance(v, dict)})
+    if not schemes:
+        return dict(_BEARER)
+
+    chosen: dict[str, Any] | None = None
+    for requirement in spec.get("security") or []:
+        if isinstance(requirement, dict):
+            chosen = next((schemes[n] for n in requirement if n in schemes), None)
+            if chosen:
+                break
+    chosen = chosen or next(iter(schemes.values()))
+
+    kind = str(chosen.get("type", "")).lower()
+    http_scheme = str(chosen.get("scheme", "")).lower()
+    if kind == "basic" or (kind == "http" and http_scheme == "basic"):
+        return {"type": "basic", "location": "header", "name": "Authorization"}
+    if kind == "apikey":
+        location = str(chosen.get("in", "header")).lower()
+        name = str(chosen.get("name", ""))
+        if location == "header" and _HEADER_NAME.match(name):
+            return {"type": "api_key", "location": "header", "name": name}
+        if location == "query" and _QUERY_NAME.match(name):
+            return {"type": "api_key", "location": "query", "name": name}
+    # http bearer, oauth2, openIdConnect, and anything unrecognised.
+    return dict(_BEARER)
+
+
 def _get_auth_scheme(spec: dict[str, Any]) -> str:
-    """Extract auth scheme from spec."""
-    auth_schemes = spec.get("auth_schemes") or spec.get("security") or []
-    if isinstance(auth_schemes, list) and auth_schemes:
-        return auth_schemes[0].get("type", "bearer_jwt")
-    return "bearer_jwt"
+    """Human-readable auth description for prompts."""
+    auth = resolve_auth(spec)
+    if auth["type"] == "api_key":
+        return f"api_key ({auth['location']} {auth['name']})"
+    return auth["type"]
 
 
 async def _run_self_review(
@@ -524,6 +570,7 @@ async def _render_templates(
         "endpoints": endpoints,
         "resources": resources,
         "auth_schemes": [auth_scheme],
+        "auth": resolve_auth(spec),
         "phase": phase,
         "version": to_package_version(raw_version),
         "api_version": to_text(raw_version, fallback="0.1.0", limit=40),
