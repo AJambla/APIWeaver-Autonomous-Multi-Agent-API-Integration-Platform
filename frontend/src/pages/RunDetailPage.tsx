@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { asUuid } from '../lib/ids';
 import { apiFetch } from '../lib/api';
 import { Page, ToolCall, WorkflowRunInfo } from '../lib/types';
 import { duration, formatNumber, relativeTime } from '../lib/format';
@@ -35,9 +36,9 @@ const stageState = (run: WorkflowRunInfo, index: number): 'done' | 'current' | '
 };
 
 export const RunDetailPage: React.FC = () => {
-  const { runId } = useParams<{ runId: string }>();
+  const runId = asUuid(useParams<{ runId: string }>().runId);
   const [searchParams] = useSearchParams();
-  const projectId = searchParams.get('project');
+  const projectId = asUuid(searchParams.get('project'));
 
   const [run, setRun] = useState<WorkflowRunInfo | null>(null);
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
@@ -47,7 +48,11 @@ export const RunDetailPage: React.FC = () => {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!runId) return;
+    if (!runId) {
+      setError('Run not found or access denied.');
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     Promise.allSettled([

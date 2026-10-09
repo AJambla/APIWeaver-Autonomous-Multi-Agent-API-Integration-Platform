@@ -99,3 +99,18 @@ describe('mapSettled', () => {
     expect(results.map(r => (r.status === 'fulfilled' ? r.value : 'x'))).toEqual([10, 20, 30, 'x', 50, 60]);
   });
 });
+
+describe('path traversal guard', () => {
+  it('refuses dot segments, encoded or not, before any token is attached', () => {
+    for (const endpoint of [
+      '/projects/../org/1/api-keys',
+      '/projects/%2e%2e/org/1/api-keys',
+      '/projects/./x',
+      '/api/v1/projects/../../admin',
+    ]) {
+      expect(() => resolveEndpoint(endpoint)).toThrow(/dot|segments/);
+    }
+    expect(resolveEndpoint('/projects/abc..def/spec').url).toMatch(/\/projects\/abc\.\.def\/spec$/);
+    expect(resolveEndpoint('/projects?q=..').url).toMatch(/q=\.\.$/);
+  });
+});
