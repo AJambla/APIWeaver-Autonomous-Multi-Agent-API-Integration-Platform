@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import health
@@ -152,6 +153,20 @@ def register_exception_handlers(app: FastAPI) -> None:
                 request_id=_request_id(request),
             ),
             headers=getattr(exc, "headers", None),
+        )
+
+    @app.exception_handler(IntegrityError)
+    async def handle_integrity_error(request: Request, exc: IntegrityError) -> JSONResponse:
+        # A uniqueness or foreign-key violation is the caller's conflict, not our crash
+        # (two concurrent writes, a duplicate name). The statement stays in the log only.
+        logger.warning("integrity_error", path=request.url.path, error=str(exc.orig))
+        return JSONResponse(
+            status_code=409,
+            content=build_error_body(
+                code=ErrorCode.CONFLICT,
+                message="The request conflicts with existing data.",
+                request_id=_request_id(request),
+            ),
         )
 
     @app.exception_handler(Exception)
