@@ -73,6 +73,9 @@ class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     progress_percent: Mapped[int | None] = mapped_column(
         Integer, nullable=True, server_default=text("0"), default=0
     )
+    # Lease: stamped when an executor claims the run and refreshed while it executes, so
+    # a run whose worker died can be told apart from one that is merely slow (reaper.py).
+    heartbeat_at: Mapped[datetime.datetime | None] = mapped_column(TZDateTime(), nullable=True)
 
     checkpoints: Mapped[list[WorkflowCheckpoint]] = relationship(
         back_populates="workflow_run", cascade="all, delete-orphan"

@@ -16,7 +16,7 @@ from typing import Any, Literal, cast
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -1591,22 +1591,33 @@ class LangGraphOrchestrator:
         # includes the pre-pause spend, which was billed when that execution paused.
         tokens_at_start = int(current.get("total_tokens_used") or 0)
 
-        # Move the run to RUNNING only if nobody finished or cancelled it while it was
-        # queued: an unconditional write here used to resurrect cancelled runs.
+        # Claim the run: QUEUED -> RUNNING, stamping the lease. Only a queued run (or a
+        # RUNNING row from before leases existed, which carries no heartbeat) is claimable.
+        # Claiming any non-terminal run let a redelivered Celery message (acks_late +
+        # reject_on_worker_lost) restart a run another worker was executing, or one whose
+        # worker had died, from START: every LLM call paid for twice, duplicate exports.
+        # A refused claim acks the message, so a poison message cannot loop either.
         if self.session_factory:
             async with self.session_factory() as session:
+                now = datetime.datetime.now(datetime.UTC)
                 claimed = await session.execute(
                     update(WorkflowRun)
                     .where(
                         WorkflowRun.id == workflow_run_id,
-                        WorkflowRun.status.not_in(_TERMINAL_STATUSES),
+                        or_(
+                            WorkflowRun.status == WorkflowStatus.QUEUED,
+                            and_(
+                                WorkflowRun.status == WorkflowStatus.RUNNING,
+                                WorkflowRun.heartbeat_at.is_(None),
+                            ),
+                        ),
                     )
                     .values(
                         status=WorkflowStatus.RUNNING,
-                        started_at=func.coalesce(
-                            WorkflowRun.started_at, datetime.datetime.now(datetime.UTC)
-                        ),
+                        heartbeat_at=now,
+                        started_at=func.coalesce(WorkflowRun.started_at, now),
                     )
+                    .execution_options(synchronize_session=False)
                 )
                 await session.commit()
                 if claimed.rowcount == 0:
@@ -1643,6 +1654,11 @@ class LangGraphOrchestrator:
         # cancelled), tokens spent by earlier nodes are still recorded from here instead
         # of from the initial state, which used to log ~0 tokens after real spend.
         latest: dict[str, Any] = current
+        heartbeat = (
+            asyncio.create_task(self._keep_lease(workflow_run_id))
+            if self.session_factory
+            else None
+        )
         try:
             async for snapshot in self.graph.astream(current, config=config, stream_mode="values"):
                 if isinstance(snapshot, dict):
@@ -1831,6 +1847,32 @@ class LangGraphOrchestrator:
                 )
 
             return cast(WorkflowState, current)
+        finally:
+            if heartbeat is not None:
+                heartbeat.cancel()
+
+    async def _keep_lease(self, workflow_run_id: uuid.UUID) -> None:
+        """Refresh heartbeat_at while the graph runs; a single node can take many minutes."""
+        interval = max(1, self.settings.workflow_heartbeat_interval_seconds)
+        assert self.session_factory is not None
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                async with self.session_factory() as session:
+                    await session.execute(
+                        update(WorkflowRun)
+                        .where(
+                            WorkflowRun.id == workflow_run_id,
+                            WorkflowRun.status == WorkflowStatus.RUNNING,
+                        )
+                        .values(heartbeat_at=datetime.datetime.now(datetime.UTC))
+                        .execution_options(synchronize_session=False)
+                    )
+                    await session.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - a missed beat is not fatal
+                logger.warning("workflow_heartbeat_failed", error=str(exc))
 
 
 Orchestrator = LangGraphOrchestrator
