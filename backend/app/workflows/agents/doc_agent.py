@@ -6,6 +6,7 @@ from freeform documentation (Markdown, HTML, text) using the LLM and RAG.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -103,7 +104,7 @@ async def run_doc_agent(
 
     # 2. Try deterministic normalization first (OpenAPI / Swagger / Postman)
     try:
-        norm = spec_normalizer.normalize(raw_bytes, filename, format_hint)
+        norm = await asyncio.to_thread(spec_normalizer.normalize, raw_bytes, filename, format_hint)
         spec_dict = {
             "format": norm.format,
             "title": norm.title,
@@ -154,7 +155,8 @@ async def run_doc_agent(
         )
 
     # 3. Freeform document extraction via LLM
-    text_content = extract_text(raw_bytes, filename, None)
+    # pypdf / BeautifulSoup over a large upload is pure CPU; keep it off the event loop.
+    text_content = await asyncio.to_thread(extract_text, raw_bytes, filename, None)
     user_prompt = fence_untrusted("DOCUMENT DATA", text_content[:64000])
 
     extracted_json, tokens = await client.generate_json(
