@@ -100,6 +100,12 @@ class UnprocessableEntityError(APIError):
     message = "The request was well-formed but semantically invalid."
 
 
+class PayloadTooLargeError(APIError):
+    status_code = 413
+    code = ErrorCode.PAYLOAD_TOO_LARGE
+    message = "The request payload exceeds the allowed size limit."
+
+
 class RateLimitExceededError(APIError):
     status_code = 429
     code = ErrorCode.RATE_LIMIT_EXCEEDED
