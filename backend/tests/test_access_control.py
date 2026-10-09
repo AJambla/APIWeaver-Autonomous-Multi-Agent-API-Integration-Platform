@@ -285,3 +285,36 @@ async def test_an_archived_project_refuses_new_work_but_stays_readable(
     # Removing stored credentials is cleanup, and stays possible.
     delete_auth = await client.delete(f"/api/v1/projects/{project_id}/auth", headers=headers)
     assert delete_auth.status_code != 409, delete_auth.text
+
+
+async def test_failed_authentications_are_bounded_per_ip(
+    client: AsyncClient, session_factory, test_settings, monkeypatch
+) -> None:
+    """Random X-API-Key values each got a fresh bucket; failures now count per IP."""
+    from app.core.ratelimit import AUTH_FAILURES_PER_MINUTE
+
+    monkeypatch.setattr("app.core.ratelimit._clock", lambda: 1_800_000_000.0)
+    seed = await _seed(session_factory, test_settings)
+
+    statuses = []
+    for _ in range(AUTH_FAILURES_PER_MINUTE + 2):
+        res = await client.get("/api/v1/projects", headers={"X-API-Key": f"apw_live_{uuid.uuid4().hex}"})
+        statuses.append(res.status_code)
+
+    assert statuses[:AUTH_FAILURES_PER_MINUTE] == [401] * AUTH_FAILURES_PER_MINUTE
+    assert statuses[-1] == 429, statuses[-3:]
+    # The block is on guessing from that IP, by design including its next attempts.
+    blocked = await client.get("/api/v1/projects", headers=seed["owner_headers"])
+    assert blocked.status_code == 429
+
+
+async def test_successful_requests_never_count_as_failures(
+    client: AsyncClient, session_factory, test_settings, monkeypatch
+) -> None:
+    from app.core.ratelimit import AUTH_FAILURES_PER_MINUTE
+
+    monkeypatch.setattr("app.core.ratelimit._clock", lambda: 1_800_000_000.0)
+    seed = await _seed(session_factory, test_settings)
+    for _ in range(AUTH_FAILURES_PER_MINUTE + 5):
+        res = await client.get("/api/v1/projects", headers=seed["owner_headers"])
+        assert res.status_code == 200

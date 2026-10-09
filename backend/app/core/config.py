@@ -217,9 +217,13 @@ class Settings(BaseSettings):
 
     # --- Proxy topology (audit L1) --------------------------------------------
     # How many reverse proxies sit between the internet and this process, each of which
-    # appends the peer it saw to `X-Forwarded-For`. Both documented shapes are one hop:
-    # the ALB in front of EKS (`Architecture.md §11`) and nginx's
-    # `proxy_set_header X-Forwarded-For` (`frontend/nginx.conf`). Anything the client sent
+    # appends the peer it saw to `X-Forwarded-For`:
+    #   - docker compose: nginx only            -> 1 (the default)
+    #   - AWS through CloudFront, then the ALB -> 2. Only exact if the ALB accepts
+    #     traffic solely from CloudFront: the current Terraform also publishes the ALB
+    #     directly (api.<domain>, 0.0.0.0/0), where the count would be 1.
+    # Too low and every client shares the CloudFront edge's bucket; too high and a client
+    # can choose its own identity by prepending to the header. Anything the client sent
     # first is to the LEFT of those appends, so `trusted_proxy_hops` is how far from the
     # right we may read. 0 means nothing in front is trusted: `X-Forwarded-For` is then
     # ignored and the transport peer is used even though it names a load balancer.
