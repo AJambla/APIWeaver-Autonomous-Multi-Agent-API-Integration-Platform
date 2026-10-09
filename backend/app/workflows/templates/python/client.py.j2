@@ -27,8 +27,43 @@ class APIWeaverError(Exception):
     pass
 
 
+class BadRequestError(APIWeaverError):
+    """Bad request (400)."""
+    pass
+
+
 class AuthenticationError(APIWeaverError):
-    """Authentication failed."""
+    """Authentication failed (401)."""
+    pass
+
+
+class UnauthorizedError(APIWeaverError):
+    """Unauthorized (401)."""
+    pass
+
+
+class ForbiddenError(APIWeaverError):
+    """Forbidden (403)."""
+    pass
+
+
+class NotFoundError(APIWeaverError):
+    """Resource not found (404)."""
+    pass
+
+
+class MethodNotAllowedError(APIWeaverError):
+    """Method not allowed (405)."""
+    pass
+
+
+class ConflictError(APIWeaverError):
+    """Conflict (409)."""
+    pass
+
+
+class ValidationError(APIWeaverError):
+    """Request validation error (422)."""
     pass
 
 
@@ -41,16 +76,6 @@ class RateLimitError(APIWeaverError):
 
 class ServerError(APIWeaverError):
     """Server error (5xx)."""
-    pass
-
-
-class NotFoundError(APIWeaverError):
-    """Resource not found (404)."""
-    pass
-
-
-class ValidationError(APIWeaverError):
-    """Request validation error (422)."""
     pass
 
 
@@ -74,7 +99,10 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
     @asynccontextmanager
     async def _get_client(self) -> AsyncIterator[httpx.AsyncClient]:
         if self._client is None or self._client.is_closed:
-            headers = {"Content-Type": "application/json"}
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
             self._client = httpx.AsyncClient(
@@ -110,6 +138,12 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
     ) -> httpx.Response:
         """Make an HTTP request with retry logic."""
         last_exception = None
+        req_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if headers:
+            req_headers.update(headers)
 
         for attempt in range(self.max_retries + 1):
             async with self._get_client() as client:
@@ -119,7 +153,7 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
                         url=path,
                         params=params,
                         json=json,
-                        headers=headers,
+                        headers=req_headers,
                     )
 
                     # Handle rate limiting with retry

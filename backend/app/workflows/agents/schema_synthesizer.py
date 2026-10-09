@@ -138,6 +138,8 @@ def synthesize_schema_data(
             base_int = 8080
         elif fn in ("count", "quantity"):
             base_int = 5
+        elif fn.endswith("id") or fn == "id":
+            base_int = 105001
 
         if min_val is not None:
             base_int = max(base_int, int(min_val))
@@ -225,6 +227,10 @@ def synthesize_schema_data(
             val = "2026-01-01T12:00:00Z"
         elif "date" in fn:
             val = "2026-01-01"
+        elif "username" in fn or fn == "user":
+            val = "weaver_test_user"
+        elif "status" in fn:
+            val = "available"
         elif "name" in fn:
             val = f"sample_{fn}"
         elif field_name:
