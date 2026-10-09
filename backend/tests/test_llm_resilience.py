@@ -446,4 +446,41 @@ async def test_anthropic_custom_base_url(monkeypatch):
     assert captured_requests[0]["headers"]["x-api-key"] == "sk-ant-test"
 
 
+async def test_json_decode_error_retried_then_succeeds(monkeypatch):
+    """Malformed/truncated JSON responses are treated as transient errors and retried."""
+    attempts = 0
+
+    class _FlakyJsonClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _FlakyJsonClient:
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> bool:
+            return False
+
+        async def post(self, url: str, json: Any = None, headers: Any = None) -> Any:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                # Malformed JSON from provider
+                return FakeResponse(
+                    200,
+                    payload={"choices": [{"message": {"content": "not valid json {{"}, "finish_reason": "stop"}]},
+                )
+            return FakeResponse(
+                200,
+                payload={"choices": [{"message": {"content": '{"recovered": true}'}, "finish_reason": "stop"}]},
+            )
+
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", _FlakyJsonClient)
+    client = LLMClient(_make_settings(llm_max_retries=2, llm_retry_delay_seconds=0.01))
+    parsed, _ = await client.generate_json(system_prompt="s", user_prompt="u")
+
+    assert parsed == {"recovered": True}
+    assert attempts == 2
+
+
+
 
