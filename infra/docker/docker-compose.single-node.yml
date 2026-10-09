@@ -64,7 +64,10 @@ services:
       context: ../../backend
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      # Loopback only. `web` (nginx) is the public entry point; an API reachable directly
+      # lets a client choose its own right-most X-Forwarded-For and rotate rate-limit
+      # identities (trusted_proxy_hops=1 assumes nginx is the only hop).
+      - "127.0.0.1:8000:8000"
     volumes:
       # Local-only JWT key mount. Production keys are mounted by the Vault Agent.
       - ../../secrets:/app/secrets:ro
@@ -73,6 +76,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-apiweaver}:${POSTGRES_PASSWORD:-apiweaver}@postgres:5432/${POSTGRES_DB:-apiweaver}
       REDIS_URL: redis://redis:6379/0
+      # The API publishes workflow tasks by name to the worker's broker.
+      CELERY_BROKER_URL: redis://redis:6379/1
       QDRANT_URL: http://qdrant:6333
       S3_ENDPOINT_URL: http://minio:9000
       VAULT_ADDR: http://vault:8200
@@ -146,7 +151,9 @@ services:
       - ../../.env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-apiweaver}:${POSTGRES_PASSWORD:-apiweaver}@postgres:5432/${POSTGRES_DB:-apiweaver}
-      REDIS_URL: redis://redis:6379/1
+      # Must match the API's REDIS_URL: run events are Redis Streams, which are per-DB,
+      # and the API's SSE route reads them from db 0. The broker stays on db 1.
+      REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       QDRANT_URL: http://qdrant:6333
@@ -154,6 +161,9 @@ services:
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN:-${VAULT_DEV_ROOT_TOKEN_ID:-root}}
       DOCKER_HOST: unix:///var/run/docker.sock
+      # Pipeline metrics, aggregated across prefork children and served on :9808.
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus-multiproc
+      WORKER_METRICS_PORT: "9808"
     depends_on:
       postgres:
         condition: service_healthy
@@ -170,6 +180,10 @@ services:
     networks:
       - apiweaver
     command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4 -Q celery,dlq
+    # Celery's warm shutdown finishes in-flight tasks; docker's default 10 s then SIGKILLs.
+    # A run killed anyway is failed by the API's lease reaper (workflows/reaper.py), not
+    # left "running" or restarted from scratch by redelivery.
+    stop_grace_period: 2m
     # No healthcheck, deliberately (`audit M10`). The previous one - `celery inspect ping` with
     # `timeout: 5s` - reported a healthy worker as unhealthy and leaked a process every poll.
     # Measured against a throwaway container of apiweaver/agent-worker:latest while the stack's
@@ -200,7 +214,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-apiweaver}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apiweaver}
     ports:
-      - "5432:5432"
+      # Datastores are published on loopback only: reachable for local tooling, never
+      # from the network (they use development credentials and Redis has no auth).
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
@@ -215,7 +231,7 @@ services:
     image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: apiweaver-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
     networks:
@@ -230,7 +246,7 @@ services:
     image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
     container_name: apiweaver-qdrant
     ports:
-      - "6333:6333"
+      - "127.0.0.1:6333:6333"
     volumes:
       - qdrantdata:/qdrant/storage
       - ../../scripts/qdrant-healthcheck.sh:/qdrant-healthcheck.sh:ro
@@ -253,7 +269,7 @@ services:
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:-root}
     ports:
-      - "8200:8200"
+      - "127.0.0.1:8200:8200"
     networks:
       - apiweaver
     healthcheck:
@@ -283,8 +299,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - miniodata:/data
     networks:

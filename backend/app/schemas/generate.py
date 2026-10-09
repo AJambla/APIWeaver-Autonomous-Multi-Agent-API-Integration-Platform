@@ -3,19 +3,32 @@
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
 from pydantic import Field
 
-from app.core.constants import DEFAULT_TARGET_LANGUAGES, DEFAULT_WORKFLOW_STAGES
+from app.core.constants import (
+    DEFAULT_TARGET_LANGUAGES,
+    DEFAULT_WORKFLOW_STAGES,
+    TargetLanguage,
+    WorkflowStage,
+)
+from app.models.enums import ExportType
 from app.schemas.common import ResponseModel, StrictModel
 
 
 class GenerateRequest(StrictModel):
     """Request to trigger code generation for a project."""
 
-    stages: list[str] = Field(default_factory=lambda: list(DEFAULT_WORKFLOW_STAGES))
-    target_languages: list[str] = Field(default_factory=lambda: list(DEFAULT_TARGET_LANGUAGES))
-    export_types: list[str] | None = Field(default=None, description="Subset of exports to run.")
+    stages: list[WorkflowStage] = Field(
+        default_factory=lambda: cast(list[WorkflowStage], list(DEFAULT_WORKFLOW_STAGES)), min_length=1, max_length=5
+    )
+    target_languages: list[TargetLanguage] = Field(
+        default_factory=lambda: cast(list[TargetLanguage], list(DEFAULT_TARGET_LANGUAGES)), min_length=1, max_length=2
+    )
+    export_types: list[ExportType] | None = Field(
+        default=None, max_length=10, description="Subset of exports to run."
+    )
 
 
 class GenerateResponse(ResponseModel):

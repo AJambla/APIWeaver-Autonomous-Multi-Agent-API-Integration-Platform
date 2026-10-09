@@ -11,7 +11,8 @@ from app.core.telemetry import (
     _build_resource,
     _setup_langsmith_correlation,
     get_tracer,
-    instrument_app,
+    instrument_backends,
+    instrument_http,
     is_telemetry_enabled,
     trace_span,
 )
@@ -58,7 +59,8 @@ def test_instrument_app_skips_when_disabled(monkeypatch):
             otel_exporter_otlp_endpoint=None,
         )
         with patch("opentelemetry.instrumentation.fastapi.FastAPIInstrumentor.instrument_app") as mock_fastapi:
-            instrument_app(FastAPI(), MagicMock())
+            instrument_http(FastAPI())
+            instrument_backends(MagicMock())
             assert not mock_fastapi.called
 
 
@@ -71,7 +73,8 @@ def test_instrument_app_initializes_when_enabled(monkeypatch):
 
         mock_engine = MagicMock()
         mock_engine.sync_engine = MagicMock()
-        instrument_app(FastAPI(), mock_engine)
+        instrument_http(FastAPI())
+        instrument_backends(mock_engine)
 
         assert mock_fastapi.called
         assert mock_sql.called
@@ -103,3 +106,48 @@ def test_langsmith_correlation_sets_span_processor(monkeypatch):
 
         processor.on_end(mock_span)
         assert processor.client.create_run.called
+
+
+def test_http_instrumentation_from_create_app_emits_server_spans(monkeypatch):
+    """Instrumenting inside lifespan was too late: Starlette had already built its stack."""
+    from fastapi.testclient import TestClient
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+    monkeypatch.setattr("app.core.telemetry._build_tracer_provider", lambda: provider)
+
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    original = FastAPIInstrumentor.instrument_app
+    monkeypatch.setattr(
+        FastAPIInstrumentor,
+        "instrument_app",
+        staticmethod(lambda app, **kw: original(app, tracer_provider=provider, **kw)),
+    )
+
+    app = FastAPI()
+
+    @app.get("/ping")
+    def ping() -> dict[str, bool]:
+        return {"ok": True}
+
+    instrument_http(app)
+    with TestClient(app) as http:
+        assert http.get("/ping").status_code == 200
+
+    server_spans = [s for s in exporter.get_finished_spans() if s.kind.name == "SERVER"]
+    assert len(server_spans) == 1
+
+
+def test_create_app_instruments_http_at_construction(monkeypatch, test_settings):
+    calls: list[object] = []
+    monkeypatch.setattr("app.main.instrument_http", calls.append)
+    from app.main import create_app
+
+    app = create_app(test_settings)
+    assert calls == [app]

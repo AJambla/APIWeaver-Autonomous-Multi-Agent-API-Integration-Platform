@@ -246,7 +246,7 @@ async def test_lifespan_does_not_run_migrations_on_startup(test_settings: Settin
     monkeypatch.setattr(command, "upgrade", _mock_upgrade)
     monkeypatch.setattr("redis.asyncio.from_url", lambda *args, **kwargs: AsyncMock())
     monkeypatch.setattr("app.main.dispose_engine", AsyncMock())
-    monkeypatch.setattr("app.main.instrument_app", MagicMock())
+    monkeypatch.setattr("app.main.instrument_backends", MagicMock())
 
     app = create_app(test_settings)
     async with lifespan(app):

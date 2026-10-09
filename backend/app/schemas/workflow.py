@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import Field
 
-from app.core.constants import DEFAULT_TARGET_LANGUAGES, DEFAULT_WORKFLOW_STAGES
+from app.core.constants import (
+    DEFAULT_TARGET_LANGUAGES,
+    DEFAULT_WORKFLOW_STAGES,
+    TargetLanguage,
+    WorkflowStage,
+)
 from app.schemas.common import ResponseModel, StrictModel
 
 
 class TriggerWorkflowRequest(StrictModel):
-    stages: list[str] = Field(default_factory=lambda: list(DEFAULT_WORKFLOW_STAGES))
-    target_languages: list[str] = Field(default_factory=lambda: list(DEFAULT_TARGET_LANGUAGES))
+    stages: list[WorkflowStage] = Field(
+        default_factory=lambda: cast(list[WorkflowStage], list(DEFAULT_WORKFLOW_STAGES)), min_length=1, max_length=5
+    )
+    target_languages: list[TargetLanguage] = Field(
+        default_factory=lambda: cast(list[TargetLanguage], list(DEFAULT_TARGET_LANGUAGES)), min_length=1, max_length=2
+    )
     execution_mode: Literal["sync", "async"] = "sync"
 
 
@@ -35,8 +44,8 @@ class WorkflowRunResponse(ResponseModel):
 
 class ApproveWorkflowRequest(StrictModel):
     approved: bool = True
-    notes: str | None = None
-    target_languages: list[str] | None = None
+    notes: str | None = Field(default=None, max_length=5000)
+    target_languages: list[TargetLanguage] | None = Field(default=None, min_length=1, max_length=2)
 
 
 class ApproveWorkflowResponse(ResponseModel):

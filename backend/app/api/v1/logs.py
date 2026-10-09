@@ -6,7 +6,7 @@ import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, tuple_
+from sqlalchemy import literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
@@ -47,7 +47,7 @@ async def get_project_logs(
             # A Python tuple comparison here compiled to `created_at < '<iso string>'`
             # and failed on every second page; tuple_ is the SQL row-value compare.
             stmt = stmt.where(
-                tuple_(AgentEvent.created_at, AgentEvent.id) < tuple_(last_created, last_id)
+                tuple_(AgentEvent.created_at, AgentEvent.id) < tuple_(literal(last_created), literal(last_id))
             )
 
     stmt = stmt.order_by(AgentEvent.created_at.desc(), AgentEvent.id.desc()).limit(limit + 1)

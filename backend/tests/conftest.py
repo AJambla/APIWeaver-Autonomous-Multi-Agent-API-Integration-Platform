@@ -23,7 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings, get_settings
-from app.core.deps import get_db, get_object_storage, get_redis
+from app.core.deps import get_db, get_object_storage, get_redis, get_stream_redis
 from app.core.security import _load_keys, hash_password
 from app.main import create_app
 from app.models import Base, non_partitioned_tables
@@ -202,6 +202,9 @@ def test_settings(jwt_keypair: tuple[Path, Path]) -> Iterator[Settings]:
     required = {
         "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
         "REDIS_URL": "redis://localhost:6379/15",
+        # In-memory kombu transport: a test that forgets to fake the producer must not
+        # publish a real task to whatever broker happens to be listening on localhost.
+        "CELERY_BROKER_URL": "memory://",
         "JWT_PRIVATE_KEY_PATH": str(private_key),
         "JWT_PUBLIC_KEY_PATH": str(public_key),
     }
@@ -221,6 +224,7 @@ def test_settings(jwt_keypair: tuple[Path, Path]) -> Iterator[Settings]:
         yield Settings(
             database_url="sqlite+aiosqlite:///:memory:",
             redis_url="redis://localhost:6379/15",
+            celery_broker_url="memory://",
             jwt_private_key_path=private_key,
             jwt_public_key_path=public_key,
             app_env="development",
@@ -292,20 +296,32 @@ def _clear_caches(test_settings: Settings) -> Iterator[None]:
 
 @pytest.fixture
 async def session_factory(
-    test_settings: Settings,
+    test_settings: Settings, request: pytest.FixtureRequest, tmp_path
 ) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    """A fresh in-memory schema per test.
+    """A fresh schema per test.
 
-    `StaticPool` with a shared in-memory URL keeps every connection on the same database;
-    the default pool would hand each connection its own empty `:memory:`.
+    By default an in-memory database: `StaticPool` with a shared in-memory URL keeps every
+    connection on the same database (the default pool would hand each connection its own
+    empty `:memory:`). That is one shared connection, which cannot hold two transactions
+    at once - fine while requests happen to run one after another, wrong for tests whose
+    requests genuinely interleave. Those are marked `concurrent_db` and get a file database
+    with a connection per session, where SQLite's file lock serializes writers the way a
+    real database's row locks would.
     """
-    from sqlalchemy.pool import StaticPool
+    from sqlalchemy.pool import NullPool, StaticPool
 
-    engine = create_async_engine(
-        test_settings.database_url,
-        poolclass=StaticPool,
-        connect_args={"check_same_thread": False},
-    )
+    if request.node.get_closest_marker("concurrent_db"):
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{(tmp_path / 'concurrent.db').as_posix()}",
+            poolclass=NullPool,
+            connect_args={"check_same_thread": False, "timeout": 30},
+        )
+    else:
+        engine = create_async_engine(
+            test_settings.database_url,
+            poolclass=StaticPool,
+            connect_args={"check_same_thread": False},
+        )
     tables = non_partitioned_tables()
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tables))
@@ -373,6 +389,7 @@ async def app(
 
     application.dependency_overrides[get_db] = override_get_db
     application.dependency_overrides[get_redis] = lambda: fake_redis
+    application.dependency_overrides[get_stream_redis] = lambda: fake_redis
     application.dependency_overrides[get_object_storage] = lambda: fake_storage
     application.dependency_overrides[create_vault_client] = lambda: fake_vault
     application.dependency_overrides[create_qdrant_client] = lambda: fake_qdrant

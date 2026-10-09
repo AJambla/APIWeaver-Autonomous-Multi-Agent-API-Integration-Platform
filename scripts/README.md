@@ -3,4 +3,6 @@
 | Script | Purpose |
 |---|---|
 | `gen_jwt_keys.sh` | Generate the RS256 keypair into `secrets/` (see [`Security.md`](../Project-docs/Security.md) §4) |
-| `seed_dev.py` | Seed a sample project with a pre-parsed OpenAPI spec — **Phase 2** ([`Deployment.md`](../Project-docs/Deployment.md) §1) |
+| `migrate.py` | Run `alembic upgrade head` once per deploy (init container / job), never on API boot |
+| `check_llm.py` | Send one request to the configured LLM provider and report success, latency and quota errors |
+| `qdrant-healthcheck.sh` | Container healthcheck: `GET /readyz` on the local Qdrant without curl/wget |

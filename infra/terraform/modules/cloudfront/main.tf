@@ -8,15 +8,18 @@ terraform {
   }
 }
 
-provider "aws" {
-  region = var.region
-}
-
 locals {
   name_prefix = "${var.environment}-apiweaver"
 }
 
 resource "aws_cloudfront_distribution" "main" {
+  # Without aliases, the Route 53 record for the domain pointed at a distribution that
+  # rejected that Host header.
+  aliases = [var.domain]
+  # CloudFront takes its WAF here (an aws_wafv2_web_acl_association cannot target a
+  # distribution); a CLOUDFRONT-scoped ACL must be created in us-east-1 (see root).
+  web_acl_id = var.create_waf ? aws_wafv2_web_acl.main[0].arn : null
+
   origin {
     domain_name = var.alb_dns_name
     origin_id   = var.web_origin_id
@@ -59,10 +62,10 @@ resource "aws_cloudfront_distribution" "main" {
       }
     }
 
-    min_ttl                = 0
-    default_ttl            = 3600
-    max_ttl                = 86400
-    compress               = true
+    min_ttl     = 0
+    default_ttl = 3600
+    max_ttl     = 86400
+    compress    = true
   }
 
   ordered_cache_behavior {
@@ -178,11 +181,4 @@ resource "aws_wafv2_web_acl" "main" {
     metric_name                = "${local.name_prefix}-waf"
     sampled_requests_enabled   = true
   }
-}
-
-resource "aws_wafv2_web_acl_association" "main" {
-  count = var.create_waf ? 1 : 0
-
-  resource_arn = aws_cloudfront_distribution.main.arn
-  web_acl_arn  = aws_wafv2_web_acl.main[0].arn
 }

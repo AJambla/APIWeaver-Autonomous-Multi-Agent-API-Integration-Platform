@@ -122,9 +122,6 @@ class HttpVaultClient:
                 raise
 
 
-# Module-level singleton (export_agent.py uses this)
-# Use create_vault_client() with settings in production; this is a lazy class reference.
-vault_service = HttpVaultClient
 
 
 def create_vault_client(settings: Settings = Depends(get_settings)) -> VaultClient:

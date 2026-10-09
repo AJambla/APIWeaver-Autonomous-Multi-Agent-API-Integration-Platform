@@ -36,12 +36,6 @@ class SpecResponse(ResponseModel):
     confidence_score: float | None = None
 
 
-class EndpointFilters(ResponseModel):
-    method: str | None = None
-    deprecated: bool | None = None
-    confidence_min: float | None = Field(default=None, ge=0, le=1)
-
-
 class FetchSpecRequest(StrictModel):
     """`POST /projects/{id}/fetch-spec`: import a specification from a URL."""
 

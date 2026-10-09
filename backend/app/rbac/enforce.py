@@ -17,12 +17,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db
-from app.core.errors import ForbiddenError, NotFoundError
+from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.core.logging import get_logger
 from app.models.enums import OrgRole, ProjectRole
 from app.models.organization import OrganizationMember
 from app.models.project import Project, ProjectMember
 from app.rbac.policy import (
+    ARCHIVE_BLOCKED_PERMISSIONS,
+    HUMAN_ONLY_ORG_PERMISSIONS,
     PERMISSIONS,
     PROJECT_ROLE_RANK,
     Permission,
@@ -75,13 +77,12 @@ async def resolve_project_role(
         return None
 
     if principal.is_api_key:
-        # API keys have no per-project membership rows, so the org role governs. An
-        # org-owner key gets owner rights; an admin key gets editor rights, deliberately
-        # short of owner so the owner-only gates (export, plan approval, credential
-        # writes) still require an interactive human session.
-        if org_role == OrgRole.OWNER:
-            return ProjectRole.OWNER
-        if org_role == OrgRole.ADMIN:
+        # API keys have no per-project membership rows, so the org role governs. Every
+        # key - including one created by an org owner - is capped at editor: the
+        # owner-only gates (plan approval, export, GitHub push, credential writes, member
+        # management) must stay behind an interactive human session, or a leaked
+        # automation key could approve and publish its own generated code.
+        if org_role in (OrgRole.OWNER, OrgRole.ADMIN):
             return ProjectRole.EDITOR
         return None
 
@@ -166,6 +167,8 @@ def require_org_permission(
             raise ForbiddenError()
         if principal.restricted_to_project_id is not None:
             # Project-restricted keys never authorize organization-level actions.
+            raise ForbiddenError()
+        if principal.is_api_key and permission in HUMAN_ONLY_ORG_PERMISSIONS:
             raise ForbiddenError()
 
         actual = await resolve_org_role(session, principal, org_id)
@@ -269,6 +272,10 @@ async def _enforce_project_requirement(
             )
             raise ForbiddenError()
 
+    # After the role checks, so a caller who could not do this anyway still gets 403.
+    if project.archived_at is not None and permission in ARCHIVE_BLOCKED_PERMISSIONS:
+        raise ConflictError("This project is archived.")
+
 
 async def assert_project_permission(
     session: AsyncSession,
@@ -297,6 +304,8 @@ async def assert_org_permission(
     if principal.restricted_to_project_id is not None:
         # A key scoped to one project cannot act on the organization (create projects,
         # manage keys, ...) whatever its creator's org role.
+        raise ForbiddenError()
+    if principal.is_api_key and permission in HUMAN_ONLY_ORG_PERMISSIONS:
         raise ForbiddenError()
     actual = await resolve_org_role(session, principal, organization_id)
     if not org_role_satisfies(actual, requirement.org_role):

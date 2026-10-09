@@ -99,7 +99,7 @@ async def trigger_export(
         "organization_id": str(project.organization_id),
         "workflow_run_id": str(run.id),
         "stages": ["export"],
-        "target_languages": payload.target_languages or list(DEFAULT_TARGET_LANGUAGES),
+        "target_languages": [str(lang) for lang in payload.target_languages or DEFAULT_TARGET_LANGUAGES],
         "normalized_spec": normalized_spec,
         "generated_files": generated_files,
         "test_suite": test_suite,
@@ -111,6 +111,7 @@ async def trigger_export(
         "github_branch": payload.github_branch,
         "github_commit_message": payload.github_commit_message,
         "docker_image_name": payload.docker_image_name,
+        "export_rows_managed": True,
         "errors": [],
     }
 
@@ -176,7 +177,7 @@ async def export_mcp(
     session.add(exp)
     await session.commit()
 
-    if mcp_failed:
+    if mcp_failed or mcp_artifact is None:
         error_msg = (mcp_artifact.get("error") if mcp_artifact else None) or "MCP export packaging failed."
         raise APIError(error_msg)
 

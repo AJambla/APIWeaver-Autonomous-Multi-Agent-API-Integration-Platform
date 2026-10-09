@@ -6,8 +6,9 @@ JWT with the exact claim set), and `§5` (API key format and hashed storage).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-import hmac
+import os
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -65,15 +66,39 @@ def password_needs_rehash(password_hash: str) -> bool:
     return _password_hasher.check_needs_rehash(password_hash)
 
 
+# Argon2 is deliberately slow (~200 ms measured) and synchronous: called from a route it
+# stalls every request and SSE stream on the worker. The async variants run it in a thread.
+# Each hash allocates `memory_cost` (64 MiB), so concurrency is bounded rather than left to
+# the default 32-thread pool, which a login burst would otherwise fill (~2 GiB).
+_HASH_CONCURRENCY = max(2, os.cpu_count() or 2)
+_hash_slots: asyncio.Semaphore | None = None
+
+
+def _slots() -> asyncio.Semaphore:
+    global _hash_slots
+    if _hash_slots is None:
+        _hash_slots = asyncio.Semaphore(_HASH_CONCURRENCY)
+    return _hash_slots
+
+
+async def hash_password_async(password: str) -> str:
+    async with _slots():
+        return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, password_hash: str | None) -> bool:
+    async with _slots():
+        return await asyncio.to_thread(verify_password, password, password_hash)
+
+
 # --- Opaque tokens (refresh tokens, API keys) ---------------------------------------
 # These are high-entropy random secrets, not passwords. SHA-256 is the right primitive:
 # there is no offline-guessing threat model for 256 bits of entropy, and we need a
 # deterministic hash so the value is directly indexable for lookup.
 
 REFRESH_TOKEN_BYTES = 32
-API_KEY_BYTES = 32
+
 API_KEY_LIVE_PREFIX = "apw_live_"
-API_KEY_TEST_PREFIX = "apw_test_"
 
 
 def generate_opaque_token(num_bytes: int = REFRESH_TOKEN_BYTES) -> str:
@@ -85,28 +110,10 @@ def hash_opaque_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def verify_opaque_token(token: str, token_hash: str) -> bool:
-    return hmac.compare_digest(hash_opaque_token(token), token_hash)
 
 
-@dataclass(frozen=True, slots=True)
-class GeneratedAPIKey:
-    """A freshly minted API key. `plaintext` is returned to the user exactly once."""
-
-    plaintext: str
-    prefix: str
-    key_hash: str
 
 
-def generate_api_key(*, live: bool = True) -> GeneratedAPIKey:
-    """Mint an API key in the `Security.md §5` format: `apw_live_<random>`."""
-    prefix = API_KEY_LIVE_PREFIX if live else API_KEY_TEST_PREFIX
-    plaintext = f"{prefix}{secrets.token_urlsafe(API_KEY_BYTES)}"
-    return GeneratedAPIKey(
-        plaintext=plaintext,
-        prefix=prefix,
-        key_hash=hash_opaque_token(plaintext),
-    )
 
 
 # --- JWT ----------------------------------------------------------------------------

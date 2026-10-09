@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
-import yaml
+import yaml  # type: ignore[import-untyped]  # PyYAML ships no type information
 
 from app.core.errors import UnprocessableEntityError
 from app.core.logging import get_logger
@@ -40,22 +40,100 @@ class NormalizedSpec:
     endpoints: list[NormalizedEndpoint]
 
 
-def _sniff_content(content: bytes, filename: str = "") -> str | None:
-    """Sniff API document format directly from payload content."""
-    clean = content
-    if clean.startswith(b"\xef\xbb\xbf"):
-        clean = clean[3:]
-    parsed: Any = None
-    # Try JSON first
-    try:
-        parsed = json.loads(clean)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        # Try YAML
-        try:
-            parsed = yaml.safe_load(clean)
-        except Exception:
-            parsed = None
+# YAML anchors are legitimate in hand-written specs, so they are not refused outright. But
+# `safe_load` keeps an alias as a *shared reference*: parsing a "billion laughs" document is
+# cheap, and the blow-up only happens later when `raw_normalized` is serialized to JSONB
+# (177 bytes measured expanding to 580 KB, x10 per extra nesting level). The budget below
+# caps how many nodes alias expansion may *add*; a document without aliases adds none.
+MAX_ALIAS_EXPANSION_NODES = 100_000
 
+_UNPARSED: Any = object()
+
+
+class UnsafeDocumentError(UnprocessableEntityError):
+    """The document parses but is unsafe to keep or process (alias bomb, cycle, deep nesting).
+
+    Distinct from "not a structured spec": ingestion treats that as a freeform document, but
+    an unsafe one is rejected outright.
+    """
+
+
+def _alias_expansion(root: Any) -> int:
+    """Nodes that alias expansion adds to `root`. Raises on a self-referencing alias.
+
+    Iterative and memoized by object identity, so it costs O(distinct nodes) however far the
+    aliases would expand, and a deeply nested document cannot exhaust the Python stack.
+    """
+    expanded: dict[int, int] = {}  # id(container) -> node count once fully expanded
+    distinct = 0
+    on_path: set[int] = set()
+    stack: list[tuple[Any, bool]] = [(root, False)]
+    while stack:
+        node, children_done = stack.pop()
+        if not isinstance(node, dict | list):
+            continue
+        node_id = id(node)
+        children = list(node.values()) if isinstance(node, dict) else node
+        if children_done:
+            on_path.discard(node_id)
+            total = 1
+            for child in children:
+                if isinstance(child, dict | list):
+                    total += expanded[id(child)]
+                else:
+                    total += 1
+                    distinct += 1
+            expanded[node_id] = total
+            distinct += 1
+            continue
+        if node_id in expanded:
+            continue
+        on_path.add(node_id)
+        stack.append((node, True))
+        for child in children:
+            if isinstance(child, dict | list):
+                if id(child) in on_path:
+                    raise UnsafeDocumentError(
+                        "The API document contains a self-referencing YAML alias."
+                    )
+                if id(child) not in expanded:
+                    stack.append((child, False))
+    if not isinstance(root, dict | list):
+        return 0
+    return expanded[id(root)] - distinct
+
+
+def _parse_document(content: bytes) -> Any:
+    """Parse JSON, else YAML. Returns None for content that is neither.
+
+    Raises `UnprocessableEntityError` for documents that parse but are unsafe to keep:
+    alias bombs, self-referencing aliases, and nesting deep enough to exhaust the stack.
+    """
+    clean = content[3:] if content.startswith(b"\xef\xbb\xbf") else content
+    try:
+        try:
+            parsed = json.loads(clean)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            try:
+                parsed = yaml.safe_load(clean)
+            except yaml.YAMLError:
+                return None
+    except RecursionError as exc:
+        raise UnsafeDocumentError("The API document is nested too deeply.") from exc
+    if _alias_expansion(parsed) > MAX_ALIAS_EXPANSION_NODES:
+        raise UnsafeDocumentError(
+            "The API document's YAML aliases expand beyond the supported size."
+        )
+    return parsed
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """`value` if it is a mapping, else an empty dict (specs routinely omit sections)."""
+    return value if isinstance(value, dict) else {}
+
+
+def _sniff_parsed(parsed: Any, filename: str = "") -> str | None:
+    """Sniff API document format from an already-parsed payload, then the filename."""
     if isinstance(parsed, dict):
         if "swagger" in parsed:
             return DocumentFormat.SWAGGER
@@ -74,8 +152,12 @@ def _sniff_content(content: bytes, filename: str = "") -> str | None:
     return None
 
 
-def detect_format(content: bytes, filename: str, format_hint: str | None) -> str:
-    sniffed = _sniff_content(content, filename)
+def detect_format(
+    content: bytes, filename: str, format_hint: str | None, *, parsed: Any = _UNPARSED
+) -> str:
+    if parsed is _UNPARSED:
+        parsed = _parse_document(content)
+    sniffed = _sniff_parsed(parsed, filename)
 
     if format_hint:
         aliases = {
@@ -108,20 +190,19 @@ def detect_format(content: bytes, filename: str, format_hint: str | None) -> str
 
 
 def normalize(content: bytes, filename: str, format_hint: str | None = None) -> NormalizedSpec:
-    document_format = detect_format(content, filename, format_hint)
-    data: Any = None
-    try:
-        try:
-            data = json.loads(content)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            data = yaml.safe_load(content)
-    except Exception as exc:
-        raise UnprocessableEntityError("The uploaded API document is invalid.") from exc
+    """Pure-CPU parse and normalize. Async callers run it via `asyncio.to_thread`."""
+    data = _parse_document(content)
+    document_format = detect_format(content, filename, format_hint, parsed=data)
+    if data is None:
+        raise UnprocessableEntityError("The uploaded API document is invalid.")
     if not isinstance(data, dict):
         raise UnprocessableEntityError("The API document must contain an object at its root.")
-    if document_format == DocumentFormat.POSTMAN:
-        return _normalize_postman(data)
-    return _normalize_openapi(data, document_format)
+    try:
+        if document_format == DocumentFormat.POSTMAN:
+            return _normalize_postman(data)
+        return _normalize_openapi(data, document_format)
+    except RecursionError as exc:
+        raise UnsafeDocumentError("The API document is nested too deeply.") from exc
 
 
 def _normalize_openapi(data: dict[str, Any], document_format: str) -> NormalizedSpec:
@@ -144,7 +225,7 @@ def _normalize_openapi(data: dict[str, Any], document_format: str) -> Normalized
         else:
             raise UnprocessableEntityError("Only Swagger 2.0 documents are supported.")
 
-    info = data.get("info") if isinstance(data.get("info"), dict) else {}
+    info: dict[str, Any] = _as_dict(data.get("info"))
     endpoints: list[NormalizedEndpoint] = []
     paths = data.get("paths")
     if not isinstance(paths, dict):
@@ -177,9 +258,9 @@ def _normalize_openapi(data: dict[str, Any], document_format: str) -> Normalized
             ))
 
     base_url = _openapi_base_url(data, document_format)
-    definitions = data.get("definitions") if isinstance(data.get("definitions"), dict) else {}
-    components = data.get("components") if isinstance(data.get("components"), dict) else {}
-    sec_defs = data.get("securityDefinitions") if isinstance(data.get("securityDefinitions"), dict) else {}
+    definitions: dict[str, Any] = _as_dict(data.get("definitions"))
+    components: dict[str, Any] = _as_dict(data.get("components"))
+    sec_defs: dict[str, Any] = _as_dict(data.get("securityDefinitions"))
     security = data.get("security") if isinstance(data.get("security"), list) else []
     tags = data.get("tags") if isinstance(data.get("tags"), list) else []
 
@@ -233,7 +314,7 @@ def _openapi_parameters(*groups: Any) -> list[dict[str, Any]]:
             }
             if location not in allowed_locations:
                 continue
-            schema = parameter.get("schema") if isinstance(parameter.get("schema"), dict) else {}
+            schema: dict[str, Any] = _as_dict(parameter.get("schema"))
             item_data: dict[str, Any] = {
                 "name": str(parameter.get("name", "unnamed")),
                 "location": location,
@@ -305,7 +386,7 @@ def _openapi_base_url(data: dict[str, Any], document_format: str) -> str | None:
 
 
 def _normalize_postman(data: dict[str, Any]) -> NormalizedSpec:
-    info = data.get("info") if isinstance(data.get("info"), dict) else {}
+    info: dict[str, Any] = _as_dict(data.get("info"))
     if str(info.get("schema", "")).find("collection/v2.1") == -1:
         raise UnprocessableEntityError("Only Postman Collection v2.1 is supported.")
     endpoints: list[NormalizedEndpoint] = []
@@ -342,7 +423,7 @@ def _normalize_postman(data: dict[str, Any]) -> NormalizedSpec:
             ))
 
     visit(data.get("item"))
-    raw = {
+    raw: dict[str, Any] = {
         "format": DocumentFormat.POSTMAN,
         "title": _string_or_none(info.get("name")),
         "version": _string_or_none(info.get("version")),

@@ -50,6 +50,34 @@ describe('apiFetch token refresh', () => {
 
     await expect(apiFetch('/thing')).rejects.toThrow('Not allowed');
   });
+
+  it('keeps the session when the refresh endpoint is merely unavailable', async () => {
+    vi.stubGlobal('location', { href: '/projects/x', origin: window.location.origin });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith('/auth/refresh') ? json({}, 503) : json({}, 401),
+      ),
+    );
+
+    await expect(apiFetch('/thing')).rejects.toThrow();
+    expect(sessionStorage.getItem('refresh_token')).toBe('refresh-1');
+    expect(window.location.href).toBe('/projects/x');
+  });
+
+  it('ends the session when the refresh token is rejected', async () => {
+    vi.stubGlobal('location', { href: '/projects/x', origin: window.location.origin });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith('/auth/refresh') ? json({}, 401) : json({}, 401),
+      ),
+    );
+
+    await expect(apiFetch('/thing')).rejects.toThrow();
+    expect(sessionStorage.getItem('refresh_token')).toBeNull();
+    expect(window.location.href).toBe('/login');
+  });
 });
 
 describe('resolveEndpoint', () => {
@@ -97,5 +125,20 @@ describe('mapSettled', () => {
     });
     expect(peak).toBe(2);
     expect(results.map(r => (r.status === 'fulfilled' ? r.value : 'x'))).toEqual([10, 20, 30, 'x', 50, 60]);
+  });
+});
+
+describe('path traversal guard', () => {
+  it('refuses dot segments, encoded or not, before any token is attached', () => {
+    for (const endpoint of [
+      '/projects/../org/1/api-keys',
+      '/projects/%2e%2e/org/1/api-keys',
+      '/projects/./x',
+      '/api/v1/projects/../../admin',
+    ]) {
+      expect(() => resolveEndpoint(endpoint)).toThrow(/dot|segments/);
+    }
+    expect(resolveEndpoint('/projects/abc..def/spec').url).toMatch(/\/projects\/abc\.\.def\/spec$/);
+    expect(resolveEndpoint('/projects?q=..').url).toMatch(/q=\.\.$/);
   });
 });

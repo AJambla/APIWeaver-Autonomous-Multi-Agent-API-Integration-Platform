@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -329,67 +331,132 @@ async def test_consistency_pass_respects_the_token_budget(
     assert result["status"] == WorkflowStatus.FAILED
 
 
-class _FakeAsyncResult:
-    def __init__(self, updates: dict[str, Any]) -> None:
-        self._updates = updates
-        self.result = updates
-        self.id = "fake-async-task-id"
 
-    def ready(self) -> bool:
-        return True
-
-    def successful(self) -> bool:
-        return True
-
-    def failed(self) -> bool:
-        return False
-
-    def get(self, timeout: int | None = None) -> dict[str, Any]:
-        return self._updates
-
-
-class _FakeCeleryApp:
-    """Records dispatched tasks and answers them the way the agent workers do."""
-
-    def __init__(self, spend: int) -> None:
-        self.dispatched: list[tuple[str, Any]] = []
-        self._spend = spend
-
-    def send_task(self, name: str, args: list[Any] | None = None, **_: Any) -> _FakeAsyncResult:
-        self.dispatched.append((name, args))
-        state = args[1] if args else {}
-        return _FakeAsyncResult(
-            {
-                "total_tokens_used": state.get("total_tokens_used", 0) + self._spend,
-                "generated_files": [{"file_path": "async_phase.py", "language": "python"}],
-            }
-        )
-
-
-async def test_async_dispatch_enforces_the_token_budget(
+async def test_a_failed_codegen_phase_fails_the_run_with_its_own_reason(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """The Celery dispatch path checked the budget nowhere, so async runs could spend
-    without limit."""
+    """A phase that reports status=failed used to be treated as success."""
     from unittest.mock import patch
 
-    from agent_worker import celery_app as celery_module
-
+    from app.workflows.agents import code_agent as code_agent_module
     from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
 
-    project_id, run_id = await _seed_project_run(session_factory, "m13async")
-    fake_celery = _FakeCeleryApp(spend=600)
-    state = _generate_state(project_id, run_id, phase_count=3, token_budget=1_000)
+    project_id, run_id = await _seed_project_run(session_factory, "phasefail")
+    state = _generate_state(project_id, run_id, phase_count=1, token_budget=1_000_000)
 
-    with patch.object(celery_module, "app", fake_celery):
-        result = await Orchestrator(
-            session_factory, execution_mode="async"
-        ).run(uuid.UUID(run_id), state)
+    async def failing_phase(state: Any, phase_number: int | None = None, **_: Any) -> dict[str, Any]:
+        return {"status": "failed", "errors": [f"Phase {phase_number} not found in execution plan."]}
 
-    dispatched_phases = [args[2] for _, args in fake_celery.dispatched]
-    assert dispatched_phases == [1, 2]
+    with patch.object(code_agent_module, "run_code_agent", failing_phase):
+        result = await Orchestrator(session_factory).run(uuid.UUID(run_id), state)
+
     assert result["status"] == WorkflowStatus.FAILED
-    assert any("token_budget_exceeded" in error for error in result["errors"])
+    assert any("Phase 1 not found" in error for error in result["errors"]), result["errors"]
+
+
+async def test_a_failing_consistency_pass_keeps_the_generated_files(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The optional consistency pass must not fail a run whose phases all succeeded."""
+    from unittest.mock import patch
+
+    from app.workflows.agents import code_agent as code_agent_module
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
+
+    project_id, run_id = await _seed_project_run(session_factory, "consistencyfail")
+    state = _generate_state(project_id, run_id, phase_count=1, token_budget=1_000_000)
+
+    async def phase_then_truncated(
+        state: Any, phase_number: int | None = None, **_: Any
+    ) -> dict[str, Any]:
+        if phase_number is None:
+            raise RuntimeError("LLM response truncated at max_tokens")
+        return {
+            "total_tokens_used": state.get("total_tokens_used", 0) + 10,
+            "generated_files": [{"file_path": "client.py", "language": "python"}],
+        }
+
+    with patch.object(code_agent_module, "run_code_agent", phase_then_truncated):
+        result = await Orchestrator(session_factory).run(uuid.UUID(run_id), state)
+
+    assert result["status"] != WorkflowStatus.FAILED, result.get("errors")
+    assert [f["file_path"] for f in result["generated_files"]] == ["client.py"]
+
+
+
+async def test_a_resumed_run_bills_only_its_own_tokens(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Resume state carries the pre-pause total, which was already billed."""
+    from unittest.mock import patch
+
+    from sqlalchemy import select
+
+    from app.core.config import get_settings
+    from app.models.metrics import UsageMetric
+    from app.workflows.agents import code_agent as code_agent_module
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
+    from app.workflows.langgraph_pipeline import active_llm_model, calculate_token_cost_usd
+
+    project_id, run_id = await _seed_project_run(session_factory, "resumebill")
+    state = _generate_state(project_id, run_id, phase_count=1, token_budget=1_000_000)
+    state["total_tokens_used"] = 50_000  # spent (and billed) before the approval pause
+
+    calls: list[Any] = []
+    with patch.object(code_agent_module, "run_code_agent", _spending_code_agent(calls, 100)):
+        result = await Orchestrator(session_factory).run(uuid.UUID(run_id), state)
+
+    assert result["total_tokens_used"] > 50_000
+    spent_now = result["total_tokens_used"] - 50_000
+    settings = get_settings()
+    async with session_factory() as session:
+        billed = list(await session.scalars(select(UsageMetric.value)))
+    model = active_llm_model(settings)
+    expected = calculate_token_cost_usd(spent_now, model, settings=settings)
+    already_billed = calculate_token_cost_usd(50_000, model, settings=settings)
+    assert len(billed) == 1
+    # Within the column's 4-decimal precision, and nowhere near re-billing the 50k.
+    assert abs(billed[0] - expected) <= Decimal("0.0001")
+    assert billed[0] < already_billed
+
+
+
+async def test_planner_hydrated_spec_reaches_later_stages(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch
+) -> None:
+    """The planner loaded endpoints from the DB but only mutated its input dict."""
+    from app.models.spec import APISpec, Endpoint
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
+
+    project_id, run_id = await _seed_project_run(session_factory, "hydrate")
+    async with session_factory() as session:
+        spec = APISpec(project_id=uuid.UUID(project_id), raw_normalized={}, title="Users API")
+        session.add(spec)
+        await session.flush()
+        session.add(
+            Endpoint(api_spec_id=spec.id, method="GET", path="/users", summary="", response_schemas={})
+        )
+        await session.commit()
+
+    seen_by_planner: list[int] = []
+
+    async def fake_planner(state: Any) -> dict[str, Any]:
+        seen_by_planner.append(len((state.get("normalized_spec") or {}).get("endpoints") or []))
+        return {"execution_plan": {"phases": [{"phase_number": 1}]}, "total_tokens_used": 0}
+
+    monkeypatch.setattr("app.workflows.langgraph_pipeline.run_planner_agent", fake_planner)
+    state = {
+        "project_id": project_id,
+        "workflow_run_id": run_id,
+        "stages": ["plan"],
+        "normalized_spec": {"title": "Users API", "endpoints": []},
+        "errors": [],
+    }
+
+    result = await Orchestrator(session_factory).run(uuid.UUID(run_id), state)
+
+    assert seen_by_planner == [1]
+    assert [e["path"] for e in result["normalized_spec"]["endpoints"]] == ["/users"]
 
 
 async def test_async_workflow_triggers_celery_task(client: AsyncClient, monkeypatch) -> None:
@@ -398,11 +465,16 @@ async def test_async_workflow_triggers_celery_task(client: AsyncClient, monkeypa
     dispatched = []
 
     class _MockCelery:
-        def send_task(self, name, args=None, task_id=None):
+        def send_task(self, name, args=None, task_id=None, **_kwargs):
             dispatched.append({"name": name, "args": args, "task_id": task_id})
 
-    from agent_worker import celery_app as celery_module
-    monkeypatch.setattr(celery_module, "app", _MockCelery())
+    monkeypatch.setattr("app.core.celery_client.get_producer", lambda _url: _MockCelery())
+    # The API image is built from backend/ and has no agent_worker package: dispatch
+    # must work without importing it.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "agent_worker", None)
+    monkeypatch.setitem(sys.modules, "agent_worker.celery_app", None)
 
     res = await client.post(
         f"/api/v1/projects/{project_id}/workflows",
@@ -421,11 +493,11 @@ async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
     """In production, failure to enqueue to Celery must fail loud with 503 rather than silently falling back."""
     project_id, _, headers = await _setup_project(client)
 
-    from agent_worker import celery_app as celery_module
-    def _failing_send_task(*args, **kwargs):
-        raise ConnectionError("Redis broker is offline")
+    class _OfflineBroker:
+        def send_task(self, *args, **kwargs):
+            raise ConnectionError("Redis broker is offline at redis:6379")
 
-    monkeypatch.setattr(celery_module.app, "send_task", _failing_send_task)
+    monkeypatch.setattr("app.core.celery_client.get_producer", lambda _url: _OfflineBroker())
 
     from app.core.config import get_settings
 
@@ -439,6 +511,7 @@ async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
     )
     assert res.status_code == 503
     assert "workflow queue is unavailable" in res.json()["error"]["message"]
+    assert "redis:6379" not in res.text
 
     # No orphaned QUEUED run is left behind the 503.
     from sqlalchemy import select
@@ -475,12 +548,10 @@ async def test_async_workflow_dispatches_to_celery(client: AsyncClient, monkeypa
     dispatched = []
 
     class _MockCelery:
-        def send_task(self, name, args=None, task_id=None):
+        def send_task(self, name, args=None, task_id=None, **_kwargs):
             dispatched.append({"name": name, "args": args, "task_id": task_id})
 
-    from agent_worker import celery_app as celery_module
-    mock_celery = _MockCelery()
-    monkeypatch.setattr(celery_module.app, "send_task", mock_celery.send_task)
+    monkeypatch.setattr("app.core.celery_client.get_producer", lambda _url: _MockCelery())
 
     res = await client.post(
         f"/api/v1/projects/{project_id}/workflows",
@@ -498,104 +569,23 @@ async def test_async_workflow_dispatches_to_celery(client: AsyncClient, monkeypa
     assert len(dispatched[0]["args"]) == 3
 
 
-async def test_wait_for_celery_task_immediate_success():
-    """Verify immediate resolution when task is already ready."""
-    from app.workflows.langgraph_pipeline import _wait_for_celery_task
-
-    fake = _FakeAsyncResult({"done": True})
-    out = await _wait_for_celery_task(fake, timeout=5.0)
-    assert out == {"done": True}
-
-
-async def test_wait_for_celery_task_delayed_success():
-    """Verify cooperative polling resolution after multiple polling ticks."""
-    from app.workflows.langgraph_pipeline import _wait_for_celery_task
-
-    class _DelayedResult:
-        def __init__(self) -> None:
-            self.ticks = 0
-            self.id = "delayed-task"
-
-        def ready(self) -> bool:
-            self.ticks += 1
-            return self.ticks >= 3
-
-        def successful(self) -> bool:
-            return True
-
-        def failed(self) -> bool:
-            return False
-
-        @property
-        def result(self) -> dict[str, Any]:
-            return {"ticks": self.ticks}
-
-    delayed = _DelayedResult()
-    out = await _wait_for_celery_task(delayed, timeout=5.0, initial_poll_interval=0.01)
-    assert out == {"ticks": 3}
-
-
-async def test_wait_for_celery_task_failure_raises():
-    """Verify that a failing task re-raises the underlying exception."""
-    import pytest
-
-    from app.workflows.langgraph_pipeline import _wait_for_celery_task
-
-    class _FailingResult:
-        def __init__(self) -> None:
-            self.id = "failing-task"
-
-        def ready(self) -> bool:
-            return True
-
-        def successful(self) -> bool:
-            return False
-
-        def failed(self) -> bool:
-            return True
-
-        @property
-        def result(self) -> Exception:
-            return ValueError("task worker failed")
-
-    with pytest.raises(ValueError, match="task worker failed"):
-        await _wait_for_celery_task(_FailingResult(), timeout=5.0)
-
-
-async def test_wait_for_celery_task_timeout_raises():
-    """Verify that a task exceeding the timeout raises TimeoutError."""
-    import pytest
-
-    from app.workflows.langgraph_pipeline import _wait_for_celery_task
-
-    class _NeverReadyResult:
-        def __init__(self) -> None:
-            self.id = "never-ready-task"
-
-        def ready(self) -> bool:
-            return False
-
-    with pytest.raises(TimeoutError, match="never-ready-task timed out"):
-        await _wait_for_celery_task(_NeverReadyResult(), timeout=0.05, initial_poll_interval=0.01)
-
-
-
-
-
 async def test_upload_dispatch_to_worker_carries_a_storage_key_not_bytes(
     client: AsyncClient, app, test_settings, monkeypatch
 ) -> None:
     """Broker messages are JSON: the worker reloads the document from object storage."""
-    from agent_worker import celery_app as celery_module
+    from types import SimpleNamespace
+
     from app.core.config import get_settings
 
     project_id, _, headers = await _setup_project(client)
     dispatched: list[dict[str, Any]] = []
 
-    def send_task(name, args=None, task_id=None):
+    def send_task(name, args=None, task_id=None, **_kwargs):
         dispatched.append({"name": name, "args": args, "task_id": task_id})
 
-    monkeypatch.setattr(celery_module.app, "send_task", send_task)
+    monkeypatch.setattr(
+        "app.core.celery_client.get_producer", lambda _url: SimpleNamespace(send_task=send_task)
+    )
     app.dependency_overrides[get_settings] = lambda: test_settings.model_copy(
         update={"require_celery_worker": True}
     )
@@ -615,3 +605,35 @@ async def test_upload_dispatch_to_worker_carries_a_storage_key_not_bytes(
     import json
 
     json.dumps(state)  # must be broker-serializable
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"stages": ["tests"]},  # typo: used to route straight to finalize and "complete"
+        {"stages": []},
+        {"target_languages": ["go"]},  # no templates or sandbox: silently skipped before
+        {"stages": ["plan"], "target_languages": []},
+    ],
+)
+async def test_unknown_stages_and_languages_are_rejected(client: AsyncClient, body) -> None:
+    project_id, _, headers = await _setup_project(client)
+    res = await client.post(f"/api/v1/projects/{project_id}/workflows", json=body, headers=headers)
+    assert res.status_code in (400, 422), res.text
+
+
+def test_export_request_rejects_unsafe_git_and_docker_values() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.export import ExportRequest
+
+    for bad in (
+        {"github_branch": "main/../../x"},
+        {"github_branch": "-delete"},
+        {"github_repo_name": "a/b"},
+        {"docker_image_name": "Bad Image;rm -rf"},
+        {"target_languages": ["ruby"]},
+    ):
+        with pytest.raises(ValidationError):
+            ExportRequest(**bad)
+    assert ExportRequest(github_branch="release/v1.2", docker_image_name="acme/sdk:1.0")

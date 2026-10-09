@@ -8,10 +8,6 @@ terraform {
   }
 }
 
-provider "aws" {
-  region = var.region
-}
-
 locals {
   name_prefix = "${var.environment}-apiweaver"
 }
@@ -47,19 +43,19 @@ resource "aws_security_group" "redis" {
 }
 
 resource "aws_elasticache_replication_group" "main" {
-  replication_group_id         = "${local.name_prefix}-redis"
-  description                  = "APIWeaver Redis cluster"
-  engine                       = "redis"
-  engine_version               = "7.1"
-  node_type                    = var.node_type
-  port                         = 6379
-  number_cache_clusters        = var.num_cache_nodes
-  subnet_group_name            = aws_elasticache_subnet_group.main.name
-  security_group_ids           = [aws_security_group.redis.id]
-  at_rest_encryption_enabled   = true
-  transit_encryption_enabled   = true
-  auth_token                   = var.auth_token
-  kms_key_id                   = var.kms_key_id
+  replication_group_id       = "${local.name_prefix}-redis"
+  description                = "APIWeaver Redis cluster"
+  engine                     = "redis"
+  engine_version             = "7.1"
+  node_type                  = var.node_type
+  port                       = 6379
+  num_cache_clusters         = var.num_cache_nodes
+  subnet_group_name          = aws_elasticache_subnet_group.main.name
+  security_group_ids         = [aws_security_group.redis.id]
+  at_rest_encryption_enabled = true
+  transit_encryption_enabled = true
+  auth_token                 = var.auth_token
+  kms_key_id                 = var.kms_key_id
 
   automatic_failover_enabled = true
   multi_az_enabled           = true

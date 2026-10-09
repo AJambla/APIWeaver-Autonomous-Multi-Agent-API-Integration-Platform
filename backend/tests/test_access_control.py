@@ -159,7 +159,12 @@ async def test_member_backed_keys_see_no_projects(
     assert listed.json()["data"] == []
 
 
-async def test_rotating_api_key_headers_do_not_bypass_the_login_limit(client: AsyncClient) -> None:
+async def test_rotating_api_key_headers_do_not_bypass_the_login_limit(
+    client: AsyncClient, monkeypatch
+) -> None:
+    # ~120 Argon2 logins take ~30-40 s; on the real clock the fixed 60 s window often
+    # rolled over mid-test and reset the counter, so the 429 never came (flaky).
+    monkeypatch.setattr("app.core.ratelimit._clock", lambda: 1_800_000_000.0)
     statuses = []
     for _ in range(ANONYMOUS_REQUESTS_PER_MINUTE + 1):
         res = await client.post(
@@ -203,3 +208,80 @@ async def test_llm_probe_requires_an_org_admin(
     assert res.status_code == 403, res.text
     status = await client.get("/api/v1/health/llm")
     assert status.status_code == 401
+
+
+async def test_an_owner_backed_api_key_cannot_pass_owner_only_gates(
+    client: AsyncClient, session_factory, test_settings
+) -> None:
+    """Owner-only gates (approval, export, credential writes) need a human session."""
+    seed = await _seed(session_factory, test_settings)
+    project_id = seed["project_a"].id
+    key_headers = await _key(
+        session_factory, org_id=seed["project_a"].organization_id, creator_id=seed["owner"].id
+    )
+
+    # Editor-level work still succeeds with the key.
+    listed = await client.get(f"/api/v1/projects/{project_id}", headers=key_headers)
+    assert listed.status_code == 200, listed.text
+
+    credentials = await client.put(
+        f"/api/v1/projects/{project_id}/auth",
+        json={"scheme": "api_key", "config_json": {"header_name": "X-Key"}, "credentials": {"api_key": "x"}},
+        headers=key_headers,
+    )
+    assert credentials.status_code == 403, credentials.text
+
+    export = await client.post(
+        f"/api/v1/projects/{project_id}/export",
+        json={"export_types": ["sdk"]},
+        headers=key_headers,
+    )
+    assert export.status_code == 403, export.text
+
+
+async def test_api_keys_cannot_manage_the_org_api_keys(
+    client: AsyncClient, session_factory, test_settings
+) -> None:
+    """A leaked key must not be able to list, mint or revoke every other org credential."""
+    seed = await _seed(session_factory, test_settings)
+    org_id = seed["project_a"].organization_id
+    key_headers = await _key(session_factory, org_id=org_id, creator_id=seed["owner"].id)
+
+    listed = await client.get(f"/api/v1/org/{org_id}/api-keys", headers=key_headers)
+    assert listed.status_code == 403, listed.text
+    minted = await client.post(
+        f"/api/v1/org/{org_id}/api-keys", json={"name": "child"}, headers=key_headers
+    )
+    assert minted.status_code == 403, minted.text
+
+    # The human owner still manages keys.
+    human = await client.get(f"/api/v1/org/{org_id}/api-keys", headers=seed["owner_headers"])
+    assert human.status_code == 200, human.text
+
+
+async def test_an_archived_project_refuses_new_work_but_stays_readable(
+    client: AsyncClient, session_factory, test_settings
+) -> None:
+    seed = await _seed(session_factory, test_settings)
+    project_id = seed["project_a"].id
+    headers = seed["owner_headers"]
+
+    archived = await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
+    assert archived.status_code in (200, 204), archived.text
+
+    trigger = await client.post(
+        f"/api/v1/projects/{project_id}/workflows", json={"stages": ["plan"]}, headers=headers
+    )
+    assert trigger.status_code == 409, trigger.text
+    upload = await client.post(
+        f"/api/v1/projects/{project_id}/upload",
+        files={"file": ("notes.md", b"# API", "text/markdown")},
+        headers=headers,
+    )
+    assert upload.status_code == 409, upload.text
+
+    read = await client.get(f"/api/v1/projects/{project_id}", headers=headers)
+    assert read.status_code == 200, read.text
+    # Removing stored credentials is cleanup, and stays possible.
+    delete_auth = await client.delete(f"/api/v1/projects/{project_id}/auth", headers=headers)
+    assert delete_auth.status_code != 409, delete_auth.text

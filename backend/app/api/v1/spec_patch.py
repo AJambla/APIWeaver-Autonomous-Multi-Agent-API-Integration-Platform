@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db
@@ -82,7 +82,7 @@ async def patch_endpoint(
     if parameters is not None:
         # Delete existing parameters
         await session.execute(
-            EndpointParameter.__table__.delete().where(EndpointParameter.endpoint_id == endpoint.id)
+            delete(EndpointParameter).where(EndpointParameter.endpoint_id == endpoint.id)
         )
         # Insert new parameters
         for param in parameters:

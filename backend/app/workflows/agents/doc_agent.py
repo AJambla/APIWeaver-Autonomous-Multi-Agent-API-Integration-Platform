@@ -6,10 +6,12 @@ from freeform documentation (Markdown, HTML, text) using the LLM and RAG.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
 from app.core.logging import get_logger
+from app.core.metrics import pipeline_error_total
 from app.models.enums import DocumentFormat
 from app.services import spec_normalizer
 from app.services.chunker import chunk_text
@@ -65,7 +67,7 @@ async def run_doc_agent(
     # 1. Check if normalized spec is already provided
     if state.get("normalized_spec"):
         if qdrant_client is not None:
-            norm_spec = state["normalized_spec"]
+            norm_spec = state["normalized_spec"] or {}
             raw_text = str(norm_spec.get("raw_normalized") or norm_spec)
             await _upsert_to_qdrant(
                 qdrant_client=qdrant_client,
@@ -103,7 +105,7 @@ async def run_doc_agent(
 
     # 2. Try deterministic normalization first (OpenAPI / Swagger / Postman)
     try:
-        norm = spec_normalizer.normalize(raw_bytes, filename, format_hint)
+        norm = await asyncio.to_thread(spec_normalizer.normalize, raw_bytes, filename, format_hint)
         spec_dict = {
             "format": norm.format,
             "title": norm.title,
@@ -154,7 +156,8 @@ async def run_doc_agent(
         )
 
     # 3. Freeform document extraction via LLM
-    text_content = extract_text(raw_bytes, filename, None)
+    # pypdf / BeautifulSoup over a large upload is pure CPU; keep it off the event loop.
+    text_content = await asyncio.to_thread(extract_text, raw_bytes, filename, None)
     user_prompt = fence_untrusted("DOCUMENT DATA", text_content[:64000])
 
     extracted_json, tokens = await client.generate_json(
@@ -247,4 +250,7 @@ async def _upsert_to_qdrant(
         )
         logger.info("qdrant_upsert_complete", project_id=proj_id, document_id=doc_id, chunks=len(chunks))
     except Exception as exc:
-        logger.warning("qdrant_upsert_failed", error=str(exc))
+        # Retrieval feeds code generation; a failure here used to be a bare warning, so
+        # every run quietly generated without context. Count it and log it as an error.
+        pipeline_error_total.labels(subsystem="rag_upsert", error_type=type(exc).__name__).inc()
+        logger.error("qdrant_upsert_failed", error=str(exc))

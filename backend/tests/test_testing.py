@@ -160,6 +160,36 @@ class User(BaseModel):
                 assert "test_run_summary" in result
 
     @pytest.mark.asyncio
+    async def test_hermetic_sandbox_has_no_network_even_with_the_old_flag(self):
+        """SANDBOX_NETWORK_ENABLED used to network hermetic runs, skipping target vetting."""
+        from app.workflows.agents.test_agent import _create_sandbox
+
+        state = {"project_id": "test-p", "target_languages": ["python"], "environment": "sandbox"}
+        generated_files = [
+            {"file_path": "client.py", "content_s3_key": "s3/client.py", "language": "python"}
+        ]
+        vetting = AsyncMock()
+        with (
+            patch("app.workflows.agents.test_agent.get_settings") as mock_settings,
+            patch("app.workflows.agents.test_agent.assert_public_target", new=vetting),
+            patch(
+                "app.workflows.agents.test_agent.storage_service.download",
+                new=AsyncMock(return_value=b"class Client: pass\n"),
+            ),
+        ):
+            mock_s = mock_settings.return_value
+            mock_s.sandbox_network_enabled = True
+            mock_s.sandbox_image = "python:3.12-slim"
+            executor = await _create_sandbox(
+                state, generated_files, {"base_url": "http://169.254.169.254"}
+            )
+            try:
+                assert executor.network_enabled is False
+            finally:
+                await executor.cleanup()
+        vetting.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_create_sandbox_node_sdk(self):
         """Verify _create_sandbox supports node when target_languages includes node."""
         from app.services.sandbox_service import DockerSandboxExecutor
