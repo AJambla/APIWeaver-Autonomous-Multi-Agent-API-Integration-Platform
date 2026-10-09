@@ -145,7 +145,14 @@ Desktop.ini
 *.tfplan
 .terraform.lock.hcl
 
-# Skills
+# Skills & Codebase Intelligence
 ui-ux-pro-max-skill/
-.agents
-graphify-out
+.agents/
+.context/
+graphify-out/
+AGENTS.md
+CLAUDE.md
+.github/*instructions.md
+.github/*-context.md
+gen-context.config.json
+.contextignore

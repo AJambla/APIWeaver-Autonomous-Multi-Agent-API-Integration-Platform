@@ -304,16 +304,10 @@ class LLMClient:
 
         return await self._call_provider("openai", send)
 
-    async def generate_embedding(self, text: str) -> list[float]:
-        """Generate embedding vector for the given text.
+    async def _generate_embeddings_batch(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
 
-        Uses configured embedding model and endpoint (default text-embedding-3-small,
-        1536 dimensions) matching Qdrant config. Supports OpenAI or any compatible
-        embedding provider (e.g., Ollama /v1/embeddings, LocalAI, vLLM).
-        Returns a zero vector when no API key or custom endpoint is configured
-        (development only; production raises rather than silently embedding into
-        an unusable index).
-        """
         has_custom_endpoint = bool(
             self.settings.embedding_base_url
             or (
@@ -343,50 +337,77 @@ class LLMClient:
             "Content-Type": "application/json",
         }
         expected_dims = self.settings.embedding_dimensions
-        payload: dict[str, Any] = {
-            "model": self.settings.embedding_model,
-            "input": text,
-            "dimensions": expected_dims,
-        }
-        async def send() -> list[float]:
-            try:
-                async with httpx.AsyncClient(timeout=self.settings.llm_request_timeout) as client:
-                    res = await client.post(url, json=payload, headers=headers)
-                    if (
-                        res.status_code == 400
-                        and "dimensions" in payload
-                        and "dimension" in res.text.lower()
-                    ):
-                        # Only for providers that reject the parameter itself. Retrying
-                        # without it on *any* 400 (input too long, bad model) returned
-                        # native-size vectors the collection then refused.
-                        del payload["dimensions"]
-                        res = await client.post(url, json=payload, headers=headers)
-                    res.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code
-                if status in TRANSIENT_STATUS_CODES:
-                    raise _TransientProviderError(
-                        f"openai returned HTTP {status}",
-                        status_code=status,
-                        retry_after=_retry_after_seconds(exc.response),
-                    ) from exc
-                raise
-            except httpx.TransportError as exc:
-                raise _TransientProviderError(f"openai transport error: {exc}") from exc
-            data = res.json()
-            vector: list[float] = data["data"][0]["embedding"]
-            if len(vector) != expected_dims:
-                raise EmbeddingDimensionMismatchError(
-                    f"Embedding model '{self.settings.embedding_model}' returned "
-                    f"{len(vector)}-dimensional vectors but EMBEDDING_DIMENSIONS is "
-                    f"{expected_dims}. Set EMBEDDING_DIMENSIONS to {len(vector)} and "
-                    "recreate the Qdrant collection, or use a model that supports "
-                    f"{expected_dims} dimensions."
-                )
-            return vector
+        batch_size = 100
+        all_vectors: list[list[float]] = []
 
-        return await self._call_provider("openai", send)
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            payload: dict[str, Any] = {
+                "model": self.settings.embedding_model,
+                "input": batch,
+                "dimensions": expected_dims,
+            }
+
+            async def send() -> list[list[float]]:
+                try:
+                    async with httpx.AsyncClient(timeout=self.settings.llm_request_timeout) as client:
+                        res = await client.post(url, json=payload, headers=headers)
+                        if (
+                            res.status_code == 400
+                            and "dimensions" in payload
+                            and "dimension" in res.text.lower()
+                        ):
+                            del payload["dimensions"]
+                            res = await client.post(url, json=payload, headers=headers)
+                        res.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    status = exc.response.status_code
+                    if status in TRANSIENT_STATUS_CODES:
+                        raise _TransientProviderError(
+                            f"openai returned HTTP {status}",
+                            status_code=status,
+                            retry_after=_retry_after_seconds(exc.response),
+                        ) from exc
+                    raise
+                except httpx.TransportError as exc:
+                    raise _TransientProviderError(f"openai transport error: {exc}") from exc
+
+                data = res.json()
+                raw_items = data.get("data", [])
+                if raw_items and all("index" in item for item in raw_items):
+                    sorted_items = sorted(raw_items, key=lambda x: x["index"])
+                else:
+                    sorted_items = raw_items
+                batch_vectors = [item["embedding"] for item in sorted_items]
+                for vector in batch_vectors:
+                    if len(vector) != expected_dims:
+                        raise EmbeddingDimensionMismatchError(
+                            f"Embedding model '{self.settings.embedding_model}' returned "
+                            f"{len(vector)}-dimensional vectors but EMBEDDING_DIMENSIONS is "
+                            f"{expected_dims}. Set EMBEDDING_DIMENSIONS to {len(vector)} and "
+                            "recreate the Qdrant collection, or use a model that supports "
+                            f"{expected_dims} dimensions."
+                        )
+                return batch_vectors
+
+            batch_res = await self._call_provider("openai", send)
+            all_vectors.extend(batch_res)
+
+        return all_vectors
+
+    async def generate_embedding(self, text: str) -> list[float]:
+        """Generate embedding vector for the given single text."""
+        vectors = await self._generate_embeddings_batch([text])
+        return vectors[0]
+
+    async def generate_embeddings(self, texts: list[str]) -> list[list[float]]:
+        """Generate embedding vectors for texts in batches of up to 100 (S-04)."""
+        if not texts:
+            return []
+        current_method = getattr(self.generate_embedding, "__func__", self.generate_embedding)
+        if current_method is not _ORIGINAL_GENERATE_EMBEDDING:
+            return [await self.generate_embedding(t) for t in texts]
+        return await self._generate_embeddings_batch(texts)
 
     async def _call_anthropic(self, system: str, user: str) -> tuple[dict[str, Any], int]:
         base_url = (getattr(self.settings, "anthropic_api_base_url", None) or "https://api.anthropic.com/v1").rstrip("/")
@@ -442,3 +463,6 @@ class LLMClient:
                 ) from err
 
         return await self._call_provider("anthropic", send)
+
+
+_ORIGINAL_GENERATE_EMBEDDING = LLMClient.generate_embedding

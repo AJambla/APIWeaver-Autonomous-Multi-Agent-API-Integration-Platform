@@ -50,16 +50,25 @@ class FakeQdrantClient:
         project_id: uuid.UUID,
         document_id: uuid.UUID,
         chunks: list[dict[str, Any]],
+        organization_id: uuid.UUID | None = None,
         collection_name: str = DEFAULT_COLLECTION,
     ) -> None:
         await self.ensure_collection(collection_name)
-        for chunk in chunks:
-            point_id = chunk.get("id") or str(uuid.uuid4())
+        await self.delete_by_document(
+            project_id=project_id,
+            document_id=document_id,
+            organization_id=organization_id,
+            collection_name=collection_name,
+        )
+        doc_uuid = uuid.UUID(str(document_id))
+        for idx, chunk in enumerate(chunks):
+            point_id = chunk.get("id") or str(uuid.uuid5(doc_uuid, str(idx)))
             self._points[collection_name].append({
                 "id": point_id,
                 "vector": chunk["vector"],
                 "project_id": str(project_id),
                 "document_id": str(document_id),
+                "organization_id": str(organization_id) if organization_id else None,
                 "text": chunk["text"],
                 "metadata": chunk.get("metadata", {}),
             })
@@ -70,12 +79,14 @@ class FakeQdrantClient:
         project_id: uuid.UUID,
         query_vector: list[float],
         limit: int = 5,
+        organization_id: uuid.UUID | None = None,
         collection_name: str = DEFAULT_COLLECTION,
     ) -> list[ScoredChunk]:
         await self.ensure_collection(collection_name)
         candidates = [
             p for p in self._points.get(collection_name, [])
             if p["project_id"] == str(project_id)
+            and (organization_id is None or p.get("organization_id") == str(organization_id))
         ]
 
         scored: list[tuple[float, dict[str, Any]]] = []
@@ -89,16 +100,19 @@ class FakeQdrantClient:
         scored.sort(key=lambda x: x[0], reverse=True)
         results: list[ScoredChunk] = []
         for score, p in scored[:limit]:
+            metadata = {
+                "project_id": p["project_id"],
+                "document_id": p["document_id"],
+                **p["metadata"],
+            }
+            if p.get("organization_id"):
+                metadata["organization_id"] = p["organization_id"]
             results.append(
                 ScoredChunk(
                     chunk_id=p["id"],
                     text=p["text"],
                     score=score,
-                    metadata={
-                        "project_id": p["project_id"],
-                        "document_id": p["document_id"],
-                        **p["metadata"],
-                    },
+                    metadata=metadata,
                 )
             )
         return results
@@ -108,6 +122,7 @@ class FakeQdrantClient:
         *,
         project_id: uuid.UUID,
         document_id: uuid.UUID,
+        organization_id: uuid.UUID | None = None,
         collection_name: str = DEFAULT_COLLECTION,
     ) -> None:
         if collection_name in self._points:
@@ -116,6 +131,7 @@ class FakeQdrantClient:
                 if not (
                     p["project_id"] == str(project_id)
                     and p["document_id"] == str(document_id)
+                    and (organization_id is None or p.get("organization_id") == str(organization_id))
                 )
             ]
 
