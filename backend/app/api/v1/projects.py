@@ -118,7 +118,11 @@ def _visible_projects(principal: Principal) -> Select[tuple[Project]]:
     stmt = select(Project)
 
     if principal.is_api_key:
-        # An org-scoped key sees its own org; a project-restricted key sees one project.
+        # Same rule as `resolve_project_role`: only an owner- or admin-backed key reaches
+        # projects at all (a member-backed key, or one whose creator left the org and so
+        # carries no role, authorizes nothing). Restricted keys then see one project.
+        if principal.org_role not in (OrgRole.OWNER, OrgRole.ADMIN):
+            return stmt.where(sa_false())
         stmt = stmt.where(Project.organization_id == principal.organization_id)
         if principal.restricted_to_project_id is not None:
             stmt = stmt.where(Project.id == principal.restricted_to_project_id)

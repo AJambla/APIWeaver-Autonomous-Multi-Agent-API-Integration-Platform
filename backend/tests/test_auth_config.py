@@ -109,6 +109,7 @@ async def test_delete_auth_config_purges_vault_and_database(
 ) -> None:
     """DELETE /projects/{id}/auth purges Vault secrets and removes DB rows."""
     from sqlalchemy import select
+
     from app.models.auth_config import AuthConfig, SecretRef
 
     project_id, _, headers = await _setup_project(client)

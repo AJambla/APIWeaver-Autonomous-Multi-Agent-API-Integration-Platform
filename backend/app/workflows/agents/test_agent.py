@@ -6,16 +6,12 @@ the self-healing repair loop (max 3 attempts per failing test).
 
 from __future__ import annotations
 
-import asyncio
-import importlib.util
 import inspect
 import json
 import re
-import sys
 import time
 import traceback
 import uuid
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -25,7 +21,7 @@ from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
 from app.models.auth_config import AuthConfig, SecretRef
 from app.models.enums import AuthScheme
-from app.services.sandbox_service import DockerSandboxExecutor, _safe_workspace_target
+from app.services.sandbox_service import DockerSandboxExecutor, assert_public_target
 from app.services.storage_service import storage_service
 from app.services.test_run_service import record_test_run_results
 from app.services.vault_service import create_vault_client
@@ -58,7 +54,10 @@ Parameters: {parameters}
 
 Return a JSON object with:
 {{
-  "request": {{ ... }},  // Example request data matching the schema
+  "request": {{
+    "params": {{ ... }},  // Map of ALL path and query parameters by name (e.g. {{"petId": 1, "status": "available"}})
+    "body": {{ ... }}     // JSON body payload matching the request schema if required
+  }},
   "expected_status": <integer status code matching primary success response schema, e.g. 200, 201, 204>,
   "expected_response_shape": {{ ... }}  // Expected response structure
 }}
@@ -124,7 +123,7 @@ async def generate_test_fixtures(spec: dict[str, Any] | list[Any], llm_client: L
         if not isinstance(resp_schemas, dict):
             resp_schemas = {}
         params = ep.get("parameters")
-        if not isinstance(params, (list, dict)):
+        if not isinstance(params, list | dict):
             params = []
 
         prompt = TEST_FIXTURE_GENERATION_PROMPT.format(
@@ -153,14 +152,54 @@ async def generate_test_fixtures(spec: dict[str, Any] | list[Any], llm_client: L
                 fixture_json = {}
         except Exception as exc:
             logger.warning("fixture_generation_failed", endpoint=ep_key, error=str(exc))
-            fixture_json = _generate_deterministic_fixture(ep, defs)
+            fixture_json = {}
 
-        if not fixture_json.get("request") and (req_schema or params):
-            fixture_json = _generate_deterministic_fixture(ep, defs)
+        det_fixture = _generate_deterministic_fixture(ep, defs)
+        if not isinstance(fixture_json, dict) or not fixture_json.get("request"):
+            fixture_json = det_fixture
+        else:
+            req = fixture_json.get("request", {})
+            if not isinstance(req, dict):
+                req = {}
+            if "params" not in req:
+                merged_params = dict(det_fixture["request"].get("params", {}))
+                for k, v in req.items():
+                    if k != "body":
+                        merged_params[k] = v
+                req["params"] = merged_params
+            else:
+                det_params = det_fixture["request"].get("params", {})
+                req_params = req.get("params", {})
+                if isinstance(req_params, dict):
+                    for dp_k, dp_v in det_params.items():
+                        req_params.setdefault(dp_k, dp_v)
+                req["params"] = req_params
 
+            if "body" not in req and det_fixture["request"].get("body"):
+                req["body"] = det_fixture["request"]["body"]
+            fixture_json["request"] = req
+
+        if not isinstance(fixture_json.get("expected_status"), int):
+            fixture_json["expected_status"] = det_fixture["expected_status"]
+        fixture_json["mock_response"] = _mock_response(ep, fixture_json["expected_status"], defs)
         fixtures[ep_key] = fixture_json
 
     return fixtures
+
+
+def _mock_response(ep: dict[str, Any], status: int, definitions: dict[str, Any]) -> Any:
+    """Response body the hermetic sandbox serves for `status`, synthesized from the spec."""
+    if status in (204, 304):
+        return None
+    schemas = ep.get("response_schemas") or {}
+    schema = schemas.get(str(status)) if isinstance(schemas, dict) else None
+    if not isinstance(schema, dict) or not schema:
+        return {}
+    try:
+        return synthesize_schema_data(schema, definitions, field_name="response")
+    except Exception as exc:
+        logger.debug("mock_response_synthesis_failed", error=str(exc))
+        return {}
 
 
 def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -235,6 +274,103 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
         "expected_status": expected_status,
         "is_fallback": True,
     }
+
+
+def _resource_key(path: str) -> str:
+    """Normalized resource name of a path: `/store/orders/{id}` -> `order`."""
+    segments = [s for s in path.split("/") if s and not s.startswith("{")]
+    name = re.sub(r"[^a-z0-9]", "", (segments[-1] if segments else "").lower())
+    return name[:-1] if name.endswith("s") and len(name) > 3 else name
+
+
+def _record_created_id(
+    created_ids: dict[str, Any], path: str, result: dict[str, Any], body: Any
+) -> None:
+    snapshot = result.get("response_snapshot") or {}
+    resp_body = snapshot.get("body") if isinstance(snapshot, dict) else None
+    created = None
+    if isinstance(resp_body, dict) and resp_body.get("id") is not None:
+        created = resp_body["id"]
+    elif isinstance(body, dict) and body.get("id") is not None:
+        created = body["id"]
+    if created is not None:
+        created_ids[_resource_key(path)] = created
+
+
+def _chained_id(created_ids: dict[str, Any], param_name: str, path: str) -> Any:
+    """An id created earlier that this path parameter refers to, if any.
+
+    `{petId}` matches resource `pet`; a bare `{id}` matches the path's own resource.
+    """
+    norm = re.sub(r"[^a-z0-9]", "", param_name.lower())
+    if not norm.endswith("id"):
+        return None
+    resource = norm[:-2] or _resource_key(path.split("/{", 1)[0])
+    return created_ids.get(resource)
+
+
+def _is_unnecessary_endpoint(ep: dict[str, Any]) -> tuple[bool, str]:
+    """Filter out destructive, binary-upload, or redundant operations from automated smoke testing.
+
+    Returns (is_unnecessary, reason).
+    """
+    method = str(ep.get("method") or "GET").upper()
+    str(ep.get("path") or "").lower()
+    op_id = str(ep.get("operationId") or ep.get("operation_id") or "").lower()
+
+    # 1. Destructive DELETE operations:
+    # Blind deletion of non-existent resources against live or mock APIs fails with 404,
+    # or destroys upstream data without idempotency guarantee.
+    if method == "DELETE":
+        return True, "Destructive DELETE operation excluded from automated smoke testing"
+
+    # 2. Binary / multipart file upload:
+    # Requires streaming local filesystem artifacts / form-data which cannot be tested
+    # with synthetic JSON payloads.
+    consumes = ep.get("consumes") or []
+    if isinstance(consumes, list) and any("multipart" in str(c).lower() or "octet-stream" in str(c).lower() for c in consumes):
+        return True, "Binary/multipart file upload requires specialized file stream"
+    if "uploadimage" in op_id or "uploadfile" in op_id:
+        return True, "Binary file upload operation requires local file stream"
+
+    # 3. Redundant batch variant endpoints:
+    # e.g., createWithArray / createWithList duplicating single-resource creation
+    if "createwitharray" in op_id or "createwithlist" in op_id:
+        return True, "Redundant batch variant endpoint (covered by single resource creation)"
+
+    return False, ""
+
+
+def _order_endpoints_for_testing(
+    endpoints: list[dict[str, Any]], execution_plan: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """Order endpoints so creation and auth prerequisites execute before dependent reads and updates."""
+    phases = (execution_plan or {}).get("phases", [])
+    if isinstance(phases, list) and phases:
+        phase_priority: dict[str, int] = {}
+        for phase in phases:
+            p_num = phase.get("phase_number", 99)
+            for ep_sig in phase.get("endpoints", []):
+                phase_priority[str(ep_sig).strip().upper()] = p_num
+
+        def _phase_key(ep: dict[str, Any]) -> tuple[int, int]:
+            sig = f"{str(ep.get('method', '')).upper()} {str(ep.get('path', ''))}".strip().upper()
+            priority = phase_priority.get(sig, 99)
+            m = str(ep.get("method", "")).upper()
+            m_order = 0 if m == "POST" else (1 if m == "GET" else 2)
+            return (priority, m_order)
+
+        return sorted(endpoints, key=_phase_key)
+
+    def _method_key(ep: dict[str, Any]) -> int:
+        m = str(ep.get("method", "")).upper()
+        if m == "POST":
+            return 0
+        if m == "GET":
+            return 1
+        return 2
+
+    return sorted(endpoints, key=_method_key)
 
 
 # The generated-client contract accepts a single credential string (api_key);
@@ -392,17 +528,55 @@ async def _create_sandbox(
                 "sandbox_file_download_failed", file=file_meta.get("file_path"), error=str(e)
             )
 
-    network_enabled = (
-        state.get("environment") == "live"
-        or getattr(settings, "sandbox_network_enabled", False)
-    )
+    live = state.get("environment") == "live"
+    if live and not getattr(settings, "sandbox_live_network_enabled", False):
+        raise RuntimeError("Live testing is disabled (SANDBOX_LIVE_NETWORK_ENABLED=false).")
+    network_enabled = live or bool(getattr(settings, "sandbox_network_enabled", False))
+    if live:
+        # Live mode hands generated code the network; refuse targets on private,
+        # loopback or metadata addresses before any container starts.
+        await assert_public_target(
+            spec_dict.get("base_url"),
+            allow_private=bool(getattr(settings, "sandbox_allow_private_targets", False)),
+        )
 
     executors: dict[str, DockerSandboxExecutor] = {}
+    try:
+        return await _load_executors(
+            executors,
+            settings,
+            state,
+            spec_dict,
+            auth,
+            target_languages,
+            python_files,
+            node_files,
+            network_enabled,
+        )
+    except BaseException:
+        # A failed load must not leak the workspaces of executors already staged.
+        for executor in executors.values():
+            try:
+                await executor.cleanup()
+            except Exception as cleanup_err:
+                logger.warning("sandbox_cleanup_failed", error=str(cleanup_err))
+        raise
 
+
+async def _load_executors(
+    executors: dict[str, DockerSandboxExecutor],
+    settings: Any,
+    state: WorkflowState,
+    spec_dict: dict[str, Any],
+    auth: dict[str, Any] | None,
+    target_languages: list[str],
+    python_files: dict[str, str],
+    node_files: dict[str, str],
+    network_enabled: bool,
+) -> DockerSandboxExecutor | MultiLanguageSandboxExecutor:
     if "python" in target_languages and python_files:
-        exec_py = DockerSandboxExecutor(settings)
-        if hasattr(exec_py, "_network_enabled"):
-            exec_py._network_enabled = network_enabled
+        exec_py = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+        executors["python"] = exec_py
         load_kw: dict[str, Any] = {
             "project_id": state.get("project_id"),
             "files": python_files,
@@ -412,12 +586,10 @@ async def _create_sandbox(
         if "language" in inspect.signature(exec_py.load).parameters:
             load_kw["language"] = "python"
         await exec_py.load(**load_kw)
-        executors["python"] = exec_py
 
     if "node" in target_languages and node_files:
-        exec_node = DockerSandboxExecutor(settings)
-        if hasattr(exec_node, "_network_enabled"):
-            exec_node._network_enabled = network_enabled
+        exec_node = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+        executors["node"] = exec_node
         load_kw_node: dict[str, Any] = {
             "project_id": state.get("project_id"),
             "files": node_files,
@@ -427,13 +599,11 @@ async def _create_sandbox(
         if "language" in inspect.signature(exec_node.load).parameters:
             load_kw_node["language"] = "node"
         await exec_node.load(**load_kw_node)
-        executors["node"] = exec_node
 
     if not executors:
         all_files = {**python_files, **node_files}
-        single = DockerSandboxExecutor(settings)
-        if hasattr(single, "_network_enabled"):
-            single._network_enabled = network_enabled
+        single = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+        executors["default"] = single
         await single.load(
             project_id=state.get("project_id"),
             files=all_files,
@@ -540,7 +710,10 @@ async def run_test_agent(
         raw_eps = spec.get("endpoints", [])
         if isinstance(raw_eps, dict):
             raw_eps = list(raw_eps.values())
-        endpoints_to_test = [ep for ep in raw_eps if isinstance(ep, dict)]
+        raw_endpoints_to_test = [ep for ep in raw_eps if isinstance(ep, dict)]
+        endpoints_to_test = _order_endpoints_for_testing(
+            raw_endpoints_to_test, state.get("execution_plan")
+        )
 
         # Run tests for each endpoint across all configured language executors
         test_results = []
@@ -555,7 +728,12 @@ async def run_test_agent(
         total_tests = len(endpoints_to_test) * len(language_executors)
         test_counter = 0
 
+        chain_ids = state.get("environment") == "live"
         for lang, executor in language_executors.items():
+            # Live runs chain ids returned by earlier creates into later path parameters
+            # (POST /pets -> GET /pets/{petId}); hermetic runs need no chaining.
+            created_ids: dict[str, Any] = {}
+
             for i, ep in enumerate(endpoints_to_test):
                 test_counter += 1
                 method = str(ep.get("method") or "GET").upper()
@@ -564,6 +742,36 @@ async def run_test_agent(
                 fixture = fixtures.get(ep_key, {})
 
                 lang_tag = f"[{lang}] " if lang != "default" else ""
+
+                # Check if this endpoint should be excluded as an unnecessary / unviable smoke test
+                is_unnecessary, skip_reason = _is_unnecessary_endpoint(ep)
+                if is_unnecessary:
+                    skipped_result = {
+                        "endpoint_id": ep.get("id"),
+                        "method": method,
+                        "path": path,
+                        "status": "skipped",
+                        "status_code": None,
+                        "latency_ms": 0,
+                        "response_snapshot": None,
+                        "error": skip_reason,
+                        "stack_trace": None,
+                    }
+                    if lang != "default":
+                        skipped_result["language"] = lang
+                    test_results.append(skipped_result)
+                    if on_activity:
+                        try:
+                            await on_activity(
+                                "test_result",
+                                f"Test {test_counter}/{total_tests} {lang_tag}{method} {path} → SKIPPED (0ms) — {skip_reason}",
+                                test_counter,
+                                total_tests,
+                            )
+                        except Exception as e:
+                            logger.debug("on_activity_test_result_failed", error=str(e))
+                    continue
+
                 if on_activity:
                     try:
                         await on_activity(
@@ -575,20 +783,41 @@ async def run_test_agent(
                     except Exception as e:
                         logger.debug("on_activity_executing_test_failed", error=str(e))
 
-                result = await executor.execute_test(ep, fixture)
+                # Inject dynamic real test values into fixture request
+                fixture_req = dict(fixture.get("request", {}) or {})
+                params = dict(fixture_req.get("params", {}) or {})
+                body = fixture_req.get("body")
+                if isinstance(body, dict):
+                    body = dict(body)
+
+                if chain_ids:
+                    for p_name in re.findall(r"\{([^}]+)\}", path):
+                        chained = _chained_id(created_ids, p_name, path)
+                        if chained is not None:
+                            params[p_name] = chained
+
+                resolved_fixture = dict(fixture)
+                resolved_fixture["request"] = {"params": params, "body": body}
+
+                result = await executor.execute_test(ep, resolved_fixture)
                 if lang != "default":
                     result["language"] = lang
                     if result.get("error"):
                         result["error"] = f"[{lang}] {result['error']}"
                 test_results.append(result)
 
+                # Capture created resource ids to chain into subsequent tests
+                if chain_ids and result.get("status") == "passed" and method == "POST":
+                    _record_created_id(created_ids, path, result, body)
+
                 st = str(result.get("status", "unknown")).upper()
                 lat = result.get("latency_ms", 0)
+                err_detail = f" — {result['error']}" if (st != "PASSED" and result.get("error")) else ""
                 if on_activity:
                     try:
                         await on_activity(
                             "test_result",
-                            f"Test {test_counter}/{total_tests} {lang_tag}{method} {path} → {st} ({lat}ms)",
+                            f"Test {test_counter}/{total_tests} {lang_tag}{method} {path} → {st} ({lat}ms){err_detail}",
                             test_counter,
                             total_tests,
                         )

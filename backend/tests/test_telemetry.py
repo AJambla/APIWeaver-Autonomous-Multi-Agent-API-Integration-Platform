@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
-import pytest
 from fastapi import FastAPI
 
 from app.core.config import Settings
 from app.core.telemetry import (
     _build_resource,
-    _build_tracer_provider,
     _setup_langsmith_correlation,
     get_tracer,
     instrument_app,

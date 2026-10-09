@@ -138,19 +138,21 @@ def synthesize_schema_data(
             base_int = 8080
         elif fn in ("count", "quantity"):
             base_int = 5
+        elif fn.endswith("id") or fn == "id":
+            base_int = 105001
 
         if min_val is not None:
             base_int = max(base_int, int(min_val))
             if excl_min is True:
                 base_int += 1
-        if excl_min is not None and isinstance(excl_min, (int, float)):
+        if excl_min is not None and isinstance(excl_min, int | float):
             base_int = max(base_int, int(excl_min) + 1)
 
         if max_val is not None:
             base_int = min(base_int, int(max_val))
             if excl_max is True and base_int >= int(max_val):
                 base_int = int(max_val) - 1
-        if excl_max is not None and isinstance(excl_max, (int, float)) and base_int >= int(excl_max):
+        if excl_max is not None and isinstance(excl_max, int | float) and base_int >= int(excl_max):
             base_int = int(excl_max) - 1
 
         mult = schema.get("multipleOf")
@@ -225,6 +227,10 @@ def synthesize_schema_data(
             val = "2026-01-01T12:00:00Z"
         elif "date" in fn:
             val = "2026-01-01"
+        elif "username" in fn or fn == "user":
+            val = "weaver_test_user"
+        elif "status" in fn:
+            val = "available"
         elif "name" in fn:
             val = f"sample_{fn}"
         elif field_name:

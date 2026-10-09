@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from decimal import Decimal
+
 import pytest
 
-from app.core.config import DEFAULT_MODEL_PRICING_PER_TOKEN, Settings
+from app.core.config import Settings
 from app.workflows.langgraph_pipeline import (
-    DEFAULT_TOKEN_BUDGET,
-    DEFAULT_TOKEN_PRICE,
     calculate_token_cost_usd,
     check_budget,
 )

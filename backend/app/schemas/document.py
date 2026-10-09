@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import Field
 
-from app.schemas.common import ResponseModel
+from app.schemas.common import ResponseModel, StrictModel
 
 
 class UploadResponse(ResponseModel):
@@ -40,3 +40,15 @@ class EndpointFilters(ResponseModel):
     method: str | None = None
     deprecated: bool | None = None
     confidence_min: float | None = Field(default=None, ge=0, le=1)
+
+
+class FetchSpecRequest(StrictModel):
+    """`POST /projects/{id}/fetch-spec`: import a specification from a URL."""
+
+    url: str = Field(min_length=8, max_length=2048, pattern=r"^https?://")
+
+
+class FetchSpecResponse(ResponseModel):
+    content: str
+    content_type: str | None = None
+    size_bytes: int

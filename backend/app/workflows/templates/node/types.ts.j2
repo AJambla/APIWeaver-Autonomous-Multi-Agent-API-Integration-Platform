@@ -21,9 +21,8 @@ export interface PaginatedResponse<T> {
 {% set method = ep.method.upper() %}
 {% set path = ep.path %}
 {% set summary = ep.summary or path %}
-{% set op_id = ep.get('operationId', path.replace('/', '_').replace('{', '').replace('}', '')) %}
 
-export interface {{ resource.title().replace('-', '') }}{{ method }}{{ path.split('/')[-1].replace('{', '').replace('}', '').title() }}Response {
+export interface {{ ep.model_stem }}Response {
   [key: string]: any;
 }
 
@@ -34,9 +33,8 @@ export interface {{ resource.title().replace('-', '') }}{{ method }}{{ path.spli
 {% for resource, endpoints in resources.items() %}
 {% for ep in endpoints %}
 {% if ep.get('request_schema') %}
-{% set op_id = ep.get('operationId', ep.path.replace('/', '_').replace('{', '').replace('}', '')) %}
 
-export interface {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request {
+export interface {{ ep.model_stem }}Request {
   [key: string]: any;
 }
 

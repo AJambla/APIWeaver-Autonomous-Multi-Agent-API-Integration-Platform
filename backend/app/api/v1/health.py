@@ -22,10 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.logging import get_logger
-from app.rbac.policy import Principal
-from app.workflows.llm import LLMClient
+from app.rbac.enforce import require_own_org_permission
+from app.rbac.policy import Permission, Principal
+from app.workflows.llm import LLMClient, active_llm_model
 
 router = APIRouter(tags=["health"])
+# Authenticated, rate-limited LLM endpoints, mounted only under /api/v1 (`router.py`):
+# they reveal provider configuration and one of them spends tokens.
+llm_router = APIRouter(tags=["health"])
 logger = get_logger(__name__)
 
 
@@ -64,24 +68,28 @@ async def readyz(
     return {"status": "ready" if ready else "not_ready", "checks": checks}
 
 
-@router.get("/health/llm", summary="LLM configuration status")
-async def health_llm() -> dict[str, Any]:
+@llm_router.get("/health/llm", summary="LLM configuration status")
+async def health_llm(
+    _principal: Principal = Depends(get_current_principal),
+) -> dict[str, Any]:
     """Report configured LLM provider, model, and whether credentials exist."""
     settings = get_settings()
     provider = "anthropic" if settings.anthropic_api_key and not settings.openai_api_key else "openai"
     is_configured = bool(settings.openai_api_key or settings.anthropic_api_key)
     return {
         "provider": provider,
-        "model": settings.llm_model,
+        "model": active_llm_model(settings),
         "base_url": settings.openai_api_base_url,
         "is_configured": is_configured,
     }
 
 
-@router.post("/health/llm/test", summary="Test LLM connection")
+@llm_router.post("/health/llm/test", summary="Test LLM connection")
 async def test_llm_connection(
-    _principal: Principal = Depends(get_current_principal),
+    _principal: Principal = Depends(require_own_org_permission(Permission.ORG_MANAGE_API_KEYS)),
 ) -> dict[str, Any]:
+    """Dispatches a real (billed) LLM call, so it is limited to org admins and sits behind
+    the org rate limiter (`router.py`)."""
     """Test LLM connectivity by dispatching a lightweight prompt and returning latency."""
     settings = get_settings()
     client = LLMClient(settings=settings)
@@ -95,7 +103,7 @@ async def test_llm_connection(
         return {
             "status": "ok",
             "latency_ms": latency_ms,
-            "model": settings.llm_model,
+            "model": active_llm_model(settings),
             "tokens": token_count,
             "payload": result,
         }
@@ -105,7 +113,7 @@ async def test_llm_connection(
         return {
             "status": "error",
             "latency_ms": latency_ms,
-            "model": settings.llm_model,
+            "model": active_llm_model(settings),
             "error": str(exc),
         }
 

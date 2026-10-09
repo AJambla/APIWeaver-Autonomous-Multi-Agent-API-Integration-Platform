@@ -155,9 +155,10 @@ class Settings(BaseSettings):
     # Explicit Docker daemon URL (e.g. "unix:///var/run/docker.sock" or "tcp://docker-dind:2375").
     # If None, docker.from_env() resolves from DOCKER_HOST or local default.
     docker_host: str | None = None
-    sandbox_image: str = (
-        "apiweaver/sandbox-python:latest@sha256:8229daed51eef8322c816159d0d25bcde92c259087bd5c86df9b98e47a3f2b74"
-    )
+    # Built from infra/docker/Dockerfile.sandbox-python (Python + httpx + pydantic, which
+    # generated clients import). Production should pin the CI-published image by digest,
+    # e.g. ghcr.io/<owner>/<repo>/sandbox-python@sha256:...
+    sandbox_image: str = "apiweaver/sandbox-python:latest"
     sandbox_node_image: str = (
         "node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402"
     )
@@ -165,7 +166,20 @@ class Settings(BaseSettings):
     sandbox_max_memory: str = "1Gi"
     sandbox_timeout_seconds: int = 300
     sandbox_pids_limit: int = 64
-    sandbox_network_enabled: bool = True
+    # Hermetic by default: sandbox-mode tests answer the generated client from a mock and
+    # need no network. Turning this on gives every sandbox container network access.
+    sandbox_network_enabled: bool = False
+    # `environment="live"` tests call the real target API and therefore need network.
+    # Off unless the deployment opts in; targets are still vetted against private,
+    # loopback and metadata addresses unless `sandbox_allow_private_targets` is set.
+    sandbox_live_network_enabled: bool = False
+    sandbox_allow_private_targets: bool = False
+    # Docker network for networked sandboxes (None = the daemon's default bridge), and
+    # an HTTP(S) proxy to force their egress through (recommended: an allow-listing proxy).
+    sandbox_network: str | None = None
+    sandbox_egress_proxy: str | None = None
+    sandbox_log_tail_lines: int = 2000
+    sandbox_log_max_bytes: int = 256 * 1024
     sandbox_read_only_rootfs: bool = True
 
     # --- Observability (recommended) ------------------------------------------
@@ -177,6 +191,9 @@ class Settings(BaseSettings):
 
     # --- Uploads (Security.md §10) --------------------------------------------
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, description="50MB default")
+    # Spec import by URL is fetched server-side; private/loopback targets are refused
+    # unless this is set (trusted local development only).
+    spec_fetch_allow_private_targets: bool = False
 
     # --- Proxy topology (audit L1) --------------------------------------------
     # How many reverse proxies sit between the internet and this process, each of which
@@ -195,6 +212,13 @@ class Settings(BaseSettings):
     # In production, require Celery workers for async workflows rather than
     # silently running on API process BackgroundTasks (fail-loud queueing).
     require_celery_worker: bool = False
+    # Where workflow runs execute: "celery" (the agent worker) or "inline" (FastAPI
+    # BackgroundTasks; development only). Production always uses the worker.
+    workflow_dispatch: Literal["inline", "celery"] = "inline"
+    # Hard/soft limits for one whole workflow run inside the worker. Stage tasks keep the
+    # shorter Celery defaults; a full pipeline (LLM codegen + sandbox tests + repairs)
+    # routinely needs more than five minutes.
+    workflow_task_time_limit_seconds: int = 3600
     # Workflow progress percentage mapping by node name
     workflow_node_progress_map: dict[str, int] = Field(
         default_factory=lambda: dict(DEFAULT_WORKFLOW_NODE_PROGRESS)

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from pathlib import Path
 from pydantic import ValidationError
 
 from app.core.config import Settings
@@ -279,8 +279,8 @@ def test_migration_runner_script(monkeypatch) -> None:
     assert executed[0][1] == "head"
 
 
-async def test_llm_health_returns_config(client: AsyncClient) -> None:
-    response = await client.get("/api/v1/health/llm")
+async def test_llm_health_returns_config(client: AsyncClient, auth_headers: dict[str, str]) -> None:
+    response = await client.get("/api/v1/health/llm", headers=auth_headers)
     assert response.status_code == 200
     data = response.json()
     assert "provider" in data

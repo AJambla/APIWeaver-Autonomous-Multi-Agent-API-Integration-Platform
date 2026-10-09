@@ -7,8 +7,7 @@ import type {
 {% for resource, endpoints in resources.items() %}
 {% for ep in endpoints %}
 {% if ep.get('request_schema') %}
-{% set op_id = ep.get('operationId', ep.path.replace('/', '_').replace('{', '').replace('}', '')) %}
-  {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request,
+  {{ ep.model_stem }}Request,
 {% endif %}
 {% endfor %}
 {% endfor %}
@@ -24,10 +23,59 @@ export class APIWeaverError extends Error {
   }
 }
 
+export class BadRequestError extends APIWeaverError {
+  constructor(message = "Bad request") {
+    super(message, 400);
+    this.name = "BadRequestError";
+  }
+}
+
 export class AuthenticationError extends APIWeaverError {
   constructor(message = "Authentication failed") {
     super(message, 401);
     this.name = "AuthenticationError";
+  }
+}
+
+export class UnauthorizedError extends APIWeaverError {
+  constructor(message = "Unauthorized") {
+    super(message, 401);
+    this.name = "UnauthorizedError";
+  }
+}
+
+export class ForbiddenError extends APIWeaverError {
+  constructor(message = "Forbidden") {
+    super(message, 403);
+    this.name = "ForbiddenError";
+  }
+}
+
+export class NotFoundError extends APIWeaverError {
+  constructor(message = "Not found") {
+    super(message, 404);
+    this.name = "NotFoundError";
+  }
+}
+
+export class MethodNotAllowedError extends APIWeaverError {
+  constructor(message = "Method not allowed") {
+    super(message, 405);
+    this.name = "MethodNotAllowedError";
+  }
+}
+
+export class ConflictError extends APIWeaverError {
+  constructor(message = "Conflict") {
+    super(message, 409);
+    this.name = "ConflictError";
+  }
+}
+
+export class ValidationError extends APIWeaverError {
+  constructor(message = "Validation error") {
+    super(message, 422);
+    this.name = "ValidationError";
   }
 }
 
@@ -48,20 +96,6 @@ export class ServerError extends APIWeaverError {
   }
 }
 
-export class NotFoundError extends APIWeaverError {
-  constructor(message = "Not found") {
-    super(message, 404);
-    this.name = "NotFoundError";
-  }
-}
-
-export class ValidationError extends APIWeaverError {
-  constructor(message = "Validation error") {
-    super(message, 422);
-    this.name = "ValidationError";
-  }
-}
-
 export interface ClientConfig {
   baseUrl?: string;
   apiKey?: string;
@@ -69,15 +103,15 @@ export interface ClientConfig {
   maxRetries?: number;
 }
 
-export class {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }} {
+export class {{ client_class_name }} {
   private baseUrl: string;
   private apiKey?: string;
   private timeout: number;
   private maxRetries: number;
 
   constructor(config: ClientConfig = {}) {
-    this.baseUrl = config.baseUrl || process.env.{{ title.upper().replace(' ', '_').replace('-', '_') }}_BASE_URL || "{{ base_url }}";
-    this.apiKey = config.apiKey || process.env.{{ title.upper().replace(' ', '_').replace('-', '_') }}_API_KEY;
+    this.baseUrl = config.baseUrl || process.env[{{ (env_prefix ~ '_BASE_URL') | lit }}] || {{ base_url | lit }};
+    this.apiKey = config.apiKey || process.env[{{ (env_prefix ~ '_API_KEY') | lit }}];
     this.timeout = config.timeout || 30000;
     this.maxRetries = config.maxRetries || 3;
   }
@@ -89,6 +123,7 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
   private getHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      "Accept": "application/json",
     };
     if (this.apiKey) {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
@@ -109,7 +144,14 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
-        const url = new URL(path, this.baseUrl);
+        let url: URL;
+        if (path.startsWith("http://") || path.startsWith("https://")) {
+          url = new URL(path);
+        } else {
+          const cleanBase = this.baseUrl.replace(/\/+$/, "");
+          const cleanPath = path.startsWith("/") ? path : `/${path}`;
+          url = new URL(`${cleanBase}${cleanPath}`);
+        }
         if (options.params) {
           Object.entries(options.params).forEach(([key, value]) => {
             if (value !== undefined && value !== null) {
@@ -144,19 +186,49 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
           throw new ServerError(`Server error: ${response.status}`, response.status);
         }
 
-        const data = await response.json();
+        const contentType = response.headers.get("content-type") || "";
+        let data: any = null;
+        if (contentType.includes("application/json")) {
+          try {
+            data = await response.json();
+          } catch {
+            data = null;
+          }
+        } else {
+          try {
+            data = await response.text();
+          } catch {
+            data = null;
+          }
+        }
 
         if (!response.ok) {
+          const detail = typeof data === "object" && data !== null
+            ? (data.detail || data.message || JSON.stringify(data))
+            : (data || `Request failed with status ${response.status}`);
+
+          if (response.status === 400) {
+            throw new BadRequestError(detail);
+          }
           if (response.status === 401) {
-            throw new AuthenticationError();
+            throw new AuthenticationError(detail);
+          }
+          if (response.status === 403) {
+            throw new ForbiddenError(detail);
           }
           if (response.status === 404) {
-            throw new NotFoundError();
+            throw new NotFoundError(detail);
+          }
+          if (response.status === 405) {
+            throw new MethodNotAllowedError(detail);
+          }
+          if (response.status === 409) {
+            throw new ConflictError(detail);
           }
           if (response.status === 422) {
-            throw new ValidationError();
+            throw new ValidationError(detail);
           }
-          throw new APIWeaverError(data?.detail || "Request failed", response.status);
+          throw new APIWeaverError(detail, response.status);
         }
 
         return { data, response };
@@ -181,7 +253,7 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
   {% set method = ep.method.lower() %}
   {% set path = ep.path %}
   {% set summary = ep.summary or path %}
-  {% set op_id = ep.get('operationId', path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
+  {% set op_id = ep.operationId %}
 
   async {{ op_id }}(
     {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
@@ -191,14 +263,14 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
     {{ param.name }}?: {{ param.type | ts_type }},
     {% endfor %}
     {% if ep.get('request_schema') %}
-    body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | Record<string, unknown>,
+    body?: {{ ep.model_stem }}Request | Record<string, unknown>,
     {% endif %}
   ): Promise<{ data: unknown; response: Response }> {
     /** {{ summary }}. */
-    let url = "{{ path }}";
+    let url = {{ path | lit }};
     {% for param in ep.get('parameters', []) %}
     {% if param.location == 'path' %}
-    url = url.replace("{{ '{' + param.name + '}' }}", String({{ param.name }}));
+    url = url.replace({{ param.path_token | lit }}, encodeURIComponent(String({{ param.name }})));
     {% endif %}
     {% endfor %}
 
@@ -206,14 +278,14 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
     {% for param in ep.get('parameters', []) %}
     {% if param.location == 'query' %}
     {% if param.required %}
-    params["{{ param.name }}"] = String({{ param.name }});
+    params[{{ param.wire_name | lit }}] = Array.isArray({{ param.name }}) ? {{ param.name }}.join(",") : String({{ param.name }});
     {% else %}
-    if ({{ param.name }} !== undefined) params["{{ param.name }}"] = String({{ param.name }});
+    if ({{ param.name }} !== undefined) params[{{ param.wire_name | lit }}] = Array.isArray({{ param.name }}) ? {{ param.name }}.join(",") : String({{ param.name }});
     {% endif %}
     {% endif %}
     {% endfor %}
 
-    return this.request("{{ method.upper() }}", url, {
+    return this.request({{ method.upper() | lit }}, url, {
       params,
       {% if ep.get('request_schema') %}
       body: body,
@@ -228,7 +300,7 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
 // Convenience functions
 {% for resource, endpoints in resources.items() %}
 {% for ep in endpoints %}
-{% set op_id = ep.get('operationId', ep.path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
+{% set op_id = ep.operationId %}
 export async function {{ op_id }}(
   {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
   {{ param.name }}: {{ param.type | ts_type }},
@@ -237,11 +309,11 @@ export async function {{ op_id }}(
   {{ param.name }}?: {{ param.type | ts_type }},
   {% endfor %}
   {% if ep.get('request_schema') %}
-  body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | Record<string, unknown>,
+  body?: {{ ep.model_stem }}Request | Record<string, unknown>,
   {% endif %}
-  client?: {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}
+  client?: {{ client_class_name }}
 ): Promise<{ data: unknown; response: Response }> {
-  const c = client || new {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}();
+  const c = client || new {{ client_class_name }}();
   return c.{{ op_id }}(
     {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
     {{ param.name }},
@@ -258,4 +330,4 @@ export async function {{ op_id }}(
 {% endfor %}
 {% endfor %}
 
-export { {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }} as Client };
+export { {{ client_class_name }} as Client };

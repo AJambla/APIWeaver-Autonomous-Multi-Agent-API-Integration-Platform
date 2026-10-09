@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
 from app.models.codegen import CodeGenerationRun, GeneratedFile
-from app.models.spec import APISpec, Endpoint, EndpointParameter
+from app.models.spec import APISpec, Endpoint
 from app.models.testing import TestResult, TestRun
 from app.models.versioning import ArtifactVersion
 from app.models.workflow import WorkflowRun

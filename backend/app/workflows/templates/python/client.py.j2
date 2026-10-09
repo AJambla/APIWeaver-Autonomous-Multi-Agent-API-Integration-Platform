@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
-from urllib.parse import urljoin
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel
@@ -27,8 +27,43 @@ class APIWeaverError(Exception):
     pass
 
 
+class BadRequestError(APIWeaverError):
+    """Bad request (400)."""
+    pass
+
+
 class AuthenticationError(APIWeaverError):
-    """Authentication failed."""
+    """Authentication failed (401)."""
+    pass
+
+
+class UnauthorizedError(APIWeaverError):
+    """Unauthorized (401)."""
+    pass
+
+
+class ForbiddenError(APIWeaverError):
+    """Forbidden (403)."""
+    pass
+
+
+class NotFoundError(APIWeaverError):
+    """Resource not found (404)."""
+    pass
+
+
+class MethodNotAllowedError(APIWeaverError):
+    """Method not allowed (405)."""
+    pass
+
+
+class ConflictError(APIWeaverError):
+    """Conflict (409)."""
+    pass
+
+
+class ValidationError(APIWeaverError):
+    """Request validation error (422)."""
     pass
 
 
@@ -44,17 +79,7 @@ class ServerError(APIWeaverError):
     pass
 
 
-class NotFoundError(APIWeaverError):
-    """Resource not found (404)."""
-    pass
-
-
-class ValidationError(APIWeaverError):
-    """Request validation error (422)."""
-    pass
-
-
-class {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}:
+class {{ client_class_name }}:
     """Async client for {{ title }} API."""
 
     def __init__(
@@ -65,8 +90,8 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
         max_retries: int = 3,
         **kwargs: Any,
     ) -> None:
-        self.base_url = base_url or os.getenv("{{ title.upper().replace(' ', '_').replace('-', '_') }}_BASE_URL", "{{ base_url }}")
-        self.api_key = api_key or os.getenv("{{ title.upper().replace(' ', '_').replace('-', '_') }}_API_KEY")
+        self.base_url = base_url or os.getenv({{ (env_prefix ~ '_BASE_URL') | lit }}, {{ base_url | lit }})
+        self.api_key = api_key or os.getenv({{ (env_prefix ~ '_API_KEY') | lit }})
         self.timeout = timeout
         self.max_retries = max_retries
         self._client: Optional[httpx.AsyncClient] = None
@@ -74,7 +99,10 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
     @asynccontextmanager
     async def _get_client(self) -> AsyncIterator[httpx.AsyncClient]:
         if self._client is None or self._client.is_closed:
-            headers = {"Content-Type": "application/json"}
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
             self._client = httpx.AsyncClient(
@@ -93,7 +121,7 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
             await self._client.aclose()
             self._client = None
 
-    async def __aenter__(self) -> "{{ title.replace(' ', '').replace('-', '') }}Client":
+    async def __aenter__(self) -> "{{ client_class_name }}":
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -110,6 +138,12 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
     ) -> httpx.Response:
         """Make an HTTP request with retry logic."""
         last_exception = None
+        req_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if headers:
+            req_headers.update(headers)
 
         for attempt in range(self.max_retries + 1):
             async with self._get_client() as client:
@@ -119,7 +153,7 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
                         url=path,
                         params=params,
                         json=json,
-                        headers=headers,
+                        headers=req_headers,
                     )
 
                     # Handle rate limiting with retry
@@ -157,7 +191,7 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
     {% set method = ep.method.lower() %}
     {% set path = ep.path %}
     {% set summary = ep.summary or path %}
-    {% set op_id = ep.get('operationId', path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
+    {% set op_id = ep.operationId %}
 
     async def {{ op_id }}(
         self,
@@ -168,14 +202,14 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
         {{ param.name }}: Optional[{{ param.type | py_type }}] = None,
         {% endfor %}
         {% if ep.get('request_schema') %}
-        body: Optional[{{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | dict[str, Any]] = None,
+        body: Optional[{{ ep.model_stem }}Request | dict[str, Any]] = None,
         {% endif %}
     ) -> httpx.Response:
         """{{ summary }}."""
-        url = "{{ path }}"
+        url = {{ path | lit }}
         {% for param in ep.get('parameters', []) %}
         {% if param.location == 'path' %}
-        url = url.replace("{{ '{' + param.name + '}' }}", str({{ param.name }}))
+        url = url.replace({{ param.path_token | lit }}, quote(str({{ param.name }}), safe=""))
         {% endif %}
         {% endfor %}
 
@@ -183,9 +217,9 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
         {% for param in ep.get('parameters', []) %}
         {% if param.location == 'query' and not param.required %}
         if {{ param.name }} is not None:
-            params["{{ param.name }}"] = {{ param.name }}
+            params[{{ param.wire_name | lit }}] = {{ param.name }}
         {% elif param.location == 'query' and param.required %}
-        params["{{ param.name }}"] = {{ param.name }}
+        params[{{ param.wire_name | lit }}] = {{ param.name }}
         {% endif %}
         {% endfor %}
 
@@ -195,7 +229,7 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
         json_body = None
         {% endif %}
 
-        return await self._request("{{ method.upper() }}", url, params=params, json=json_body)
+        return await self._request({{ method.upper() | lit }}, url, params=params, json=json_body)
 
     {% endfor %}
     {% endfor %}
@@ -204,7 +238,7 @@ class {{ client_class_name | default(title.replace(' ', '').replace('-', '').rep
 # Convenience functions for common operations
 {% for resource, endpoints in resources.items() %}
 {% for ep in endpoints %}
-{% set op_id = ep.get('operationId', ep.path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
+{% set op_id = ep.operationId %}
 async def {{ op_id }}(
     {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
     {{ param.name }}: {{ param.type | py_type }},
@@ -213,12 +247,12 @@ async def {{ op_id }}(
     {{ param.name }}: Optional[{{ param.type | py_type }}] = None,
     {% endfor %}
     {% if ep.get('request_schema') %}
-    body: Optional[{{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | dict[str, Any]] = None,
+    body: Optional[{{ ep.model_stem }}Request | dict[str, Any]] = None,
     {% endif %}
-    *, client: Optional[{{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}] = None,
+    *, client: Optional[{{ client_class_name }}] = None,
 ) -> httpx.Response:
     """{{ ep.summary or ep.path }}."""
-    async with (client or {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}()) as c:
+    async with (client or {{ client_class_name }}()) as c:
         return await c.{{ op_id }}(
             {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
             {{ param.name }}={{ param.name }},
@@ -234,4 +268,4 @@ async def {{ op_id }}(
 {% endfor %}
 {% endfor %}
 
-Client = {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}
+Client = {{ client_class_name }}

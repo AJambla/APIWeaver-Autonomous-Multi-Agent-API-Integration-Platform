@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 
 import redis.asyncio as aioredis
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -261,11 +261,26 @@ async def login(
         )
 
     if not password_ok:
-        attempts = (user.failed_login_count or 0) + 1
+        # Incremented in the database, not read-modify-written in Python: parallel
+        # guesses each read the same count and so slipped past the lockout threshold.
+        attempts = await session.scalar(
+            update(User)
+            .where(User.id == user.id)
+            .values(failed_login_count=func.coalesce(User.failed_login_count, 0) + 1)
+            .returning(User.failed_login_count)
+            .execution_options(synchronize_session=False)
+        ) or 1
         locking = attempts >= settings.login_max_failed_attempts
-        user.failed_login_count = 0 if locking else attempts
         if locking:
-            user.locked_until = now + datetime.timedelta(minutes=settings.login_lockout_minutes)
+            await session.execute(
+                update(User)
+                .where(User.id == user.id)
+                .values(
+                    failed_login_count=0,
+                    locked_until=now + datetime.timedelta(minutes=settings.login_lockout_minutes),
+                )
+                .execution_options(synchronize_session=False)
+            )
         await audit_service.record(
             session,
             action=AuditAction.USER_LOGIN_FAILED,
@@ -386,11 +401,44 @@ async def refresh(
 
     user = await session.get(User, stored.user_id)
     if user is None:
-        # The user was deleted while the token was live.
+        # The user was deleted while the token was live. The revocation must be
+        # committed, not rolled back with the rejection.
         await _revoke_family(session, stored.family_id)
+        await _commit_before_raising(session)
         raise UnauthenticatedError("Refresh token is invalid.", code=ErrorCode.INVALID_CREDENTIALS)
 
-    stored.used_at = _utc_now()
+    # Claim the token atomically. Checking `used_at` above and then assigning it let two
+    # concurrent redemptions of one token both succeed (and both mint successors),
+    # defeating reuse detection; the conditional update lets exactly one win.
+    claimed = await session.execute(
+        update(RefreshToken)
+        .where(
+            RefreshToken.id == stored.id,
+            RefreshToken.used_at.is_(None),
+            RefreshToken.revoked_at.is_(None),
+        )
+        .values(used_at=_utc_now())
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        await _revoke_family(session, stored.family_id)
+        await audit_service.record(
+            session,
+            action=AuditAction.TOKEN_REUSE_DETECTED,
+            actor_type=ActorType.SYSTEM,
+            actor_user_id=stored.user_id,
+            resource_type="refresh_token_family",
+            resource_id=str(stored.family_id),
+            ip_address=context.ip_address,
+            user_agent=context.user_agent,
+            metadata={"revoked_family": True, "concurrent_redemption": True},
+        )
+        await _commit_before_raising(session)
+        raise UnauthenticatedError(
+            "Refresh token has already been used; the token family has been revoked. "
+            "Please sign in again.",
+            code=ErrorCode.TOKEN_REUSE_DETECTED,
+        )
 
     membership = await _primary_membership(session, user.id)
     org_id, org_role = membership if membership else (None, None)

@@ -164,6 +164,9 @@ def require_org_permission(
         if requirement.org_role is None:
             # A project-scoped permission cannot be enforced on an org route.
             raise ForbiddenError()
+        if principal.restricted_to_project_id is not None:
+            # Project-restricted keys never authorize organization-level actions.
+            raise ForbiddenError()
 
         actual = await resolve_org_role(session, principal, org_id)
         if not org_role_satisfies(actual, requirement.org_role):
@@ -290,6 +293,10 @@ async def assert_org_permission(
     (e.g. `POST /projects`, API.md §6.1)."""
     requirement = PERMISSIONS[permission]
     if requirement.org_role is None:
+        raise ForbiddenError()
+    if principal.restricted_to_project_id is not None:
+        # A key scoped to one project cannot act on the organization (create projects,
+        # manage keys, ...) whatever its creator's org role.
         raise ForbiddenError()
     actual = await resolve_org_role(session, principal, organization_id)
     if not org_role_satisfies(actual, requirement.org_role):

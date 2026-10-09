@@ -169,7 +169,7 @@ services:
         condition: service_completed_successfully
     networks:
       - apiweaver
-    command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4
+    command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4 -Q celery,dlq
     # No healthcheck, deliberately (`audit M10`). The previous one - `celery inspect ping` with
     # `timeout: 5s` - reported a healthy worker as unhealthy and leaked a process every poll.
     # Measured against a throwaway container of apiweaver/agent-worker:latest while the stack's

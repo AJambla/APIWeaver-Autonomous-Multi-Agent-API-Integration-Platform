@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../lib/auth-context';
-import { apiFetch } from '../lib/api';
-import { ApiSpec, Page, Project, SpecEndpoint } from '../lib/types';
+import { apiFetch, apiFetchAll, mapSettled } from '../lib/api';
+import { ApiSpec, Project, SpecEndpoint } from '../lib/types';
 import { NormalizedSpec, relativeTime, specFormat, specVersion, validationState } from '../lib/format';
 import {
   cardCls,
@@ -39,12 +39,14 @@ export const SpecsPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState('all');
 
   useEffect(() => {
-    if (!organizationId) return;
+    if (!organizationId) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
-    apiFetch<Page<Project>>(`/projects?limit=50&organization_id=${organizationId}`)
-      .then(async ({ data }) => {
-        const results = await Promise.allSettled(
-          data.map(async project => {
+    apiFetchAll<Project>(`/projects?limit=100&organization_id=${organizationId}`)
+      .then(async data => {
+        const results = await mapSettled(data, 4, async project => {
             const [spec, endpoints] = await Promise.allSettled([
               apiFetch<ApiSpec>(`/projects/${project.id}/spec`),
               apiFetch<SpecEndpoint[]>(`/projects/${project.id}/endpoints`),
@@ -55,8 +57,7 @@ export const SpecsPage: React.FC = () => {
               endpoints: endpoints.status === 'fulfilled' ? endpoints.value.length : 0,
               raw: spec.status === 'fulfilled' ? (spec.value.raw_normalized as NormalizedSpec) : null,
             };
-          }),
-        );
+        });
         if (!cancelled) setRows(results.filter(r => r.status === 'fulfilled').map(r => r.value));
       })
       .catch(err => !cancelled && setError(errorMessage(err)))

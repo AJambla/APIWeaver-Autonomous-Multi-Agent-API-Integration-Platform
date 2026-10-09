@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from typing import Any
-import pytest
+
 import httpx
+import pytest
 
 from app.core.config import Settings
 from app.services.github_service import (

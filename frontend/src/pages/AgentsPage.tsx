@@ -53,7 +53,10 @@ export const AgentsPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!organizationId) return;
+    if (!organizationId) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     apiFetch<Page<Project>>(`/projects?limit=25&organization_id=${organizationId}`)
       .then(async ({ data }) => {
@@ -103,7 +106,7 @@ export const AgentsPage: React.FC = () => {
             </div>
           </div>
         </div>
-        <Link to="/settings?section=llm" className={`${btnGhost} text-xs shrink-0 self-start sm:self-auto`}>
+        <Link to="/dashboard/settings?section=llm" className={`${btnGhost} text-xs shrink-0 self-start sm:self-auto`}>
           Test LLM Connection →
         </Link>
       </div>

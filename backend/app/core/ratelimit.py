@@ -30,7 +30,7 @@ from starlette.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.deps import get_current_principal, get_db, get_redis, select_client_ip
-from app.core.errors import ErrorCode, build_error_body
+from app.core.errors import ErrorCode, RateLimitExceededError, build_error_body
 from app.core.logging import get_logger
 from app.models.organization import Organization
 from app.rbac.policy import Principal
@@ -118,6 +118,9 @@ async def consume(redis_client: aioredis.Redis, identity: str, limit: int) -> Ve
     )
 
 
+_CREDENTIAL_PATH_PREFIXES = ("/api/v1/auth/", "/api/v1/github/callback")
+
+
 def _client_identity(request: Request) -> str:
     """Pre-auth identity: the API key's hash if present, else the client IP.
 
@@ -130,7 +133,11 @@ def _client_identity(request: Request) -> str:
     `get_settings()` is called directly because middleware gets no dependency injection;
     the process reads it once, so the cost is an `lru_cache` hit.
     """
-    if api_key := request.headers.get("x-api-key"):
+    # Credential endpoints never accept an API key, so they are always limited per IP:
+    # keying them on an arbitrary X-API-Key header let a caller mint a fresh bucket per
+    # request (any random value) and brute-force logins without limit.
+    is_credential_path = request.url.path.startswith(_CREDENTIAL_PATH_PREFIXES)
+    if not is_credential_path and (api_key := request.headers.get("x-api-key")):
         from app.core.security import hash_opaque_token
 
         return f"key:{hash_opaque_token(api_key)[:16]}"
@@ -206,11 +213,12 @@ async def enforce_org_rate_limit(
     # by background/workspace polling traffic.
     if path.endswith("/approve") or path.endswith("/cancel"):
         control_verdict = await consume(redis_client, f"org_control:{principal.organization_id}", 120)
-        if not control_verdict.allowed:
-            from app.core.errors import RateLimitError
-            raise RateLimitError("Workflow control rate limit exceeded", retry_after=WINDOW_SECONDS)
         for header, value in control_verdict.headers().items():
             response.headers[header] = value
+        if not control_verdict.allowed:
+            raise RateLimitExceededError(
+                control_verdict.retry_after, headers=control_verdict.headers()
+            )
         return
 
     org = await session.scalar(
@@ -237,6 +245,4 @@ async def enforce_org_rate_limit(
             path=request.url.path,
             limit=limit,
         )
-        from app.core.errors import RateLimitExceededError
-
         raise RateLimitExceededError(verdict.retry_after, headers=verdict.headers())

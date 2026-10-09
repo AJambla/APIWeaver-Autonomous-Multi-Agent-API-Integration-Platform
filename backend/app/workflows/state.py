@@ -30,6 +30,8 @@ class WorkflowState(TypedDict, total=False):
     # Input artifacts
     document_id: str | None
     raw_document_bytes: bytes | None
+    # Object-storage key of the uploaded document; the worker reloads bytes from here.
+    document_s3_key: str | None
     document_filename: str | None
     format_hint: str | None
     spec_persisted: bool | None
@@ -57,6 +59,8 @@ class WorkflowState(TypedDict, total=False):
     github_branch: str | None
     github_commit_message: str | None
     docker_image_name: str | None
+    # Set by `/approve` when an owner exports despite exhausted repairs.
+    export_override_approved: bool | None
 
     # Pipeline tracking
     current_node: str

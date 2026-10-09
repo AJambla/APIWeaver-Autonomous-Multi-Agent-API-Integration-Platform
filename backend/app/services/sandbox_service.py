@@ -1,17 +1,30 @@
 """Sandbox execution boundary for running generated client code.
 
-Provides a protocol, an in-memory mock implementation for tests, and a
-Docker-backed executor that enforces per-run resource quotas.
+Provides a protocol and a Docker-backed executor that runs each generated-client call
+in a short-lived, quota-enforced container.
+
+Two modes, chosen per executor:
+
+* **Hermetic** (default, `network_enabled=False`): the container has no network. The
+  runner answers the client's HTTP requests from a mock built from the spec and fails the
+  test if the request's method, path or required query parameters are wrong. This
+  verifies the generated code without touching any real API.
+* **Live** (`network_enabled=True`, opt-in via `SANDBOX_LIVE_NETWORK_ENABLED`): the call
+  goes to the target API. Callers must vet the target first (`assert_public_target`), and
+  production deployments should route egress through `SANDBOX_EGRESS_PROXY`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import io
+import ipaddress
 import json
 import os
 import re
+import secrets
 import shutil
+import socket
 import tarfile
 import tempfile
 import time
@@ -20,6 +33,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from app.core.config import Settings
 from app.core.logging import get_logger
@@ -51,408 +65,22 @@ class SandboxClient(Protocol):
     async def cleanup(self, *, project_id: uuid.UUID) -> None: ...
 
 
-
-# Marker the sandbox runner prints before its single-line JSON result. The host
-# scans stdout backwards for this prefix so client-side prints can't corrupt
-# result parsing.
+# Marker the sandbox runner prints before its nonce and single-line JSON result.
 _RESULT_PREFIX = "APIWEAVER_RESULT:"
 
 # Run as nobody inside the container: generated code is untrusted.
 _DOCKER_USER = "65534:65534"
 
-RUNNER_SOURCE = '''"""Sandbox runner: executes one generated-client call (stdlib only)."""
-import asyncio
-import importlib
-import json
-import os
-import sys
-import time
-import traceback
+# Every container and volume the executor creates carries these labels so orphans left
+# by a killed worker can be found and reaped (`reap_orphaned_sandboxes`).
+SANDBOX_LABEL = "io.apiweaver.sandbox"
+SANDBOX_CREATED_LABEL = "io.apiweaver.sandbox.created"
+_REAP_INTERVAL_SECONDS = 300
+_last_reap = 0.0
 
-
-async def _main() -> int:
-    payload_path = os.environ.get("APIWEAVER_PAYLOAD_PATH", "/sandbox/payload.json")
-    if "/sandbox" not in sys.path:
-        sys.path.insert(0, "/sandbox")
-    for root, dirs, _ in os.walk("/sandbox"):
-        if root not in sys.path:
-            sys.path.insert(0, root)
-    payload_dir = os.path.dirname(payload_path)
-    if payload_dir and payload_dir not in sys.path:
-        sys.path.insert(0, payload_dir)
-
-    with open(payload_path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-
-    module_name = payload["module_name"]
-    try:
-        module = importlib.import_module(module_name)
-    except ModuleNotFoundError:
-        base_name = module_name.split(".")[-1]
-        module = importlib.import_module(base_name)
-
-    client_classes = [
-        getattr(module, a)
-        for a in dir(module)
-        if isinstance(getattr(module, a), type) and "Client" in a
-    ]
-    if not client_classes:
-        client_classes = [
-            getattr(module, a)
-            for a in dir(module)
-            if isinstance(getattr(module, a), type)
-            and a not in ("BaseModel", "Exception", "APIWeaverError")
-            and not a.startswith("_")
-        ]
-
-    # Select the client class that implements the requested operation (or its variants)
-    op_id = payload.get("op_id", "")
-    op_norm = op_id.lower().replace("_", "").replace("-", "")
-    client_class = None
-    for cls in client_classes:
-        methods = {m.lower().replace("_", "").replace("-", "") for m in dir(cls) if not m.startswith("_")}
-        if op_norm in methods or hasattr(cls, op_id):
-            client_class = cls
-            break
-
-    # If no specific match, choose the client class with the most public methods
-    if client_class is None and client_classes:
-        client_class = max(
-            client_classes,
-            key=lambda c: len([m for m in dir(c) if not m.startswith("_") and callable(getattr(c, m, None))]),
-        )
-    if client_class is None:
-        raise RuntimeError(f"no client class found in module {payload['module_name']}")
-
-    # Credentials arrive via the APIWEAVER_API_KEY env var (never a file inside
-    # the container — Security.md §7); payload["api_key"] stays as a secondary
-    # source for hosts that pre-date the env-var channel.
-    import inspect
-    init_kwargs = {}
-    resolved_auth = os.environ.get("APIWEAVER_API_KEY") or payload.get("api_key")
-    try:
-        init_sig = inspect.signature(client_class.__init__)
-        params = init_sig.parameters
-        has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
-        if "base_url" in params or has_varkw:
-            init_kwargs["base_url"] = payload.get("base_url")
-        if "api_key" in params or has_varkw:
-            init_kwargs["api_key"] = resolved_auth
-        elif "token" in params:
-            init_kwargs["token"] = resolved_auth
-        elif "auth_token" in params:
-            init_kwargs["auth_token"] = resolved_auth
-        client = client_class(**init_kwargs)
-    except TypeError:
-        try:
-            client = client_class(base_url=payload.get("base_url"))
-        except TypeError:
-            client = client_class()
-
-    op_id = payload["op_id"]
-    operation = None
-    if hasattr(client, op_id):
-        operation = getattr(client, op_id)
-    else:
-        import re
-        snake = re.sub(r'(?<!^)(?=[A-Z])', '_', op_id).lower().replace('__', '_')
-        if hasattr(client, snake):
-            operation = getattr(client, snake)
-        else:
-            parts = op_id.split('_')
-            camel = parts[0] + ''.join(p.title() for p in parts[1:])
-            if hasattr(client, camel):
-                operation = getattr(client, camel)
-            else:
-                target_norm = op_id.lower().replace('_', '').replace('-', '')
-                for attr_name in dir(client):
-                    if attr_name.startswith('_'):
-                        continue
-                    if attr_name.lower().replace('_', '').replace('-', '') == target_norm:
-                        operation = getattr(client, attr_name)
-                        break
-
-    if operation is None:
-        available_ops = [m for m in dir(client) if not m.startswith('_') and callable(getattr(client, m, None))]
-        raise RuntimeError(f"method '{op_id}' not found on client. Available methods: {available_ops}")
-
-    request = payload.get("request") or {}
-    params = request.get("params") or {}
-    body = request.get("body")
-
-    params_normalized = {}
-    for k, v in params.items():
-        params_normalized[k] = v
-        params_normalized[k.lower().replace("_", "").replace("-", "")] = v
-        k_snake = re.sub(r'(?<!^)(?=[A-Z])', '_', k).lower()
-        params_normalized[k_snake] = v
-
-    started = time.perf_counter()
-    sig = inspect.signature(operation)
-    call_kwargs = {}
-    for p_name, p in sig.parameters.items():
-        if p.kind == inspect.Parameter.VAR_KEYWORD:
-            call_kwargs.update(params)
-            break
-        if p_name in params:
-            call_kwargs[p_name] = params[p_name]
-        else:
-            p_norm = p_name.lower().replace("_", "").replace("-", "")
-            if p_norm in params_normalized:
-                call_kwargs[p_name] = params_normalized[p_norm]
-            elif p_name in params_normalized:
-                call_kwargs[p_name] = params_normalized[p_name]
-
-    if "body" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-        if body is not None:
-            call_kwargs["body"] = body
-    else:
-        for body_param in ("payload", "data", "request"):
-            if body_param in sig.parameters and body is not None:
-                call_kwargs[body_param] = body
-                break
-
-    if asyncio.iscoroutinefunction(operation):
-        response = await operation(**call_kwargs)
-    else:
-        response = operation(**call_kwargs)
-        if asyncio.iscoroutine(response):
-            response = await response
-    latency_ms = int((time.perf_counter() - started) * 1000)
-
-    result = {
-        "status": "passed",
-        "status_code": None,
-        "latency_ms": latency_ms,
-        "response_snapshot": None,
-        "error": None,
-        "stack_trace": None,
-    }
-    try:
-        result["status_code"] = response.status_code
-    except AttributeError:
-        if isinstance(response, dict):
-            result["status_code"] = response.get("status_code") or response.get("status")
-    try:
-        snapshot = {"status_code": result.get("status_code"), "headers": dict(getattr(response, "headers", {}))}
-        if hasattr(response, "json"):
-            try:
-                snapshot["body"] = response.json()
-            except Exception:
-                snapshot["body"] = getattr(response, "text", None)
-        elif isinstance(response, dict):
-            snapshot["body"] = response
-        result["response_snapshot"] = snapshot
-    except Exception as snapshot_error:
-        result["response_snapshot"] = {"snapshot_error": str(snapshot_error)}
-
-    expected_status = payload.get("expected_status")
-    status_code = result.get("status_code")
-    is_success_code = status_code is not None and 200 <= status_code < 300
-    expected_is_2xx = expected_status is None or (isinstance(expected_status, int) and 200 <= expected_status < 300)
-
-    if expected_status is not None:
-        if expected_is_2xx:
-            if not is_success_code:
-                result["status"] = "failed"
-                result["error"] = f"Expected 2xx status, got {status_code}"
-        elif status_code != expected_status:
-            result["status"] = "failed"
-            result["error"] = f"Expected status {expected_status}, got {status_code}"
-    elif not is_success_code and status_code is not None:
-        result["status"] = "failed"
-        result["error"] = f"HTTP error status {status_code}"
-
-    close = getattr(client, "close", None)
-    if close is not None:
-        await close()
-
-    print("APIWEAVER_RESULT:" + json.dumps(result))
-    return 0
-
-
-def _run() -> int:
-    try:
-        return asyncio.run(_main())
-    except Exception as exc:
-        failure = traceback.format_exc()
-        error_msg = str(exc) if str(exc) else (failure.strip().splitlines()[-1] if failure else "Unknown error")
-        print("APIWEAVER_RESULT:" + json.dumps({
-            "status": "failed",
-            "status_code": None,
-            "latency_ms": 0,
-            "response_snapshot": None,
-            "error": error_msg,
-            "stack_trace": failure,
-        }))
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(_run())
-'''
-
-NODE_RUNNER_SOURCE = '''// Sandbox runner: executes one generated Node.js/TS client call.
-import fs from "node:fs";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
-
-const RESULT_PREFIX = "APIWEAVER_RESULT:";
-
-async function main() {
-    const payloadPath = process.env.APIWEAVER_PAYLOAD_PATH || "/sandbox/payload.json";
-    const payload = JSON.parse(fs.readFileSync(payloadPath, "utf-8"));
-
-    const relPath = payload.client_file || "client.ts";
-    const fullPath = path.resolve("/sandbox", relPath);
-    const fileUrl = pathToFileURL(fullPath).href;
-
-    const module = await import(fileUrl);
-
-    let ClientClass = null;
-    const clientClasses = [];
-    for (const [key, val] of Object.entries(module)) {
-        if (typeof val === "function" && (key.endsWith("Client") || key.toLowerCase().includes("client"))) {
-            clientClasses.push(val);
-        }
-    }
-    if (clientClasses.length === 0 && module.default && typeof module.default === "function") {
-        clientClasses.push(module.default);
-    }
-
-    const targetOpId = payload.op_id || "";
-    const opNorm = targetOpId.toLowerCase().replace(/[^a-z0-9]/g, "");
-    for (const cls of clientClasses) {
-        const protoMethods = Object.getOwnPropertyNames(cls.prototype || {}).map(m => m.toLowerCase().replace(/[^a-z0-9]/g, ""));
-        if (protoMethods.includes(opNorm)) {
-            ClientClass = cls;
-            break;
-        }
-    }
-    if (!ClientClass && clientClasses.length > 0) {
-        ClientClass = clientClasses.sort((a, b) =>
-            Object.getOwnPropertyNames(b.prototype || {}).length - Object.getOwnPropertyNames(a.prototype || {}).length
-        )[0];
-    }
-    if (!ClientClass) {
-        throw new Error(`no client class found in module ${relPath}`);
-    }
-
-    const apiKey = process.env.APIWEAVER_API_KEY || payload.api_key;
-    const client = new ClientClass({
-        baseUrl: payload.base_url,
-        apiKey: apiKey,
-    });
-
-    const opId = payload.op_id;
-    let operation = client[opId];
-    if (typeof operation !== "function") {
-        const camel = opId.replace(/_([a-z0-9])/gi, (_, c) => c.toUpperCase());
-        if (typeof client[camel] === "function") {
-            operation = client[camel];
-        }
-    }
-    if (typeof operation !== "function") {
-        const snake = opId.replace(/([A-Z])/g, "_$1").toLowerCase().replace(/^_/, "");
-        if (typeof client[snake] === "function") {
-            operation = client[snake];
-        }
-    }
-    if (typeof operation !== "function") {
-        const norm = opId.toLowerCase().replace(/[^a-z0-9]/g, "");
-        for (const [key, val] of Object.entries(client)) {
-            if (typeof val === "function" && key.toLowerCase().replace(/[^a-z0-9]/g, "") === norm) {
-                operation = val;
-                break;
-            }
-        }
-    }
-    if (typeof operation !== "function") {
-        const avail = Object.keys(client).filter(k => typeof client[k] === "function");
-        throw new Error(`method '${opId}' not found on client. Available methods: ${avail.join(", ")}`);
-    }
-
-    const request = payload.request || {};
-    const params = request.params || {};
-    const body = request.body;
-
-    const started = performance.now();
-    let response;
-    try {
-        response = await operation.call(client, { ...params, body });
-    } catch {
-        response = await operation.call(client, params, body);
-    }
-    const latencyMs = Math.round(performance.now() - started);
-
-    const extractStatusCode = (res) => {
-        if (res == null) return null;
-        if (typeof res.status === "number") return res.status;
-        if (typeof res.statusCode === "number") return res.statusCode;
-        if (typeof res.status_code === "number") return res.status_code;
-        return null;
-    };
-
-    const result = {
-        status: "passed",
-        status_code: extractStatusCode(response),
-        latency_ms: latencyMs,
-        response_snapshot: null,
-        error: null,
-        stack_trace: null,
-    };
-
-    if (response) {
-        if (typeof response.json === "function") {
-            try { result.response_snapshot = await response.json(); } catch {}
-        } else if (response.data !== undefined) {
-            result.response_snapshot = response.data;
-        } else {
-            result.response_snapshot = response;
-        }
-    }
-
-    const expectedStatus = payload.expected_status;
-    const isSuccess = result.status_code !== null && result.status_code >= 200 && result.status_code < 300;
-    const expectedIs2xx = !expectedStatus || (expectedStatus >= 200 && expectedStatus < 300);
-    if (result.status_code === null && !response) {
-        result.status = "failed";
-        result.error = "No response returned from client method";
-    } else if (expectedStatus) {
-        if (expectedIs2xx) {
-            if (!isSuccess) {
-                result.status = "failed";
-                result.error = `Expected 2xx status, got ${result.status_code}`;
-            }
-        } else if (result.status_code !== expectedStatus) {
-            result.status = "failed";
-            result.error = `Expected status ${expectedStatus}, got ${result.status_code}`;
-        }
-    } else if (!isSuccess && result.status_code !== null) {
-        result.status = "failed";
-        result.error = `HTTP error status ${result.status_code}`;
-    }
-
-    if (typeof client.close === "function") {
-        await client.close();
-    }
-
-    console.log(RESULT_PREFIX + JSON.stringify(result));
-    return 0;
-}
-
-main().catch((err) => {
-    console.log(RESULT_PREFIX + JSON.stringify({
-        status: "failed",
-        status_code: null,
-        latency_ms: 0,
-        response_snapshot: null,
-        error: String(err?.message || err),
-        stack_trace: String(err?.stack || ""),
-    }));
-    process.exit(1);
-});
-'''
+_RUNNER_DIR = Path(__file__).with_name("sandbox_runners")
+RUNNER_SOURCE = (_RUNNER_DIR / "runner.py").read_text(encoding="utf-8")
+NODE_RUNNER_SOURCE = (_RUNNER_DIR / "runner.mjs").read_text(encoding="utf-8")
 
 
 def _safe_workspace_target(workspace: Path, rel_path: str) -> Path | None:
@@ -499,22 +127,150 @@ def _memory_to_bytes(raw: str) -> int:
     return int(float(text))
 
 
-def _parse_runner_result(output: str) -> dict[str, Any] | None:
-    """Find the last sentinel-prefixed line in runner stdout."""
+class SandboxResultTampered(ValueError):
+    """More than one result line carried the run's nonce."""
+
+
+def _parse_runner_result(output: str, nonce: str | None = None) -> dict[str, Any] | None:
+    """Extract the runner's JSON result from container output.
+
+    With a `nonce`, only lines carrying it count, and exactly one must exist: the nonce
+    is removed from the environment before generated code runs, so a second line means
+    the output was forged. Without one (in-process tests), the last result line wins.
+    """
+    if nonce is not None:
+        marker = f"{_RESULT_PREFIX}{nonce}:"
+        matches = [line for line in output.splitlines() if line.startswith(marker)]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            raise SandboxResultTampered("sandbox output contained more than one result line")
+        return json.loads(matches[0][len(marker) :])
+
     for line in reversed(output.splitlines()):
         if line.startswith(_RESULT_PREFIX):
-            return json.loads(line[len(_RESULT_PREFIX) :])
+            rest = line[len(_RESULT_PREFIX) :]
+            if not rest.startswith("{"):
+                rest = rest.split(":", 1)[1] if ":" in rest else rest
+            return json.loads(rest)
     return None
+
+
+def _rewrite_ts_imports(content: str) -> str:
+    """Point relative TS imports at `.ts` files: the sandbox runs Node's type stripping."""
+    content = re.sub(r'''((?:from|import)\s+['"])(\.[^'"]*?)\.js(['"])''', r"\1\2.ts\3", content)
+    content = re.sub(r'''(import\s*\(\s*['"])(\.[^'"]*?)\.js(['"])''', r"\1\2.ts\3", content)
+    content = re.sub(
+        r'''((?:from|import)\s+['"])(\.[^'"]*?)(?<!\.ts)(?<!\.js)(?<!\.json)(['"])''', r"\1\2.ts\3", content
+    )
+    return re.sub(
+        r'''(import\s*\(\s*['"])(\.[^'"]*?)(?<!\.ts)(?<!\.js)(?<!\.json)(['"])''', r"\1\2.ts\3", content
+    )
+
+
+def _flatten_relative_python_imports(content: str) -> str:
+    """`from .models import x` -> `from models import x`: the sandbox imports top-level."""
+    content = re.sub(
+        r"^(from\s+)\.([a-zA-Z_][a-zA-Z0-9_]*\s+import)", r"\1\2", content, flags=re.MULTILINE
+    )
+    return re.sub(
+        r"^from\s+\.\s+import\s+([a-zA-Z_][a-zA-Z0-9_]*)", r"import \1", content, flags=re.MULTILINE
+    )
+
+
+def endpoint_path_regex(path: str) -> str:
+    """Regex matching a request path for `path`, after any base-URL prefix (`/v2`)."""
+    pieces = re.split(r"(\{[^}]*\})", path.rstrip("/") or "/")
+    body = "".join("[^/]+" if piece.startswith("{") else re.escape(piece) for piece in pieces)
+    return f"{body}/?$"
+
+
+def _is_public_address(address: str) -> bool:
+    ip = ipaddress.ip_address(address)
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+async def assert_public_target(url: str | None, *, allow_private: bool = False) -> None:
+    """Refuse live tests whose target resolves to a private, loopback or metadata address.
+
+    Live mode gives generated (LLM-written, spec-influenced) code network access; without
+    this check a spec's `servers[0].url` could aim it at the host, the cluster, or the
+    cloud metadata service (169.254.169.254).
+    """
+    parts = urlsplit(url or "")
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"live testing needs an absolute http(s) base URL, got {url!r}")
+    if allow_private:
+        return
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(parts.hostname, parts.port or 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"cannot resolve live test target {parts.hostname!r}: {exc}") from exc
+    blocked = sorted({info[4][0] for info in infos if not _is_public_address(info[4][0])})
+    if blocked:
+        raise ValueError(
+            f"live test target {parts.hostname!r} resolves to non-public address(es) {blocked}; "
+            "set SANDBOX_ALLOW_PRIVATE_TARGETS=true only for trusted local development"
+        )
+
+
+def reap_orphaned_sandboxes(docker_client: Any, *, max_age_seconds: int) -> int:
+    """Remove labelled sandbox containers and volumes older than `max_age_seconds`.
+
+    A worker killed mid-test (SIGKILL, Celery hard time limit) never reaches the
+    `finally` that removes its container; this is the backstop. Returns how many
+    objects were removed.
+    """
+    removed = 0
+    now = time.time()
+    containers = getattr(docker_client, "containers", None)
+    if containers is not None and hasattr(containers, "list"):
+        for container in containers.list(all=True, filters={"label": SANDBOX_LABEL}):
+            created = float((getattr(container, "labels", {}) or {}).get(SANDBOX_CREATED_LABEL, now))
+            if now - created > max_age_seconds:
+                try:
+                    container.remove(force=True)
+                    removed += 1
+                except Exception as exc:
+                    logger.warning("sandbox_reap_container_failed", error=str(exc))
+    volumes = getattr(docker_client, "volumes", None)
+    if volumes is not None and hasattr(volumes, "list"):
+        for volume in volumes.list(filters={"label": SANDBOX_LABEL}):
+            labels = (getattr(volume, "attrs", {}) or {}).get("Labels") or {}
+            created = float(labels.get(SANDBOX_CREATED_LABEL, now))
+            if now - created > max_age_seconds:
+                try:
+                    volume.remove(force=True)
+                    removed += 1
+                except Exception as exc:
+                    logger.warning("sandbox_reap_volume_failed", error=str(exc))
+    if removed:
+        logger.info("sandbox_orphans_reaped", count=removed)
+    return removed
+
+
+@dataclass(slots=True)
+class _ContainerOutcome:
+    exit_code: int
+    output: str
+    timed_out: bool = False
 
 
 class DockerSandboxExecutor:
     """Runs generated clients in a quota-enforced Docker container.
 
-    One short-lived container per execute_test call: the staged workspace is
-    bound read-only, capabilities are dropped, the network is disabled unless
-    explicitly enabled, and a hard wall-clock timeout kills hung containers
-    (a hung sandbox is recorded as a failed test, never an outage —
-    Architecture.md §277/§314).
+    One short-lived container per call: capabilities are dropped, the root filesystem is
+    read-only, the process runs as nobody with memory/CPU/PID limits, the network is off
+    unless live mode was requested, and a hard wall-clock timeout kills hung containers
+    (a hung sandbox is recorded as a failed test, never an outage — Architecture.md §277).
     """
 
     def __init__(
@@ -537,6 +293,17 @@ class DockerSandboxExecutor:
         self._language: str = "python"
         self._base_url: str | None = None
         self._api_key: str | None = None
+        self._images_checked: set[str] = set()
+
+    @property
+    def network_enabled(self) -> bool:
+        return self._network_enabled
+
+    @network_enabled.setter
+    def network_enabled(self, value: bool) -> None:
+        self._network_enabled = value
+
+    # --- Docker plumbing ------------------------------------------------------
 
     def _get_docker_client(self) -> Any:
         if self._docker_client is None:
@@ -556,28 +323,178 @@ class DockerSandboxExecutor:
             or bool(os.environ.get("DOCKER_CONTAINER"))
         )
 
+    def _ensure_image(self, docker_client: Any, image: str) -> None:
+        """Pull a missing image once: `containers.create` (DooD mode) never auto-pulls."""
+        if image in self._images_checked or not hasattr(docker_client, "images"):
+            return
+        from docker.errors import ImageNotFound
+
+        try:
+            docker_client.images.get(image)
+        except ImageNotFound:
+            logger.info("sandbox_image_pull", image=image)
+            docker_client.images.pull(image)
+        self._images_checked.add(image)
+
+    def _maybe_reap(self, docker_client: Any) -> None:
+        global _last_reap
+        now = time.time()
+        if now - _last_reap < _REAP_INTERVAL_SECONDS:
+            return
+        _last_reap = now
+        try:
+            reap_orphaned_sandboxes(
+                docker_client, max_age_seconds=max(self._settings.sandbox_timeout_seconds * 2, 600)
+            )
+        except Exception as exc:
+            logger.warning("sandbox_reap_failed", error=str(exc))
+
+    def _labels(self) -> dict[str, str]:
+        return {SANDBOX_LABEL: "true", SANDBOX_CREATED_LABEL: str(int(time.time()))}
+
+    def _network_options(self, environment: dict[str, str]) -> dict[str, Any]:
+        if not self._network_enabled:
+            return {"network_disabled": True}
+        options: dict[str, Any] = {"network_disabled": False}
+        if self._settings.sandbox_network:
+            options["network"] = self._settings.sandbox_network
+        proxy = self._settings.sandbox_egress_proxy
+        if proxy:
+            for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                environment[key] = proxy
+            environment["NODE_USE_ENV_PROXY"] = "1"
+        return options
+
     def _create_tar_archive(self, workspace: Path) -> io.BytesIO:
         """Create an in-memory tar archive of workspace files for container injection."""
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
-            for root, dirs, files in os.walk(workspace):
+            for root, _dirs, files in os.walk(workspace):
                 rel_dir = os.path.relpath(root, workspace)
                 if rel_dir != ".":
-                    norm_dir = rel_dir.replace("\\", "/")
-                    d_info = tarfile.TarInfo(name=norm_dir)
+                    d_info = tarfile.TarInfo(name=rel_dir.replace("\\", "/"))
                     d_info.type = tarfile.DIRTYPE
-                    d_info.mode = 0o777
+                    d_info.mode = 0o755
                     tar.addfile(d_info)
                 for f in files:
                     file_path = Path(root) / f
-                    rel_file = os.path.relpath(file_path, workspace).replace("\\", "/")
                     content = file_path.read_bytes()
-                    f_info = tarfile.TarInfo(name=rel_file)
+                    f_info = tarfile.TarInfo(
+                        name=os.path.relpath(file_path, workspace).replace("\\", "/")
+                    )
                     f_info.size = len(content)
-                    f_info.mode = 0o666
+                    f_info.mode = 0o644
                     tar.addfile(f_info, io.BytesIO(content))
         buf.seek(0)
         return buf
+
+    async def _run_container(
+        self, *, image: str, command: list[str], environment: dict[str, str]
+    ) -> _ContainerOutcome:
+        """Run one container to completion; always removes the container and volume."""
+        if self._workspace is None:
+            raise RuntimeError("sandbox workspace not prepared")
+        docker_client = await asyncio.to_thread(self._get_docker_client)
+        await asyncio.to_thread(self._maybe_reap, docker_client)
+        await asyncio.to_thread(self._ensure_image, docker_client, image)
+
+        memory = _memory_to_bytes(self._settings.sandbox_max_memory)
+        common: dict[str, Any] = dict(
+            image=image,
+            command=command,
+            environment=environment,
+            tmpfs={"/tmp": "size=64m"},
+            nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
+            mem_limit=memory,
+            # Equal to mem_limit: no swap on top of the memory quota.
+            memswap_limit=memory,
+            pids_limit=self._settings.sandbox_pids_limit,
+            cap_drop=["ALL"],
+            user=_DOCKER_USER,
+            read_only=self._settings.sandbox_read_only_rootfs,
+            security_opt=["no-new-privileges:true"],
+            labels=self._labels(),
+            **self._network_options(environment),
+        )
+
+        container = None
+        volume = None
+        try:
+            if self._is_containerized() and hasattr(docker_client, "volumes") and hasattr(
+                docker_client.containers, "create"
+            ):
+                # Docker-out-of-Docker: the daemon cannot see this container's filesystem,
+                # so the workspace travels as a tar archive into a fresh labelled volume.
+                volume = await asyncio.to_thread(docker_client.volumes.create, labels=self._labels())
+                container = await asyncio.to_thread(
+                    docker_client.containers.create,
+                    volumes={volume.name: {"bind": "/sandbox", "mode": "rw"}},
+                    **common,
+                )
+                archive = await asyncio.to_thread(self._create_tar_archive, self._workspace)
+                await asyncio.to_thread(container.put_archive, "/sandbox", archive)
+                await asyncio.to_thread(container.start)
+            else:
+                container = await asyncio.to_thread(
+                    docker_client.containers.run,
+                    volumes={str(self._workspace): {"bind": "/sandbox", "mode": "ro"}},
+                    detach=True,
+                    **common,
+                )
+
+            try:
+                wait_result = await asyncio.wait_for(
+                    asyncio.to_thread(container.wait),
+                    timeout=self._settings.sandbox_timeout_seconds,
+                )
+            except TimeoutError:
+                await asyncio.to_thread(container.kill)
+                return _ContainerOutcome(exit_code=1, output="", timed_out=True)
+
+            exit_code = wait_result.get("StatusCode", 0) if isinstance(wait_result, dict) else 0
+            logs = await asyncio.to_thread(
+                container.logs, stdout=True, stderr=True, tail=self._settings.sandbox_log_tail_lines
+            )
+            text = logs.decode("utf-8", errors="replace") if isinstance(logs, bytes) else str(logs)
+            # Keep the tail: the runner's result line is printed last.
+            limit = self._settings.sandbox_log_max_bytes
+            if len(text) > limit:
+                text = text[-limit:]
+            return _ContainerOutcome(exit_code=exit_code, output=text)
+        finally:
+            if container is not None:
+                try:
+                    await asyncio.to_thread(container.remove, force=True)
+                except Exception as rem_err:
+                    logger.warning("sandbox_container_remove_failed", error=str(rem_err))
+            if volume is not None:
+                try:
+                    await asyncio.to_thread(volume.remove, force=True)
+                except Exception as vol_err:
+                    logger.warning("sandbox_volume_remove_failed", error=str(vol_err))
+
+    # --- Workspace ------------------------------------------------------------
+
+    @staticmethod
+    def _new_workspace(project_id: Any) -> Path:
+        workspace = Path(tempfile.mkdtemp(prefix=f"apiweaver-sandbox-{project_id or 'run'}-"))
+        # mkdtemp is 0700 and owned by the worker; the container runs as uid 65534 and
+        # must be able to read the bind-mounted files (host mode).
+        workspace.chmod(0o755)
+        return workspace
+
+    @staticmethod
+    def _write_file(target: Path, content: str) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        for parent in target.parents:
+            try:
+                parent.chmod(0o755)
+            except OSError:
+                break
+            if parent.name.startswith("apiweaver-sandbox-"):
+                break
+        target.write_text(content, encoding="utf-8")
+        target.chmod(0o644)
 
     async def prepare(
         self,
@@ -600,7 +517,7 @@ class DockerSandboxExecutor:
         """Execute a standalone test file inside a quota-enforced Docker container."""
         started = time.perf_counter()
         if self._workspace is None:
-            self._workspace = Path(tempfile.mkdtemp(prefix=f"apiweaver-sandbox-{project_id or 'run'}-"))
+            self._workspace = await asyncio.to_thread(self._new_workspace, project_id)
 
         target = _safe_workspace_target(self._workspace, test_file)
         if target is None:
@@ -610,96 +527,20 @@ class DockerSandboxExecutor:
                 stderr=f"Unsafe test file path rejected: {test_file}",
                 duration_ms=int((time.perf_counter() - started) * 1000),
             )
-        target.parent.mkdir(parents=True, exist_ok=True)
         if test_file.endswith((".ts", ".tsx")):
-            test_code = re.sub(r'''((?:from|import)\s+['"])(\.[^'"]*?)\.js(['"])''', r'\1\2.ts\3', test_code)
-            test_code = re.sub(r'''(import\s*\(\s*['"])(\.[^'"]*?)\.js(['"])''', r'\1\2.ts\3', test_code)
-            test_code = re.sub(r'''((?:from|import)\s+['"])(\.[^'"]*?)(?<!\.ts)(?<!\.js)(?<!\.json)(['"])''', r'\1\2.ts\3', test_code)
-            test_code = re.sub(r'''(import\s*\(\s*['"])(\.[^'"]*?)(?<!\.ts)(?<!\.js)(?<!\.json)(['"])''', r'\1\2.ts\3', test_code)
-        target.write_text(test_code, encoding="utf-8")
+            test_code = _rewrite_ts_imports(test_code)
+        await asyncio.to_thread(self._write_file, target, test_code)
 
-        is_node = test_file.endswith((".ts", ".js", ".mjs"))
-        if is_node:
-            sandbox_img = self._settings.sandbox_node_image
-            sandbox_cmd = ["node", "--experimental-strip-types", f"/sandbox/{test_file}"]
+        if test_file.endswith((".ts", ".js", ".mjs")):
+            image = self._settings.sandbox_node_image
+            command = ["node", "--experimental-strip-types", f"/sandbox/{test_file}"]
         else:
-            sandbox_img = self._settings.sandbox_image
-            sandbox_cmd = ["python", f"/sandbox/{test_file}"]
+            image = self._settings.sandbox_image
+            command = ["python", "-P", f"/sandbox/{test_file}"]
 
-        environment = {
-            "PYTHONDONTWRITEBYTECODE": "1",
-        }
-        if env_vars:
-            environment.update(env_vars)
-
-        docker_client = self._get_docker_client()
-        container = None
-        volume = None
+        environment = {"PYTHONDONTWRITEBYTECODE": "1", **(env_vars or {})}
         try:
-            if self._is_containerized() and hasattr(docker_client, "volumes") and hasattr(docker_client.containers, "create"):
-                volume = await asyncio.to_thread(docker_client.volumes.create)
-                run_volumes = {volume.name: {"bind": "/sandbox", "mode": "rw"}}
-                container = await asyncio.to_thread(
-                    docker_client.containers.create,
-                    image=sandbox_img,
-                    command=sandbox_cmd,
-                    environment=environment,
-                    volumes=run_volumes,
-                    tmpfs={"/tmp": "size=64m"},
-                    nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
-                    mem_limit=_memory_to_bytes(self._settings.sandbox_max_memory),
-                    pids_limit=self._settings.sandbox_pids_limit,
-                    cap_drop=["ALL"],
-                    user=_DOCKER_USER,
-                    network_disabled=not self._network_enabled,
-                    read_only=self._settings.sandbox_read_only_rootfs,
-                    security_opt=["no-new-privileges:true"],
-                )
-                archive_buf = self._create_tar_archive(self._workspace)
-                await asyncio.to_thread(container.put_archive, "/sandbox", archive_buf)
-                await asyncio.to_thread(container.start)
-            else:
-                run_kwargs = dict(
-                    image=sandbox_img,
-                    command=sandbox_cmd,
-                    environment=environment,
-                    volumes={str(self._workspace): {"bind": "/sandbox", "mode": "ro"}},
-                    tmpfs={"/tmp": "size=64m"},
-                    nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
-                    mem_limit=_memory_to_bytes(self._settings.sandbox_max_memory),
-                    pids_limit=self._settings.sandbox_pids_limit,
-                    cap_drop=["ALL"],
-                    user=_DOCKER_USER,
-                    network_disabled=not self._network_enabled,
-                    read_only=self._settings.sandbox_read_only_rootfs,
-                    security_opt=["no-new-privileges:true"],
-                    detach=True,
-                )
-                container = await asyncio.to_thread(docker_client.containers.run, **run_kwargs)
-
-            try:
-                wait_result = await asyncio.wait_for(
-                    asyncio.to_thread(container.wait),
-                    timeout=self._settings.sandbox_timeout_seconds,
-                )
-            except TimeoutError:
-                await asyncio.to_thread(container.kill)
-                return SandboxResult(
-                    exit_code=1,
-                    stdout="",
-                    stderr=f"sandbox_timeout: exceeded {self._settings.sandbox_timeout_seconds}s",
-                    duration_ms=int((time.perf_counter() - started) * 1000),
-                )
-
-            exit_code = wait_result.get("StatusCode", 0) if isinstance(wait_result, dict) else 0
-            logs = await asyncio.to_thread(container.logs)
-            text = logs.decode("utf-8", errors="replace") if isinstance(logs, bytes) else str(logs)
-            return SandboxResult(
-                exit_code=exit_code,
-                stdout=text if exit_code == 0 else "",
-                stderr=text if exit_code != 0 else "",
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
+            outcome = await self._run_container(image=image, command=command, environment=environment)
         except Exception as exc:
             return SandboxResult(
                 exit_code=1,
@@ -707,17 +548,35 @@ class DockerSandboxExecutor:
                 stderr=str(exc),
                 duration_ms=int((time.perf_counter() - started) * 1000),
             )
-        finally:
-            if container is not None:
-                try:
-                    await asyncio.to_thread(container.remove, force=True)
-                except Exception as rem_err:
-                    logger.warning("sandbox_container_remove_failed", error=str(rem_err))
-            if volume is not None:
-                try:
-                    await asyncio.to_thread(volume.remove, force=True)
-                except Exception as vol_err:
-                    logger.warning("sandbox_volume_remove_failed", error=str(vol_err))
+        if outcome.timed_out:
+            return SandboxResult(
+                exit_code=1,
+                stdout="",
+                stderr=f"sandbox_timeout: exceeded {self._settings.sandbox_timeout_seconds}s",
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+        return SandboxResult(
+            exit_code=outcome.exit_code,
+            stdout=outcome.output if outcome.exit_code == 0 else "",
+            stderr=outcome.output if outcome.exit_code != 0 else "",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+    def _stage(self, project_id: Any, files: dict[str, str]) -> Path:
+        workspace = self._new_workspace(project_id)
+        for rel_path, content in files.items():
+            target = _safe_workspace_target(workspace, rel_path)
+            if target is None:
+                logger.warning("sandbox_path_rejected", path=rel_path)
+                continue
+            if rel_path.endswith(".py"):
+                content = _flatten_relative_python_imports(content)
+            elif rel_path.endswith((".ts", ".tsx")):
+                content = _rewrite_ts_imports(content)
+            self._write_file(target, content)
+        self._write_file(workspace / "runner.py", RUNNER_SOURCE)
+        self._write_file(workspace / "runner.mjs", NODE_RUNNER_SOURCE)
+        return workspace
 
     async def load(
         self,
@@ -729,30 +588,16 @@ class DockerSandboxExecutor:
         language: str | None = None,
     ) -> None:
         """Stage generated files into a host workspace the container will bind."""
+        # A second load must not leak the first workspace.
+        await self.cleanup()
         self._base_url = base_url
         self._api_key = api_key
-        workspace = Path(tempfile.mkdtemp(prefix=f"apiweaver-sandbox-{project_id or 'run'}-"))
-        for rel_path, content in files.items():
-            target = _safe_workspace_target(workspace, rel_path)
-            if target is None:
-                logger.warning("sandbox_path_rejected", path=rel_path)
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if rel_path.endswith(".py"):
-                content = re.sub(r'^(from\s+)\.([a-zA-Z_][a-zA-Z0-9_]*\s+import)', r'\1\2', content, flags=re.MULTILINE)
-                content = re.sub(r'^from\s+\.\s+import\s+([a-zA-Z_][a-zA-Z0-9_]*)', r'import \1', content, flags=re.MULTILINE)
-            elif rel_path.endswith((".ts", ".tsx")):
-                content = re.sub(r'''((?:from|import)\s+['"])(\.[^'"]*?)\.js(['"])''', r'\1\2.ts\3', content)
-                content = re.sub(r'''(import\s*\(\s*['"])(\.[^'"]*?)\.js(['"])''', r'\1\2.ts\3', content)
-                content = re.sub(r'''((?:from|import)\s+['"])(\.[^'"]*?)(?<!\.ts)(?<!\.js)(?<!\.json)(['"])''', r'\1\2.ts\3', content)
-                content = re.sub(r'''(import\s*\(\s*['"])(\.[^'"]*?)(?<!\.ts)(?<!\.js)(?<!\.json)(['"])''', r'\1\2.ts\3', content)
-            target.write_text(content, encoding="utf-8")
+        self._workspace = await asyncio.to_thread(self._stage, project_id, files)
 
-        # Determine target language: explicit parameter or inferred from extensions
-        has_node_files = any(
-            rel_path.endswith((".ts", ".js", ".mjs")) for rel_path in files
-        )
-        if language == "node" or (language is None and has_node_files and not any(r.endswith(".py") for r in files)):
+        has_node_files = any(rel_path.endswith((".ts", ".js", ".mjs")) for rel_path in files)
+        if language == "node" or (
+            language is None and has_node_files and not any(r.endswith(".py") for r in files)
+        ):
             self._language = "node"
         else:
             self._language = "python"
@@ -762,12 +607,20 @@ class DockerSandboxExecutor:
         # First priority: dedicated sandbox/mock client if provided
         for rel_path in files:
             normalized = rel_path.replace("\\", "/").lower()
-            if self._language == "python" and normalized.endswith(".py") and ("sandbox" in normalized or "mock" in normalized) and "client" in normalized:
-                client_module = (
-                    rel_path.replace("\\", "/").removesuffix(".py").replace("/", ".")
-                )
+            if (
+                self._language == "python"
+                and normalized.endswith(".py")
+                and ("sandbox" in normalized or "mock" in normalized)
+                and "client" in normalized
+            ):
+                client_module = rel_path.replace("\\", "/").removesuffix(".py").replace("/", ".")
                 break
-            elif self._language == "node" and normalized.endswith((".ts", ".js", ".mjs")) and ("sandbox" in normalized or "mock" in normalized) and "client" in normalized:
+            if (
+                self._language == "node"
+                and normalized.endswith((".ts", ".js", ".mjs"))
+                and ("sandbox" in normalized or "mock" in normalized)
+                and "client" in normalized
+            ):
                 client_file = rel_path.replace("\\", "/")
                 break
 
@@ -776,11 +629,13 @@ class DockerSandboxExecutor:
             for rel_path in files:
                 normalized = rel_path.replace("\\", "/").lower()
                 if self._language == "python" and normalized.endswith(".py") and "client" in normalized:
-                    client_module = (
-                        rel_path.replace("\\", "/").removesuffix(".py").replace("/", ".")
-                    )
+                    client_module = rel_path.replace("\\", "/").removesuffix(".py").replace("/", ".")
                     break
-                elif self._language == "node" and normalized.endswith((".ts", ".js", ".mjs")) and "client" in normalized:
+                if (
+                    self._language == "node"
+                    and normalized.endswith((".ts", ".js", ".mjs"))
+                    and "client" in normalized
+                ):
                     client_file = rel_path.replace("\\", "/")
                     break
 
@@ -790,14 +645,39 @@ class DockerSandboxExecutor:
                     client_file = rel_path.replace("\\", "/")
                     break
 
-        (workspace / "runner.py").write_text(RUNNER_SOURCE, encoding="utf-8")
-        (workspace / "runner.mjs").write_text(NODE_RUNNER_SOURCE, encoding="utf-8")
-        self._workspace = workspace
         self._client_module = client_module
         self._client_file = client_file
 
+    # --- One endpoint call ----------------------------------------------------
+
+    @staticmethod
+    def _declared_names(endpoint: dict[str, Any]) -> set[str]:
+        names: set[str] = set()
+        for param in endpoint.get("parameters") or []:
+            if isinstance(param, dict) and param.get("name"):
+                names.add(re.sub(r"[^a-z0-9]", "", str(param["name"]).lower()))
+        return names
+
+    def _mock_for(
+        self, endpoint: dict[str, Any], fixture: dict[str, Any], method: str, path: str, expected: int
+    ) -> dict[str, Any]:
+        required_query = [
+            str(p["name"])
+            for p in endpoint.get("parameters") or []
+            if isinstance(p, dict) and p.get("name") and p.get("location", p.get("in")) == "query"
+            and p.get("required")
+        ]
+        return {
+            "method": method,
+            "path": path,
+            "path_regex": endpoint_path_regex(path),
+            "required_query": required_query,
+            "status": expected,
+            "body": fixture.get("mock_response", {}),
+        }
+
     async def execute_test(self, endpoint: dict[str, Any], fixture: dict[str, Any]) -> dict[str, Any]:
-        """Run one endpoint test in a fresh container; returns the mock result shape."""
+        """Run one endpoint test in a fresh container; returns the per-test result shape."""
         if isinstance(endpoint, list):
             endpoint = endpoint[0] if endpoint and isinstance(endpoint[0], dict) else {}
         elif not isinstance(endpoint, dict):
@@ -811,7 +691,7 @@ class DockerSandboxExecutor:
         method = str(endpoint.get("method") or "GET").upper()
         path = str(endpoint.get("path") or "/")
 
-        result = {
+        result: dict[str, Any] = {
             "endpoint_id": endpoint.get("id"),
             "method": method,
             "path": path,
@@ -827,10 +707,7 @@ class DockerSandboxExecutor:
             result["error"] = "Sandbox workspace not prepared"
             return result
 
-        docker_client = self._get_docker_client()
         started = time.perf_counter()
-        container = None
-        volume = None
         try:
             op_id = (
                 endpoint.get("operationId")
@@ -843,22 +720,45 @@ class DockerSandboxExecutor:
             elif not isinstance(request_data, dict):
                 request_data = {}
 
-            params_data = request_data.get("params", {}) or {}
-            if not isinstance(params_data, dict):
-                params_data = {}
+            params_data: dict[str, Any] = {}
+            for source in (request_data, fixture):
+                for sub_key in ("params", "path_params", "query_params", "path", "query"):
+                    val = source.get(sub_key)
+                    if isinstance(val, dict):
+                        params_data.update(val)
 
-            exp_status = fixture.get("expected_status") if isinstance(fixture, dict) else None
-            if exp_status is None:
+            # Flat fixture keys only count when they name a declared parameter: fixture
+            # metadata (`method`, `summary`, `status`, ...) must not become call arguments.
+            declared = self._declared_names(endpoint) | {
+                re.sub(r"[^a-z0-9]", "", name.lower()) for name in re.findall(r"\{([^}]+)\}", path)
+            }
+            for source in (request_data, fixture):
+                for key, value in source.items():
+                    if (
+                        not isinstance(value, dict | list)
+                        and re.sub(r"[^a-z0-9]", "", str(key).lower()) in declared
+                    ):
+                        params_data.setdefault(key, value)
+
+            body_data = request_data.get("body")
+            if body_data is None:
+                for b_key in ("data", "json", "formData"):
+                    if isinstance(request_data.get(b_key), dict | list):
+                        body_data = request_data[b_key]
+                        break
+
+            exp_status = fixture.get("expected_status")
+            if not isinstance(exp_status, int):
+                exp_status = None
                 resp_sc = endpoint.get("response_schemas") or endpoint.get("responses")
                 if isinstance(resp_sc, dict):
-                    for cs in resp_sc.keys():
+                    for code in resp_sc:
                         try:
-                            ci = int(cs)
-                            if 200 <= ci < 300:
-                                exp_status = ci
+                            if 200 <= int(code) < 300:
+                                exp_status = int(code)
                                 break
                         except (ValueError, TypeError):
-                            pass
+                            continue
                 if exp_status is None:
                     exp_status = 201 if method == "POST" else (204 if method == "DELETE" else 200)
 
@@ -867,17 +767,21 @@ class DockerSandboxExecutor:
                 "client_file": self._client_file,
                 "language": self._language,
                 "op_id": op_id,
-                "request": {
-                    "params": params_data,
-                    "body": request_data.get("body"),
-                },
+                "request": {"params": params_data, "body": body_data},
                 "expected_status": exp_status,
                 "base_url": self._base_url,
+                "mock": None
+                if self._network_enabled
+                else self._mock_for(endpoint, fixture, method, path, exp_status),
             }
-            (self._workspace / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
+            await asyncio.to_thread(
+                self._write_file, self._workspace / "payload.json", json.dumps(payload)
+            )
+            nonce = secrets.token_hex(16)
             environment = {
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "APIWEAVER_PAYLOAD_PATH": "/sandbox/payload.json",
+                "APIWEAVER_RESULT_NONCE": nonce,
             }
             if self._api_key:
                 # Runtime secret injection (Security.md §7): the credential travels
@@ -885,77 +789,30 @@ class DockerSandboxExecutor:
                 environment["APIWEAVER_API_KEY"] = self._api_key
 
             if self._language == "node":
-                sandbox_img = self._settings.sandbox_node_image
-                sandbox_cmd = ["node", "--experimental-strip-types", "/sandbox/runner.mjs"]
+                image = self._settings.sandbox_node_image
+                command = ["node", "--experimental-strip-types", "/sandbox/runner.mjs"]
             else:
-                sandbox_img = self._settings.sandbox_image
-                sandbox_cmd = ["python", "/sandbox/runner.py"]
+                image = self._settings.sandbox_image
+                command = ["python", "-P", "/sandbox/runner.py"]
 
-            if self._is_containerized() and hasattr(docker_client, "volumes") and hasattr(docker_client.containers, "create"):
-                volume = await asyncio.to_thread(docker_client.volumes.create)
-                run_volumes = {volume.name: {"bind": "/sandbox", "mode": "rw"}}
-                container = await asyncio.to_thread(
-                    docker_client.containers.create,
-                    image=sandbox_img,
-                    command=sandbox_cmd,
-                    environment=environment,
-                    volumes=run_volumes,
-                    tmpfs={"/tmp": "size=64m"},
-                    nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
-                    mem_limit=_memory_to_bytes(self._settings.sandbox_max_memory),
-                    pids_limit=self._settings.sandbox_pids_limit,
-                    cap_drop=["ALL"],
-                    user=_DOCKER_USER,
-                    network_disabled=not self._network_enabled,
-                    read_only=self._settings.sandbox_read_only_rootfs,
-                    security_opt=["no-new-privileges:true"],
-                )
-                archive_buf = self._create_tar_archive(self._workspace)
-                await asyncio.to_thread(container.put_archive, "/sandbox", archive_buf)
-                await asyncio.to_thread(container.start)
-            else:
-                run_kwargs = dict(
-                    image=sandbox_img,
-                    command=sandbox_cmd,
-                    environment=environment,
-                    volumes={str(self._workspace): {"bind": "/sandbox", "mode": "ro"}},
-                    tmpfs={"/tmp": "size=64m"},
-                    nano_cpus=_cpu_to_nano_cpus(self._settings.sandbox_max_cpu),
-                    mem_limit=_memory_to_bytes(self._settings.sandbox_max_memory),
-                    pids_limit=self._settings.sandbox_pids_limit,
-                    cap_drop=["ALL"],
-                    user=_DOCKER_USER,
-                    network_disabled=not self._network_enabled,
-                    read_only=self._settings.sandbox_read_only_rootfs,
-                    security_opt=["no-new-privileges:true"],
-                    detach=True,
-                )
-                container = await asyncio.to_thread(docker_client.containers.run, **run_kwargs)
-            try:
-                wait_result = await asyncio.wait_for(
-                    asyncio.to_thread(container.wait),
-                    timeout=self._settings.sandbox_timeout_seconds,
-                )
-            except TimeoutError:
-                await asyncio.to_thread(container.kill)
-                result["error"] = (
-                    f"sandbox_timeout: exceeded {self._settings.sandbox_timeout_seconds}s"
-                )
+            outcome = await self._run_container(image=image, command=command, environment=environment)
+            if outcome.timed_out:
+                result["error"] = f"sandbox_timeout: exceeded {self._settings.sandbox_timeout_seconds}s"
                 return result
 
-            exit_code = wait_result.get("StatusCode", 0) if isinstance(wait_result, dict) else 0
-            logs = await asyncio.to_thread(container.logs)
-            text = logs.decode("utf-8", errors="replace") if isinstance(logs, bytes) else str(logs)
-
-            parsed = _parse_runner_result(text)
+            try:
+                parsed = _parse_runner_result(outcome.output, nonce)
+            except SandboxResultTampered as exc:
+                result["error"] = f"sandbox result rejected: {exc}"
+                return result
             if parsed is not None:
                 for key in ("status", "status_code", "latency_ms", "response_snapshot", "error", "stack_trace"):
                     if key in parsed:
                         result[key] = parsed[key]
-                if result["latency_ms"] <= 0:
+                if not result["latency_ms"] or result["latency_ms"] <= 0:
                     result["latency_ms"] = int((time.perf_counter() - started) * 1000)
-            elif exit_code != 0:
-                result["error"] = f"sandbox exited with code {exit_code}: {text[-2000:]}"
+            elif outcome.exit_code != 0:
+                result["error"] = f"sandbox exited with code {outcome.exit_code}: {outcome.output[-2000:]}"
             else:
                 result["error"] = "sandbox produced no result"
             return result
@@ -963,22 +820,11 @@ class DockerSandboxExecutor:
             result["error"] = str(exc)
             result["stack_trace"] = traceback.format_exc()
             return result
-        finally:
-            if container is not None:
-                try:
-                    await asyncio.to_thread(container.remove, force=True)
-                except Exception as remove_error:
-                    logger.warning("sandbox_container_remove_failed", error=str(remove_error))
-            if volume is not None:
-                try:
-                    await asyncio.to_thread(volume.remove, force=True)
-                except Exception as vol_error:
-                    logger.warning("sandbox_volume_remove_failed", error=str(vol_error))
 
     async def cleanup(self, *, project_id: Any = None) -> None:
         if self._workspace is not None:
-            shutil.rmtree(self._workspace, ignore_errors=True)
-            self._workspace = None
+            workspace, self._workspace = self._workspace, None
+            await asyncio.to_thread(shutil.rmtree, workspace, True)
 
 
 def create_sandbox_client(settings: Settings) -> SandboxClient:

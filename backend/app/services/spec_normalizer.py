@@ -291,15 +291,17 @@ def _response_schemas(operation: dict[str, Any], document_format: str) -> dict[s
 
 
 def _openapi_base_url(data: dict[str, Any], document_format: str) -> str | None:
-    if document_format == DocumentFormat.OPENAPI:
-        servers = data.get("servers")
-        if isinstance(servers, list) and servers and isinstance(servers[0], dict):
-            return _string_or_none(servers[0].get("url"))
-        return None
+    servers = data.get("servers")
+    if isinstance(servers, list) and servers and isinstance(servers[0], dict):
+        url = _string_or_none(servers[0].get("url"))
+        if url:
+            return url
     host, base_path = data.get("host"), data.get("basePath", "")
-    schemes = data.get("schemes")
-    scheme = schemes[0] if isinstance(schemes, list) and schemes else "https"
-    return f"{scheme}://{host}{base_path}" if host else None
+    if host:
+        schemes = data.get("schemes")
+        scheme = schemes[0] if isinstance(schemes, list) and schemes else "https"
+        return f"{scheme}://{host}{base_path}"
+    return None
 
 
 def _normalize_postman(data: dict[str, Any]) -> NormalizedSpec:

@@ -45,10 +45,7 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://apiweaver:test@localhost:5432/apiweaver_test
       AUDIT_PG_TEST_URL: postgresql+asyncpg://apiweaver:test@localhost:5432/apiweaver_test
       REDIS_URL: redis://localhost:6379/0
-      APP_ENV: testing
-      SANDBOX_BACKEND: mock
-      JWT_PRIVATE_KEY_PATH: test-jwt-key.pem
-      JWT_PUBLIC_KEY_PATH: test-jwt-key.pub
+      APP_ENV: development
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -56,15 +53,24 @@ jobs:
           python-version: "3.12"
           cache: "pip"
       - name: Install Poetry
-        run: pip install poetry
+        run: pip install "poetry==2.5.1"
       - name: Install Dependencies
         run: poetry install --no-interaction
       - name: Run Ruff Linter
         run: poetry run ruff check .
       - name: Run Mypy Typecheck
         run: poetry run mypy app/ || true
+      - name: Apply Alembic Migrations To Postgres
+        # Proves the migration chain applies cleanly to a real Postgres 16, which the
+        # SQLite-backed unit suite cannot (partitioned tables, triggers, CHECKs).
+        env:
+          # Settings requires the paths; migrations never read the keys.
+          JWT_PRIVATE_KEY_PATH: unused.pem
+          JWT_PUBLIC_KEY_PATH: unused.pub
+        run: poetry run alembic upgrade head && poetry run alembic downgrade base && poetry run alembic upgrade head
       - name: Run Pytest Test Suite
-        run: poetry run pytest --cov=app --cov-report=xml
+        # `--strict-markers` + a coverage floor so an empty or skipped run cannot pass.
+        run: poetry run pytest --strict-markers --cov=app --cov-report=xml --cov-fail-under=70
 
   test-frontend:
     name: Frontend Tests & Quality Gates
@@ -76,7 +82,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@0a44ba7841725637a54e28284b46427f0d58bf66 # v4.0.4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
       - name: Install Dependencies
