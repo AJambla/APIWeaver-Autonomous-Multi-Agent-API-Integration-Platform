@@ -48,7 +48,8 @@ services:
     volumes:
       - ../../secrets:/app/secrets:ro
     env_file:
-      - ../../.env
+      - path: ../../.env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-apiweaver}:${POSTGRES_PASSWORD:-apiweaver}@postgres:5432/${POSTGRES_DB:-apiweaver}
     depends_on:
@@ -72,7 +73,8 @@ services:
       # Local-only JWT key mount. Production keys are mounted by the Vault Agent.
       - ../../secrets:/app/secrets:ro
     env_file:
-      - ../../.env
+      - path: ../../.env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-apiweaver}:${POSTGRES_PASSWORD:-apiweaver}@postgres:5432/${POSTGRES_DB:-apiweaver}
       REDIS_URL: redis://redis:6379/0
@@ -148,7 +150,8 @@ services:
       # Docker socket mount for isolated sandbox container execution.
       - /var/run/docker.sock:/var/run/docker.sock:ro
     env_file:
-      - ../../.env
+      - path: ../../.env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-apiweaver}:${POSTGRES_PASSWORD:-apiweaver}@postgres:5432/${POSTGRES_DB:-apiweaver}
       # Must match the API's REDIS_URL: run events are Redis Streams, which are per-DB,
