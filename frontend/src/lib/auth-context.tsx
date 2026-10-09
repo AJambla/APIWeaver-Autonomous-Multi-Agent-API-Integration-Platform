@@ -8,6 +8,9 @@ interface AuthContextType {
   organizations: OrganizationMembership[];
   selectOrganization: (orgId: string) => void;
   loading: boolean;
+  /** Set when the session could not be checked for a reason other than being rejected. */
+  connectionError: string | null;
+  retrySession: () => void;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, fullName?: string, organizationName?: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -21,6 +24,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [organizations, setOrganizations] = useState<OrganizationMembership[]>([]);
   const [organizationId, setOrganizationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [sessionCheck, setSessionCheck] = useState(0);
 
   const setCurrentUser = (data: MeResponse) => {
     setUser(data.user);
@@ -58,11 +63,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    setLoading(true);
+    setConnectionError(null);
     apiFetch<MeResponse>('/auth/me')
       .then(setCurrentUser)
-      .catch(clearSession)
+      .catch((error: Error & { status?: number }) => {
+        // Only a rejected session is a logout. A 5xx or a network blip at boot used to
+        // wipe the tokens too; now the user is offered a retry instead.
+        if (error.status === 401 || error.status === 403) clearSession();
+        else setConnectionError('We could not reach the server to restore your session.');
+      })
       .finally(() => setLoading(false));
-  }, []);
+  }, [sessionCheck]);
+
+  const retrySession = () => setSessionCheck((n) => n + 1);
 
   const login = async (email: string, password: string) => {
     const tokens = await apiFetch<AuthTokens>('/auth/login', {
@@ -121,6 +135,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         organizations,
         selectOrganization,
         loading,
+        connectionError,
+        retrySession,
         login,
         register,
         logout,

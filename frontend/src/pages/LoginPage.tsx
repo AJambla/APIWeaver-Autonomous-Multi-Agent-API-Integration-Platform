@@ -1,7 +1,16 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth-context';
 import { ArrowLeft, Lock, Mail, AlertCircle } from 'lucide-react';
+
+/** Where ProtectedRoute was sending the user before login, if it is an in-app path.
+ * Only a same-app absolute path is honoured ("/x", never "//host" or a full URL). */
+function returnPath(state: unknown): string {
+  const pathname = (state as { from?: { pathname?: unknown } } | null)?.from?.pathname;
+  return typeof pathname === 'string' && pathname.startsWith('/') && !pathname.startsWith('//')
+    ? pathname
+    : '/dashboard';
+}
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -10,6 +19,7 @@ export const LoginPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -17,7 +27,7 @@ export const LoginPage: React.FC = () => {
     setLoading(true);
     try {
       await login(email, password);
-      navigate('/dashboard');
+      navigate(returnPath(location.state), { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
     } finally {

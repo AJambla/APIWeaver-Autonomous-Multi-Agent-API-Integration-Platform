@@ -50,6 +50,34 @@ describe('apiFetch token refresh', () => {
 
     await expect(apiFetch('/thing')).rejects.toThrow('Not allowed');
   });
+
+  it('keeps the session when the refresh endpoint is merely unavailable', async () => {
+    vi.stubGlobal('location', { href: '/projects/x', origin: window.location.origin });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith('/auth/refresh') ? json({}, 503) : json({}, 401),
+      ),
+    );
+
+    await expect(apiFetch('/thing')).rejects.toThrow();
+    expect(sessionStorage.getItem('refresh_token')).toBe('refresh-1');
+    expect(window.location.href).toBe('/projects/x');
+  });
+
+  it('ends the session when the refresh token is rejected', async () => {
+    vi.stubGlobal('location', { href: '/projects/x', origin: window.location.origin });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith('/auth/refresh') ? json({}, 401) : json({}, 401),
+      ),
+    );
+
+    await expect(apiFetch('/thing')).rejects.toThrow();
+    expect(sessionStorage.getItem('refresh_token')).toBeNull();
+    expect(window.location.href).toBe('/login');
+  });
 });
 
 describe('resolveEndpoint', () => {
