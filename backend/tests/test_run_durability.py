@@ -138,3 +138,63 @@ async def test_the_reaper_fails_lost_and_never_claimed_runs_only(
         "re_queued": WorkflowStatus.QUEUED,
         "paused": WorkflowStatus.PAUSED_FOR_APPROVAL,
     }
+
+
+async def test_crash_recovery_restores_from_workflow_checkpoint(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch
+) -> None:
+    """When a worker restarts or redelivers a crashed run, it resumes from the latest checkpoint snapshot."""
+    from app.models.workflow import WorkflowCheckpoint
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator
+
+    run_id = await _run(session_factory, WorkflowStatus.QUEUED)
+
+    # Simulate a prior worker that saved a checkpoint for code_agent before crashing
+    snapshot_state = {
+        "workflow_run_id": str(run_id),
+        "stages": ["plan", "generate"],
+        "normalized_spec": {"endpoints": [{"method": "GET", "path": "/users"}]},
+        "plan_approved": True,
+        "generated_files": [{"path": "client.py", "content": "class Client: pass"}],
+        "current_node": "code_agent",
+        "total_tokens_used": 1500,
+        "errors": [],
+    }
+    async with session_factory() as session:
+        ckpt = WorkflowCheckpoint(
+            workflow_run_id=run_id,
+            node_name="code_agent",
+            state_snapshot=snapshot_state,
+        )
+        session.add(ckpt)
+        await session.commit()
+
+    code_agent_invoked: list[int] = []
+
+    async def mock_code_agent(state: Any) -> dict[str, Any]:
+        code_agent_invoked.append(1)
+        return {"generated_files": [{"path": "client.py", "content": "re-run"}]}
+
+    monkeypatch.setattr("app.workflows.agents.code_agent.run_code_agent", mock_code_agent)
+
+    # Executor receives the original initial_state that has empty generated_files
+    initial_state = {
+        "workflow_run_id": str(run_id),
+        "stages": ["plan", "generate"],
+        "normalized_spec": {"endpoints": [{"method": "GET", "path": "/users"}]},
+        "plan_approved": True,
+        "generated_files": [],
+        "total_tokens_used": 0,
+        "errors": [],
+    }
+
+    result = await LangGraphOrchestrator(session_factory).run(run_id, initial_state)
+
+    # It should NOT re-run code_agent because checkpoint already finished code_agent
+    assert code_agent_invoked == []
+    # State should have restored generated_files and tokens from the checkpoint
+    assert len(result.get("generated_files", [])) == 1
+    assert result["generated_files"][0]["path"] == "client.py"
+    assert result["total_tokens_used"] >= 1500
+    assert result["status"] == WorkflowStatus.COMPLETED
+
