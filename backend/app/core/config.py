@@ -201,6 +201,15 @@ class Settings(BaseSettings):
     # /metrics at all without it (audit M4).
     metrics_token: str | None = None
 
+    @field_validator("metrics_token", mode="before")
+    @classmethod
+    def _blank_metrics_token_is_unset(cls, value: Any) -> Any:
+        # `METRICS_TOKEN=` (empty) used to count as "set": /metrics was mounted and
+        # compare_digest("", "") let a request with no header through.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     # --- Uploads (Security.md §10) --------------------------------------------
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, description="50MB default")
     # Spec import by URL is fetched server-side; private/loopback targets are refused
@@ -387,3 +396,40 @@ def validate_startup_environment(settings: Settings) -> None:
                 "Production mode strictly requires at least one configured LLM provider key "
                 "(OPENAI_API_KEY or ANTHROPIC_API_KEY)."
             )
+        problems = production_config_problems(settings)
+        if problems:
+            raise ValueError(
+                "Refusing to start in production with an unsafe configuration:\n- "
+                + "\n- ".join(problems)
+            )
+
+
+# Values that ship in .env.example / docker-compose for local use only.
+_PLACEHOLDER_SECRETS = frozenset({"prod_scrape_token_local_test", "minioadmin", "root", "dev"})
+
+
+def production_config_problems(settings: Settings) -> list[str]:
+    """Every development default that must not reach production, reported together.
+
+    Only the LLM key used to be checked. CORS `*` with credentials, the example metrics
+    token, a dev-mode Vault root token and MinIO's default keys all started silently.
+    """
+    problems: list[str] = []
+    for origin in settings.cors_origins:
+        if origin == "*":
+            problems.append(
+                "CORS_ALLOWED_ORIGINS contains '*': with credentials allowed the API would "
+                "answer any site with the caller's session."
+            )
+        elif not origin.startswith("https://"):
+            problems.append(f"CORS origin {origin!r} is not https.")
+    token = settings.metrics_token
+    if token is not None and (len(token) < 24 or token in _PLACEHOLDER_SECRETS):
+        problems.append("METRICS_TOKEN is a placeholder or shorter than 24 characters.")
+    if not settings.vault_token or settings.vault_token in _PLACEHOLDER_SECRETS:
+        problems.append("VAULT_TOKEN is unset or a development root token.")
+    if not settings.vault_addr.startswith("https://"):
+        problems.append("VAULT_ADDR is not https; secrets would cross the network in clear.")
+    if settings.aws_access_key_id in _PLACEHOLDER_SECRETS:
+        problems.append("AWS_ACCESS_KEY_ID is the MinIO default credential.")
+    return problems
