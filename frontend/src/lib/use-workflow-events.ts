@@ -7,6 +7,8 @@ export type WorkflowEvent = {
   id: string;
 };
 
+export const MAX_RETAINED_EVENTS = 500;
+
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
 // A healthy stream carries an event or a heartbeat every few seconds.
@@ -111,9 +113,10 @@ export function useWorkflowEvents(runId: string | null) {
           armStallTimer();
           const { done, value } = await reader.read();
           if (done) break;
-          buffer = (buffer + decoder.decode(value, { stream: true }))
+          const incoming = decoder.decode(value, { stream: true })
             .replace(/\r\n/g, "\n")
             .replace(/\r/g, "\n");
+          buffer += incoming;
           for (;;) {
             const sep = buffer.indexOf("\n\n");
             if (sep === -1) break;
@@ -129,7 +132,11 @@ export function useWorkflowEvents(runId: string | null) {
             } catch {
               // A malformed body still leaves the event type and id usable.
             }
-            setEvents((prev) => [...prev, { event_type: frame.event, payload, id: frame.id ?? "" }]);
+            const newEvent: WorkflowEvent = { event_type: frame.event, payload, id: frame.id ?? "" };
+            setEvents((prev) => {
+              const next = [...prev, newEvent];
+              return next.length > MAX_RETAINED_EVENTS ? next.slice(-MAX_RETAINED_EVENTS) : next;
+            });
             if (isWorkflowTerminal(frame.event, payload)) finished = true;
           }
           if (finished) break;
