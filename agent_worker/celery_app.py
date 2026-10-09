@@ -60,6 +60,39 @@ def _configure_worker_logging(**_: Any) -> None:
     )
 
 
+@signals.worker_init.connect
+def _serve_worker_metrics(**_: Any) -> None:
+    """Expose the pipeline's metrics from the worker's parent process.
+
+    The pipeline runs here in production, so nothing it recorded (pipeline errors, token
+    spend, run outcomes) ever reached Prometheus: only the API served /metrics. With
+    PROMETHEUS_MULTIPROC_DIR set, each prefork child writes its samples to that directory
+    and this aggregates them on WORKER_METRICS_PORT (no token: bind it to the pod network
+    only, like any metrics port).
+    """
+    directory = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
+    if not directory:
+        return
+    import glob
+
+    from prometheus_client import CollectorRegistry, multiprocess, start_http_server
+
+    os.makedirs(directory, exist_ok=True)
+    for stale in glob.glob(os.path.join(directory, "*.db")):
+        os.remove(stale)  # samples from a previous container run
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry, path=directory)
+    start_http_server(int(os.environ.get("WORKER_METRICS_PORT", "9808")), registry=registry)
+
+
+@signals.worker_process_shutdown.connect
+def _forget_dead_child(pid: int | None = None, **_: Any) -> None:
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR") and pid:
+        from prometheus_client import multiprocess
+
+        multiprocess.mark_process_dead(pid)
+
+
 _correlation_tokens: dict[str, list[Any]] = {}
 
 

@@ -161,6 +161,9 @@ services:
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: ${VAULT_TOKEN:-${VAULT_DEV_ROOT_TOKEN_ID:-root}}
       DOCKER_HOST: unix:///var/run/docker.sock
+      # Pipeline metrics, aggregated across prefork children and served on :9808.
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus-multiproc
+      WORKER_METRICS_PORT: "9808"
     depends_on:
       postgres:
         condition: service_healthy
