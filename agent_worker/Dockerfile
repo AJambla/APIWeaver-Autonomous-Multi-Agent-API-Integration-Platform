@@ -14,7 +14,7 @@ COPY backend/pyproject.toml backend/poetry.lock ./backend/
 COPY agent_worker ./agent_worker
 
 # Install poetry and export requirements
-RUN pip install --no-cache-dir poetry poetry-plugin-export && \
+RUN pip install --no-cache-dir "poetry==2.5.1" poetry-plugin-export && \
     cd backend && poetry export -f requirements.txt --output ../requirements.txt --only main
 
 
