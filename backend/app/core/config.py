@@ -72,6 +72,7 @@ class Settings(BaseSettings):
 
     # --- Qdrant (required by §9; unused until Phase 2) ------------------------
     qdrant_url: str = "http://localhost:6333"
+    qdrant_collection_name: str = "apiweaver_docs"
 
     # --- S3 / MinIO (required by §9; unused until Phase 2) --------------------
     s3_bucket_uploads: str = "apiweaver-uploads"

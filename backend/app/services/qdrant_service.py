@@ -88,6 +88,7 @@ class HttpQdrantClient:
 
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.base_url = settings.qdrant_url.rstrip("/")
+        self.default_collection = getattr(settings, "qdrant_collection_name", DEFAULT_COLLECTION)
         self.timeout = httpx.Timeout(getattr(settings, "qdrant_timeout_seconds", 10.0))
         self.dimensions = settings.embedding_dimensions
         self._client = client
