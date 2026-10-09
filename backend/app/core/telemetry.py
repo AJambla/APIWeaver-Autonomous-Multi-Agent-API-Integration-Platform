@@ -43,8 +43,18 @@ def _build_resource() -> Any:
     )
 
 
+_tracer_provider: Any = None
+
+
 def _build_tracer_provider() -> Any:
-    """Construct and register the TracerProvider with OTLP exporter if endpoint is configured."""
+    """Construct and register the TracerProvider with OTLP exporter if endpoint is configured.
+
+    Idempotent: HTTP and backend instrumentation are set up at different times (app
+    construction vs lifespan) and must share one provider.
+    """
+    global _tracer_provider
+    if _tracer_provider is not None:
+        return _tracer_provider
     from opentelemetry import trace
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace import TracerProvider
@@ -60,6 +70,7 @@ def _build_tracer_provider() -> Any:
         provider.add_span_processor(BatchSpanProcessor(exporter))
 
     trace.set_tracer_provider(provider)
+    _tracer_provider = provider
     return provider
 
 
@@ -83,18 +94,37 @@ def trace_span(name: str, attributes: dict[str, Any] | None = None) -> Iterator[
         yield span
 
 
-def instrument_app(app: Any, engine: Any) -> None:
-    """Instrument FastAPI application, SQLAlchemy database engine, and Redis client."""
+def instrument_http(app: Any) -> None:
+    """Instrument the FastAPI app. Must run in `create_app`, before the first request.
+
+    Starlette builds its middleware stack on the first `__call__`, and the lifespan scope
+    *is* that first call. FastAPIInstrumentor only patches `build_middleware_stack`, so
+    instrumenting from inside `lifespan` came too late and produced no server spans at all
+    (measured: 0 spans from lifespan, 1 from app construction).
+    """
+    if not is_telemetry_enabled():
+        return
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        _build_tracer_provider()
+        FastAPIInstrumentor.instrument_app(app)
+    except (ImportError, ModuleNotFoundError) as err:
+        logger.debug("opentelemetry_packages_missing", error=str(err))
+    except Exception as exc:
+        logger.warning("opentelemetry_http_instrumentation_failed", error=str(exc))
+
+
+def instrument_backends(engine: Any) -> None:
+    """Instrument the SQLAlchemy engine and Redis clients (they exist only in lifespan)."""
     if not is_telemetry_enabled():
         return
 
     try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
         from opentelemetry.instrumentation.redis import RedisInstrumentor
         from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
         _build_tracer_provider()
-        FastAPIInstrumentor.instrument_app(app)
 
         sync_engine = getattr(engine, "sync_engine", engine)
         SQLAlchemyInstrumentor().instrument(engine=sync_engine)
