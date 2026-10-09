@@ -38,8 +38,8 @@ APIWeaver operates as an event-driven, multi-agent state machine backed by persi
 ```mermaid
 flowchart TD
     subgraph ClientLayer ["Client & Ingestion Tier"]
-        Web["React 18 SPA (Vite)\n(React Router + Monaco Editor + Recharts)"]
-        API["FastAPI Gateway (v1 REST + SSE + WebSocket)\n(Argon2id + RS256 JWT + API Keys + Rate Limiting)"]
+        Web["React 18 SPA (Vite)\n(React Router + Monaco Editor)"]
+        API["FastAPI Gateway (v1 REST + SSE)\n(Argon2id + RS256 JWT + API Keys + Rate Limiting)"]
         Ingest["Ingestion Engine\n(OpenAPI / Swagger / Postman / PDF / Markdown / HTML)"]
     end
 
@@ -52,7 +52,7 @@ flowchart TD
     end
 
     subgraph StorageInfra ["Storage, Vector & Security Infrastructure"]
-        Postgres[(PostgreSQL 16\n28+ Tables + Partitioning + 10 Migrations)]
+        Postgres[(PostgreSQL 16\n28+ Tables + Partitioning + Alembic Migrations)]
         Redis[(Redis 7\nJTI Denylist + Rate Limiter + Streams Pub/Sub)]
         Qdrant[(Qdrant Vector DB\nTenant-Isolated Semantic Search)]
         MinIO[(S3 / MinIO Object Storage\nNon-blocking aiobotocore Client)]

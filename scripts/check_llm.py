@@ -5,8 +5,9 @@ import asyncio
 import os
 import sys
 
-# Ensure backend modules can be imported
-sys.path.insert(0, os.path.abspath("backend"))
+# Ensure backend modules can be imported, from whatever directory the script runs in
+# (a cwd-relative "backend" only worked from the repository root).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
 
 from app.core.config import get_settings
 from app.workflows.llm import LLMClient
