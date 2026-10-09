@@ -248,3 +248,14 @@ async def test_password_hashing_does_not_block_the_event_loop() -> None:
 
     # The loop kept running for most of the hashing time instead of stalling.
     assert ticks >= max(3, int(elapsed / 0.005 * 0.3)), (ticks, elapsed)
+
+
+def test_log_redaction_removes_every_character_of_a_real_api_key() -> None:
+    """Keys are token_urlsafe output; '-' and '_' used to end the redaction early."""
+    from app.api.v1.api_keys import _generate_key
+    from app.core.logging import REDACTED, _redact_value
+
+    for _ in range(500):
+        key, _hash = _generate_key()
+        redacted = _redact_value(f"rejected key={key} for org")
+        assert redacted == f"rejected key={REDACTED} for org", redacted
