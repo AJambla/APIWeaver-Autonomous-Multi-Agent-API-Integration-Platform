@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from typing import Any
 
@@ -187,6 +188,9 @@ class LLMClient:
                     self.settings.llm_retry_backoff_seconds * (2**attempt),
                     max_retry_delay,
                 )
+                if getattr(self.settings, "llm_retry_jitter", False):
+                    # Full jitter: random between 0.5 * delay and 1.5 * delay
+                    delay = random.uniform(delay * 0.5, delay * 1.5)
                 if exc.retry_after is not None:
                     delay = max(delay, min(exc.retry_after, max_retry_after))
                 logger.warning(
@@ -267,9 +271,11 @@ class LLMClient:
                 async with httpx.AsyncClient(timeout=self.settings.llm_request_timeout) as client:
                     res = await client.post(url, json=payload, headers=headers)
                     if res.status_code == 400 and "response_format" in payload:
-                        # Fallback for OpenAI-compatible providers that reject 'response_format'
-                        del payload["response_format"]
-                        res = await client.post(url, json=payload, headers=headers)
+                        # Fallback ONLY for OpenAI-compatible providers that reject 'response_format'
+                        err_text = res.text.lower()
+                        if any(term in err_text for term in ("response_format", "json_object", "unsupported parameter", "extra parameter")):
+                            del payload["response_format"]
+                            res = await client.post(url, json=payload, headers=headers)
                     res.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code

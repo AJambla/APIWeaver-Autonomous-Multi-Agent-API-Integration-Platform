@@ -43,24 +43,30 @@ class EventPublisher:
         workflow_stream = f"workflow_events:{run_id}"
         project_stream = f"project_events:{project_id}" if project_id else None
 
-        try:
-            workflow_maxlen = self._settings.redis_stream_workflow_maxlen
-            project_maxlen = self._settings.redis_stream_project_maxlen
-            workflow_ttl = self._settings.redis_stream_workflow_ttl_seconds
-            project_ttl = self._settings.redis_stream_project_ttl_seconds
+        workflow_maxlen = self._settings.redis_stream_workflow_maxlen
+        project_maxlen = self._settings.redis_stream_project_maxlen
+        workflow_ttl = self._settings.redis_stream_workflow_ttl_seconds
+        project_ttl = self._settings.redis_stream_project_ttl_seconds
 
-            # Awaited one at a time. Both coroutines used to be created up front, so when the
-            # first XADD raised, the second was never awaited (a "coroutine was never
-            # awaited" warning and a silently dropped project-stream event).
-            await self._redis.xadd(workflow_stream, message, maxlen=workflow_maxlen, approximate=True)
-            if project_stream:
-                await self._redis.xadd(project_stream, message, maxlen=project_maxlen, approximate=True)
-            await self._redis.expire(workflow_stream, workflow_ttl)
-            if project_stream:
-                await self._redis.expire(project_stream, project_ttl)
-        except Exception as exc:
-            pipeline_error_total.labels(subsystem="event_publisher", error_type=type(exc).__name__).inc()
-            logger.error("event_publish_failed", run_id=run_id, event_type=event_type, error=str(exc), exc_info=True)
+        for attempt in range(3):
+            try:
+                # Awaited one at a time. Both coroutines used to be created up front, so when the
+                # first XADD raised, the second was never awaited (a "coroutine was never
+                # awaited" warning and a silently dropped project-stream event).
+                await self._redis.xadd(workflow_stream, message, maxlen=workflow_maxlen, approximate=True)
+                if project_stream:
+                    await self._redis.xadd(project_stream, message, maxlen=project_maxlen, approximate=True)
+                await self._redis.expire(workflow_stream, workflow_ttl)
+                if project_stream:
+                    await self._redis.expire(project_stream, project_ttl)
+                return
+            except Exception as exc:
+                if attempt < 2:
+                    import asyncio
+                    await asyncio.sleep(0.1 * (attempt + 1))
+                    continue
+                pipeline_error_total.labels(subsystem="event_publisher", error_type=type(exc).__name__).inc()
+                logger.error("event_publish_failed", run_id=run_id, event_type=event_type, error=str(exc), exc_info=True)
 
     async def publish_workflow_started(
         self,
