@@ -152,28 +152,32 @@ class HttpVaultClient:
     @_vault_retry
     async def delete_secret(self, path: str) -> None:
         url = self._kv_delete_url(path)
-        client = self._get_client()
-        try:
-            response = await client.delete(url, headers=self._headers)
-            if response.status_code not in (200, 204, 404):
-                response.raise_for_status()
-        except Exception as exc:
-            logger.error("vault_delete_failed", path=path, error=str(exc))
-            raise
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                response = await client.delete(url, headers=self._headers)
+                if response.status_code not in (200, 204, 404):
+                    response.raise_for_status()
+            except Exception as exc:
+                logger.error("vault_delete_failed", path=path, error=str(exc))
+                raise
 
-    @_vault_retry
     async def renew_token(self, increment_seconds: int = 3600) -> bool:
-        """Renew current Vault token lease."""
+        """Renew current Vault token lease (/v1/auth/token/renew-self)."""
         url = f"{self.vault_addr}/v1/auth/token/renew-self"
-        client = self._get_client()
-        try:
-            response = await client.post(
-                url, json={"increment": f"{increment_seconds}s"}, headers=self._headers
-            )
-            return response.status_code == 200
-        except Exception as exc:
-            logger.warning("vault_token_renewal_failed", error=str(exc))
-            return False
+        payload = {"increment": f"{increment_seconds}s"}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                response = await client.post(url, json=payload, headers=self._headers)
+                if response.status_code in (200, 204):
+                    logger.info("vault_token_renewed", increment=increment_seconds)
+                    return True
+                logger.warning("vault_token_renewal_rejected", status_code=response.status_code)
+                return False
+            except Exception as exc:
+                logger.warning("vault_token_renewal_failed", error=str(exc))
+                return False
+
+
 
 
 def create_vault_client(settings: Settings = Depends(get_settings)) -> VaultClient:

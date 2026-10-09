@@ -270,6 +270,8 @@ services:
       VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:-root}
     ports:
       - "127.0.0.1:8200:8200"
+    volumes:
+      - vaultdata:/vault/file
     networks:
       - apiweaver
     healthcheck:

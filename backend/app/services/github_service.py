@@ -37,6 +37,17 @@ _github_retry = retry(
 )
 
 
+def sanitize_github_path(path: str) -> str:
+    """Validate and sanitize file path for GitHub commit to prevent directory traversal."""
+    if not isinstance(path, str):
+        raise ValueError("GitHub file path must be a string")
+    cleaned = path.strip().replace("\\", "/").lstrip("/")
+    parts = cleaned.split("/")
+    if any(part in ("..", ".") for part in parts) or not cleaned:
+        raise ValueError(f"Path traversal or invalid path not permitted: {path}")
+    return cleaned
+
+
 class GitHubAppClient:
     """GitHub App client for installation-based API calls.
 
@@ -237,8 +248,9 @@ class GitHubAppClient:
             else:
                 blob_content = content
 
+            clean_path = sanitize_github_path(str(file_info.get("path", "")))
             blob_sha = await self._create_blob(installation_token, repo_full_name, blob_content, encoding)
-            blob_shas.append({"path": file_info["path"], "mode": "100644", "type": "blob", "sha": blob_sha})
+            blob_shas.append({"path": clean_path, "mode": "100644", "type": "blob", "sha": blob_sha})
 
         # 4. Create new tree
         new_tree_sha = await self._create_tree(
