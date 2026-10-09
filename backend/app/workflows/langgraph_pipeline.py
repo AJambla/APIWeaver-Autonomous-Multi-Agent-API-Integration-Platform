@@ -708,6 +708,16 @@ def create_apiweaver_graph(
                         qdrant_client=qdrant_client,
                     )
 
+                if phase_result.get("status") == "failed":
+                    # run_code_agent reports its own failures ("Phase N not found", "no
+                    # spec") as a status, not an exception. Reading only generated_files
+                    # here reported success, and the run then failed later in testing
+                    # with "No generated files to test" and the real cause lost.
+                    reasons = "; ".join(str(e) for e in phase_result.get("errors") or [])
+                    raise RuntimeError(
+                        f"Code generation phase {phase_num} failed: {reasons or 'unknown error'}"
+                    )
+
                 for nf in phase_result.get("generated_files", []):
                     idx = next(
                         (
@@ -740,13 +750,34 @@ def create_apiweaver_graph(
                     consistency_result = await _wait_for_celery_task(result, timeout=300)
                 else:
                     from app.workflows.agents import code_agent as code_agent_module
-                    consistency_result = await code_agent_module.run_code_agent(
-                        {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
-                        phase_number=None,
-                        qdrant_client=qdrant_client,
-                    )
 
-                if consistency_result.get("generated_files"):
+                    # Optional polish over files every phase already produced: a
+                    # truncated reply, bad JSON or an open LLM circuit here must not fail
+                    # a run whose generation succeeded. Keep the phase output instead.
+                    try:
+                        consistency_result = await code_agent_module.run_code_agent(
+                            {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
+                            phase_number=None,
+                            qdrant_client=qdrant_client,
+                        )
+                    except WorkflowCancelledError:
+                        raise
+                    except Exception as consistency_exc:
+                        logger.warning(
+                            "consistency_pass_failed", run_id=run_id, error=str(consistency_exc)
+                        )
+                        await _emit_thought(
+                            state,
+                            "code_agent",
+                            f"Consistency pass skipped ({consistency_exc}); keeping the phase output.",
+                            level="warn",
+                            action="codegen_consistency_skipped",
+                        )
+                        consistency_result = {}
+
+                if consistency_result.get("status") != "failed" and consistency_result.get(
+                    "generated_files"
+                ):
                     generated_files = consistency_result["generated_files"]
                 total_tokens = consistency_result.get("total_tokens_used", total_tokens)
                 if total_tokens >= budget:

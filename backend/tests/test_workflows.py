@@ -329,6 +329,58 @@ async def test_consistency_pass_respects_the_token_budget(
     assert result["status"] == WorkflowStatus.FAILED
 
 
+
+async def test_a_failed_codegen_phase_fails_the_run_with_its_own_reason(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A phase that reports status=failed used to be treated as success."""
+    from unittest.mock import patch
+
+    from app.workflows.agents import code_agent as code_agent_module
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
+
+    project_id, run_id = await _seed_project_run(session_factory, "phasefail")
+    state = _generate_state(project_id, run_id, phase_count=1, token_budget=1_000_000)
+
+    async def failing_phase(state: Any, phase_number: int | None = None, **_: Any) -> dict[str, Any]:
+        return {"status": "failed", "errors": [f"Phase {phase_number} not found in execution plan."]}
+
+    with patch.object(code_agent_module, "run_code_agent", failing_phase):
+        result = await Orchestrator(session_factory).run(uuid.UUID(run_id), state)
+
+    assert result["status"] == WorkflowStatus.FAILED
+    assert any("Phase 1 not found" in error for error in result["errors"]), result["errors"]
+
+
+async def test_a_failing_consistency_pass_keeps_the_generated_files(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The optional consistency pass must not fail a run whose phases all succeeded."""
+    from unittest.mock import patch
+
+    from app.workflows.agents import code_agent as code_agent_module
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
+
+    project_id, run_id = await _seed_project_run(session_factory, "consistencyfail")
+    state = _generate_state(project_id, run_id, phase_count=1, token_budget=1_000_000)
+
+    async def phase_then_truncated(
+        state: Any, phase_number: int | None = None, **_: Any
+    ) -> dict[str, Any]:
+        if phase_number is None:
+            raise RuntimeError("LLM response truncated at max_tokens")
+        return {
+            "total_tokens_used": state.get("total_tokens_used", 0) + 10,
+            "generated_files": [{"file_path": "client.py", "language": "python"}],
+        }
+
+    with patch.object(code_agent_module, "run_code_agent", phase_then_truncated):
+        result = await Orchestrator(session_factory).run(uuid.UUID(run_id), state)
+
+    assert result["status"] != WorkflowStatus.FAILED, result.get("errors")
+    assert [f["file_path"] for f in result["generated_files"]] == ["client.py"]
+
+
 class _FakeAsyncResult:
     def __init__(self, updates: dict[str, Any]) -> None:
         self._updates = updates
