@@ -111,6 +111,7 @@ async def trigger_export(
         "github_branch": payload.github_branch,
         "github_commit_message": payload.github_commit_message,
         "docker_image_name": payload.docker_image_name,
+        "export_rows_managed": True,
         "errors": [],
     }
 
