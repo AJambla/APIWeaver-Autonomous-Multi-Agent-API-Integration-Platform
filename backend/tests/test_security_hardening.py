@@ -259,3 +259,23 @@ def test_log_redaction_removes_every_character_of_a_real_api_key() -> None:
         key, _hash = _generate_key()
         redacted = _redact_value(f"rejected key={key} for org")
         assert redacted == f"rejected key={REDACTED} for org", redacted
+
+
+async def test_an_unreachable_denylist_fails_closed_with_503(
+    client, fake_redis, monkeypatch
+) -> None:
+    """If revocation cannot be checked the token is refused, as a 503 rather than a 500."""
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+
+    from tests.test_documents import _project_headers
+
+    _, headers = await _project_headers(client)
+
+    async def unreachable(*_args, **_kwargs):
+        raise RedisTimeoutError("Timeout reading from socket")
+
+    monkeypatch.setattr(fake_redis, "exists", unreachable)
+    res = await client.get("/api/v1/projects", headers=headers)
+
+    assert res.status_code == 503, res.text
+    assert "Timeout reading" not in res.text

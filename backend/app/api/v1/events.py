@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_principal, get_db, get_redis
+from app.core.deps import get_current_principal, get_db, get_stream_redis
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
@@ -43,11 +43,16 @@ async def _verify_run_access(
     return run
 
 
+# How long one XREAD parks waiting for events (main.py sizes the stream client's
+# socket timeout above it).
+SSE_BLOCK_MS = 5000
+
+
 async def _stream_redis_events(
     redis_client: aioredis.Redis,
     stream_key: str,
     last_id: str,
-    block_ms: int = 5000,
+    block_ms: int = SSE_BLOCK_MS,
 ) -> AsyncIterator[str]:
     """Yield SSE-formatted events from a Redis Stream."""
     while True:
@@ -91,7 +96,7 @@ async def stream_workflow_events(
     run_id: Any,
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
-    redis_client: aioredis.Redis = Depends(get_redis),
+    redis_client: aioredis.Redis = Depends(get_stream_redis),
     last_event_id: str = Query(default="0-0"),
 ) -> StreamingResponse:
     """Server-Sent Events stream for a workflow run."""

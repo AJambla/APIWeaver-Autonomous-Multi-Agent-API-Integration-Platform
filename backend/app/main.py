@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import health
+from app.api.v1.events import SSE_BLOCK_MS
 from app.api.v1.router import api_router
 from app.core.config import Settings, get_settings, validate_startup_environment
 from app.core.errors import APIError, ErrorCode, build_error_body
@@ -63,6 +64,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         encoding="utf-8",
         decode_responses=True,
         health_check_interval=30,
+        socket_connect_timeout=settings.redis_connect_timeout_seconds,
+        socket_timeout=settings.redis_socket_timeout_seconds,
+    )
+    # SSE parks in a blocking XREAD for SSE_BLOCK_MS; on the shared client's short socket
+    # timeout every idle stream would error out, so streams get their own connection pool.
+    app.state.redis_stream = aioredis.from_url(
+        settings.redis_url,
+        encoding="utf-8",
+        decode_responses=True,
+        health_check_interval=30,
+        socket_connect_timeout=settings.redis_connect_timeout_seconds,
+        socket_timeout=SSE_BLOCK_MS / 1000 + settings.redis_socket_timeout_seconds,
     )
     app.state.object_storage = create_object_storage(settings)
     engine = get_engine(settings)
@@ -74,6 +87,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await app.state.redis.aclose()
+        await app.state.redis_stream.aclose()
         await dispose_engine()
         logger.info("application_stopped")
 

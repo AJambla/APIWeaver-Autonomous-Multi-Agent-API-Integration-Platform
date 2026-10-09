@@ -23,7 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings, get_settings
-from app.core.deps import get_db, get_object_storage, get_redis
+from app.core.deps import get_db, get_object_storage, get_redis, get_stream_redis
 from app.core.security import _load_keys, hash_password
 from app.main import create_app
 from app.models import Base, non_partitioned_tables
@@ -377,6 +377,7 @@ async def app(
 
     application.dependency_overrides[get_db] = override_get_db
     application.dependency_overrides[get_redis] = lambda: fake_redis
+    application.dependency_overrides[get_stream_redis] = lambda: fake_redis
     application.dependency_overrides[get_object_storage] = lambda: fake_storage
     application.dependency_overrides[create_vault_client] = lambda: fake_vault
     application.dependency_overrides[create_qdrant_client] = lambda: fake_qdrant
