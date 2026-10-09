@@ -14,10 +14,9 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.core.constants import DEFAULT_TARGET_LANGUAGES
+from app.core.constants import DEFAULT_EXPORT_TYPES, DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
-from app.models.enums import ExportType
 from app.models.github import GitHubConnection
 from app.models.project import ProjectMember
 from app.services.github_service import GitHubAppClient
@@ -70,7 +69,7 @@ class ExportAgent:
         normalized_spec = state.get("normalized_spec", {})
 
         if export_types is None:
-            export_types = state.get("export_types") or [e.value for e in ExportType]
+            export_types = state.get("export_types") or list(DEFAULT_EXPORT_TYPES)
 
         artifacts = []
         status = "completed"
