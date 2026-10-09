@@ -57,8 +57,16 @@ _SENSITIVE_VALUE_PATTERNS = (
 _MAX_REDACT_DEPTH = 6
 
 
+# "token" also matches LLM token *counts* (tokens_used, total_tokens, tokens_before, ...),
+# which are cost telemetry, not secrets; redacting them blanked every usage figure in the
+# logs. The plural is treated as a count unless the key also names a credential kind.
+_CREDENTIAL_TOKEN_WORDS = re.compile(r"refresh|access|bearer|auth|csrf|session|id_token|api")
+
+
 def _is_sensitive_key(key: str) -> bool:
     lowered = key.lower()
+    if "tokens" in lowered and not _CREDENTIAL_TOKEN_WORDS.search(lowered):
+        lowered = lowered.replace("tokens", "")
     return any(part in lowered for part in _SENSITIVE_KEY_PARTS)
 
 
