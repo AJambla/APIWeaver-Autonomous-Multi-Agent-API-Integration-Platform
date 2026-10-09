@@ -46,7 +46,6 @@ class Settings(BaseSettings):
 
     # --- App -------------------------------------------------------------------
     app_env: AppEnv = "development"
-    app_debug: bool = False
     log_level: str = "INFO"
     cors_allowed_origins: str = "http://localhost:3000"
 
@@ -155,7 +154,6 @@ class Settings(BaseSettings):
     github_app_client_id: str | None = None
     github_app_client_secret_vault_path: str | None = None
     github_oauth_redirect_uri: str | None = None
-    github_webhook_secret: str | None = None
     github_api_base_url: str = "https://api.github.com"
     github_oauth_authorize_url: str = "https://github.com/login/oauth/authorize"
     github_oauth_token_url: str = "https://github.com/login/oauth/access_token"
@@ -229,7 +227,6 @@ class Settings(BaseSettings):
     # --- Workflow execution (Task 7.5) ----------------------------------------
     # Enable parallel agent execution within a workflow run. Default off for
     # incremental rollout; turn on after smoke testing.
-    enable_parallel_agents: bool = False
     # In production, require Celery workers for async workflows rather than
     # silently running on API process BackgroundTasks (fail-loud queueing).
     require_celery_worker: bool = False
