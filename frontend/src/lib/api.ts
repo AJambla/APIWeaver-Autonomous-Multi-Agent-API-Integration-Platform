@@ -1,4 +1,4 @@
-const API_PREFIX = '/api/v1';
+const API_PREFIX = (import.meta.env?.VITE_API_URL as string | undefined)?.replace(/\/+$/, '') || '/api/v1';
 
 /** The refresh in flight, shared by every caller in this tab.
  *
