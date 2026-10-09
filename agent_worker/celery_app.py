@@ -37,6 +37,9 @@ app.conf.update(
     },
     # One long workflow per prefetch slot: do not reserve a second behind it.
     worker_prefetch_multiplier=1,
+    # Recycle worker processes periodically to prevent memory leaks (R-07)
+    worker_max_tasks_per_child=int(os.environ.get("CELERY_WORKER_MAX_TASKS_PER_CHILD", "50")),
+    worker_max_memory_per_child=int(os.environ.get("CELERY_WORKER_MAX_MEMORY_PER_CHILD", "500000")),  # 500 MB
 )
 
 @signals.setup_logging.connect

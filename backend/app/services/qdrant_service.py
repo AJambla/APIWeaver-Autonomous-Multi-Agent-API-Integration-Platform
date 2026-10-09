@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 import httpx
 from fastapi import Depends
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
@@ -67,46 +68,81 @@ class QdrantClient(Protocol):
     ) -> None: ...
 
 
+def _is_transient_http_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {408, 429, 500, 502, 503, 504}
+    return False
+
+_qdrant_retry = retry(
+    retry=retry_if_exception(_is_transient_http_error),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential_jitter(multiplier=0.1, max=1.5),
+    reraise=True,
+)
+
+
 class HttpQdrantClient:
     """Async Qdrant client communicating over the HTTP REST API."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.base_url = settings.qdrant_url.rstrip("/")
-        self.timeout = getattr(settings, "qdrant_timeout_seconds", 10.0)
+        self.timeout = httpx.Timeout(getattr(settings, "qdrant_timeout_seconds", 10.0))
         self.dimensions = settings.embedding_dimensions
+        self._client = client
+        self._owns_client = client is None
 
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+            self._owns_client = True
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._owns_client and self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self) -> HttpQdrantClient:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.aclose()
+
+    @_qdrant_retry
     async def ensure_collection(self, collection_name: str = DEFAULT_COLLECTION) -> None:
         url = f"{self.base_url}/collections/{collection_name}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                res = await client.get(url)
-                if res.status_code == 200:
-                    vectors = (
-                        ((res.json().get("result") or {}).get("config") or {}).get("params") or {}
-                    ).get("vectors") or {}
-                    size = vectors.get("size") if isinstance(vectors, dict) else None
-                    if size is not None and size != self.dimensions:
-                        raise CollectionDimensionMismatchError(
-                            f"Qdrant collection '{collection_name}' stores {size}-dimensional "
-                            f"vectors but EMBEDDING_DIMENSIONS is {self.dimensions}."
-                        )
-                    return
-                if res.status_code != 404:
-                    # A 401/503 is not "missing": creating over it would mask the outage.
-                    res.raise_for_status()
-                payload = {
-                    "vectors": {
-                        "size": self.dimensions,
-                        "distance": "Cosine",
-                    }
+        client = self._get_client()
+        try:
+            res = await client.get(url)
+            if res.status_code == 200:
+                vectors = (
+                    ((res.json().get("result") or {}).get("config") or {}).get("params") or {}
+                ).get("vectors") or {}
+                size = vectors.get("size") if isinstance(vectors, dict) else None
+                if size is not None and size != self.dimensions:
+                    raise CollectionDimensionMismatchError(
+                        f"Qdrant collection '{collection_name}' stores {size}-dimensional "
+                        f"vectors but EMBEDDING_DIMENSIONS is {self.dimensions}."
+                    )
+                return
+            if res.status_code != 404:
+                # A 401/503 is not "missing": creating over it would mask the outage.
+                res.raise_for_status()
+            payload = {
+                "vectors": {
+                    "size": self.dimensions,
+                    "distance": "Cosine",
                 }
-                put_res = await client.put(url, json=payload)
-                put_res.raise_for_status()
-            except Exception as exc:
-                pipeline_error_total.labels(subsystem="qdrant", error_type=type(exc).__name__).inc()
-                logger.error("qdrant_ensure_collection_failed", error=str(exc), exc_info=True)
-                raise
+            }
+            put_res = await client.put(url, json=payload)
+            put_res.raise_for_status()
+        except Exception as exc:
+            pipeline_error_total.labels(subsystem="qdrant", error_type=type(exc).__name__).inc()
+            logger.error("qdrant_ensure_collection_failed", error=str(exc), exc_info=True)
+            raise
 
+    @_qdrant_retry
     async def upsert_chunks(
         self,
         *,
@@ -148,16 +184,17 @@ class HttpQdrantClient:
             })
 
         batch_size = 100
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                for i in range(0, len(points), batch_size):
-                    batch = points[i : i + batch_size]
-                    res = await client.put(url, json={"points": batch})
-                    res.raise_for_status()
-            except Exception as exc:
-                logger.error("qdrant_upsert_failed", error=str(exc))
-                raise
+        client = self._get_client()
+        try:
+            for i in range(0, len(points), batch_size):
+                batch = points[i : i + batch_size]
+                res = await client.put(url, json={"points": batch})
+                res.raise_for_status()
+        except Exception as exc:
+            logger.error("qdrant_upsert_failed", error=str(exc))
+            raise
 
+    @_qdrant_retry
     async def search(
         self,
         *,
@@ -179,30 +216,31 @@ class HttpQdrantClient:
             "filter": {"must": must_filters},
             "with_payload": True,
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                res = await client.post(url, json=payload)
-                if res.status_code == 404:
-                    return []
-                res.raise_for_status()
-                data = res.json()
-                results = []
-                for point in data.get("result", []):
-                    p_payload = point.get("payload", {})
-                    results.append(
-                        ScoredChunk(
-                            chunk_id=str(point.get("id")),
-                            text=p_payload.get("text", ""),
-                            score=float(point.get("score", 0.0)),
-                            metadata=p_payload,
-                        )
+        client = self._get_client()
+        try:
+            res = await client.post(url, json=payload)
+            if res.status_code == 404:
+                return []
+            res.raise_for_status()
+            data = res.json()
+            results = []
+            for point in data.get("result", []):
+                p_payload = point.get("payload", {})
+                results.append(
+                    ScoredChunk(
+                        chunk_id=str(point.get("id")),
+                        text=p_payload.get("text", ""),
+                        score=float(point.get("score", 0.0)),
+                        metadata=p_payload,
                     )
-                return results
-            except Exception as exc:
-                pipeline_error_total.labels(subsystem="qdrant", error_type=type(exc).__name__).inc()
-                logger.error("qdrant_search_failed", error=str(exc), exc_info=True)
-                raise
+                )
+            return results
+        except Exception as exc:
+            pipeline_error_total.labels(subsystem="qdrant", error_type=type(exc).__name__).inc()
+            logger.error("qdrant_search_failed", error=str(exc), exc_info=True)
+            raise
 
+    @_qdrant_retry
     async def delete_by_document(
         self,
         *,
@@ -219,15 +257,15 @@ class HttpQdrantClient:
         if organization_id:
             must_filters.append({"key": "organization_id", "match": {"value": str(organization_id)}})
         payload = {"filter": {"must": must_filters}}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                res = await client.post(url, json=payload)
-                if res.status_code != 404:
-                    res.raise_for_status()
-            except Exception as exc:
-                pipeline_error_total.labels(subsystem="qdrant", error_type=type(exc).__name__).inc()
-                logger.error("qdrant_delete_failed", error=str(exc), exc_info=True)
-                raise
+        client = self._get_client()
+        try:
+            res = await client.post(url, json=payload)
+            if res.status_code != 404:
+                res.raise_for_status()
+        except Exception as exc:
+            pipeline_error_total.labels(subsystem="qdrant", error_type=type(exc).__name__).inc()
+            logger.error("qdrant_delete_failed", error=str(exc), exc_info=True)
+            raise
 
 
 def create_qdrant_client(settings: Settings = Depends(get_settings)) -> QdrantClient:

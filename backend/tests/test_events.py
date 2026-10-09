@@ -18,6 +18,7 @@ class TestEventPublisher:
     def mock_redis(self):
         redis = MagicMock()
         redis.xadd = AsyncMock()
+        redis.expire = AsyncMock()
         return redis
 
     @pytest.fixture
