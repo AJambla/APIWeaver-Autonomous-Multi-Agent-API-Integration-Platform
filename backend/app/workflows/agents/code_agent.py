@@ -82,7 +82,7 @@ def _defined_names(file_path: str, content: str) -> set[str]:
     return {
         node.name
         for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
     }
 
 
@@ -144,15 +144,15 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
     try:
         # Merge imports
         existing_import_sigs = {
-            ast.dump(n) for n in tree_orig.body if isinstance(n, (ast.Import, ast.ImportFrom))
+            ast.dump(n) for n in tree_orig.body if isinstance(n, ast.Import | ast.ImportFrom)
         }
         new_imports = [
             n for n in tree_new.body
-            if isinstance(n, (ast.Import, ast.ImportFrom)) and ast.dump(n) not in existing_import_sigs
+            if isinstance(n, ast.Import | ast.ImportFrom) and ast.dump(n) not in existing_import_sigs
         ]
         insert_idx = 0
         for i, node in enumerate(tree_orig.body):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if isinstance(node, ast.Import | ast.ImportFrom):
                 insert_idx = i + 1
         for ni in reversed(new_imports):
             tree_orig.body.insert(insert_idx, ni)
@@ -193,10 +193,10 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
                     target_methods = {
                         m.name: idx
                         for idx, m in enumerate(target_cls.body)
-                        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef)
                     }
                     for member in node.body:
-                        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef):
                             if member.name in target_methods:
                                 existing_m = target_cls.body[target_methods[member.name]]
                                 # Never downgrade an existing async method to a sync method
@@ -209,11 +209,11 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
                     tree_orig.body.append(node)
                     if "Client" in node.name and existing_client_cls is None:
                         existing_client_cls = node
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 orig_funcs = {
                     fn.name: idx
                     for idx, fn in enumerate(tree_orig.body)
-                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef)
                 }
                 if node.name in orig_funcs:
                     existing_fn = tree_orig.body[orig_funcs[node.name]]

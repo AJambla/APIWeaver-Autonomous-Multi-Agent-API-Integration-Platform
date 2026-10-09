@@ -530,6 +530,7 @@ async def test_wait_for_celery_task_delayed_success():
 async def test_wait_for_celery_task_failure_raises():
     """Verify that a failing task re-raises the underlying exception."""
     import pytest
+
     from app.workflows.langgraph_pipeline import _wait_for_celery_task
 
     class _FailingResult:
@@ -556,6 +557,7 @@ async def test_wait_for_celery_task_failure_raises():
 async def test_wait_for_celery_task_timeout_raises():
     """Verify that a task exceeding the timeout raises TimeoutError."""
     import pytest
+
     from app.workflows.langgraph_pipeline import _wait_for_celery_task
 
     class _NeverReadyResult:

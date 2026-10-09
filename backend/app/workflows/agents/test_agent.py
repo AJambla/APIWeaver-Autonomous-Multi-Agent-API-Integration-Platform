@@ -6,16 +6,12 @@ the self-healing repair loop (max 3 attempts per failing test).
 
 from __future__ import annotations
 
-import asyncio
-import importlib.util
 import inspect
 import json
 import re
-import sys
 import time
 import traceback
 import uuid
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -25,7 +21,7 @@ from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
 from app.models.auth_config import AuthConfig, SecretRef
 from app.models.enums import AuthScheme
-from app.services.sandbox_service import DockerSandboxExecutor, _safe_workspace_target
+from app.services.sandbox_service import DockerSandboxExecutor
 from app.services.storage_service import storage_service
 from app.services.test_run_service import record_test_run_results
 from app.services.vault_service import create_vault_client
@@ -127,7 +123,7 @@ async def generate_test_fixtures(spec: dict[str, Any] | list[Any], llm_client: L
         if not isinstance(resp_schemas, dict):
             resp_schemas = {}
         params = ep.get("parameters")
-        if not isinstance(params, (list, dict)):
+        if not isinstance(params, list | dict):
             params = []
 
         prompt = TEST_FIXTURE_GENERATION_PROMPT.format(
@@ -268,7 +264,7 @@ def _is_unnecessary_endpoint(ep: dict[str, Any]) -> tuple[bool, str]:
     Returns (is_unnecessary, reason).
     """
     method = str(ep.get("method") or "GET").upper()
-    path = str(ep.get("path") or "").lower()
+    str(ep.get("path") or "").lower()
     op_id = str(ep.get("operationId") or ep.get("operation_id") or "").lower()
 
     # 1. Destructive DELETE operations:

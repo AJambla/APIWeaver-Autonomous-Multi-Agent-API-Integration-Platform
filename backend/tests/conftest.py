@@ -155,12 +155,38 @@ def repo_root() -> Path:
 
 
 @pytest.fixture(scope="session")
-def test_settings(repo_root: Path) -> Iterator[Settings]:
-    """Settings pointed at an in-memory database and the dev JWT keypair."""
-    private_key = repo_root / "secrets" / "jwt_private.pem"
-    public_key = repo_root / "secrets" / "jwt_public.pem"
-    if not private_key.exists():
-        pytest.skip("run scripts/gen_jwt_keys.sh to generate the dev JWT keypair")
+def jwt_keypair(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    """An ephemeral RS256 keypair for the session.
+
+    Generated rather than read from `secrets/`: that directory is gitignored, and a
+    `pytest.skip` on its absence used to skip the entire suite in CI while exiting 0.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    directory = tmp_path_factory.mktemp("jwt")
+    private_key = directory / "jwt_private.pem"
+    public_key = directory / "jwt_public.pem"
+    private_key.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    public_key.write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    return private_key, public_key
+
+
+@pytest.fixture(scope="session")
+def test_settings(jwt_keypair: tuple[Path, Path]) -> Iterator[Settings]:
+    """Settings pointed at an in-memory database and an ephemeral JWT keypair."""
+    private_key, public_key = jwt_keypair
 
     # Workflow code calls get_settings() directly (outside FastAPI DI), so the
     # dependency override alone can't pin the sandbox backend — set the env var.

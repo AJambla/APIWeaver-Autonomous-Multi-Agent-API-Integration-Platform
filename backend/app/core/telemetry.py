@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from app.core.config import get_settings
 from app.core.logging import get_logger

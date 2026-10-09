@@ -176,6 +176,7 @@ async def test_rollback_requires_confirmation(client: AsyncClient, db) -> None:
 async def test_rollback_restores_active_generated_files(client: AsyncClient, db, monkeypatch) -> None:
     """When rolling back to an artifact version, load_generated_files returns that version's files."""
     import json
+
     from app.services.workflow_input_service import load_generated_files
 
     project_id, headers = await _setup_project_with_runs(client)

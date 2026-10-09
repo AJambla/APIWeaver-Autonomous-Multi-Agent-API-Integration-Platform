@@ -145,14 +145,14 @@ def synthesize_schema_data(
             base_int = max(base_int, int(min_val))
             if excl_min is True:
                 base_int += 1
-        if excl_min is not None and isinstance(excl_min, (int, float)):
+        if excl_min is not None and isinstance(excl_min, int | float):
             base_int = max(base_int, int(excl_min) + 1)
 
         if max_val is not None:
             base_int = min(base_int, int(max_val))
             if excl_max is True and base_int >= int(max_val):
                 base_int = int(max_val) - 1
-        if excl_max is not None and isinstance(excl_max, (int, float)) and base_int >= int(excl_max):
+        if excl_max is not None and isinstance(excl_max, int | float) and base_int >= int(excl_max):
             base_int = int(excl_max) - 1
 
         mult = schema.get("multipleOf")
