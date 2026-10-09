@@ -173,3 +173,51 @@ async def test_patch_endpoint_not_found(client: AsyncClient, db) -> None:
         headers=headers,
     )
     assert res.status_code == 404
+
+async def test_patching_onto_an_existing_method_and_path_is_a_conflict(client: AsyncClient, db) -> None:
+    """Colliding with uniq_endpoint_method_path used to be an IntegrityError and a 500."""
+    project_id, endpoint_id, headers = await _setup_project_with_endpoint(client, db)
+    async with db as session:
+        first = await session.get(Endpoint, uuid.UUID(endpoint_id))
+        session.add(
+            Endpoint(
+                api_spec_id=first.api_spec_id,
+                method="POST",
+                path="/items",
+                response_schemas={},
+                deprecated=False,
+                is_destructive=False,
+            )
+        )
+        await session.commit()
+
+    res = await client.patch(
+        f"/api/v1/projects/{project_id}/spec/endpoints/{endpoint_id}",
+        json={"method": "POST", "path": "/items"},
+        headers=headers,
+    )
+    assert res.status_code == 409, res.text
+
+
+async def test_over_long_and_duplicate_parameters_are_rejected(client: AsyncClient, db) -> None:
+    project_id, endpoint_id, headers = await _setup_project_with_endpoint(client, db)
+    url = f"/api/v1/projects/{project_id}/spec/endpoints/{endpoint_id}"
+
+    too_long = await client.patch(
+        url,
+        json={"parameters": [{"name": "x" * 300, "location": "query", "type": "string"}]},
+        headers=headers,
+    )
+    duplicated = await client.patch(
+        url,
+        json={
+            "parameters": [
+                {"name": "id", "location": "path", "type": "string"},
+                {"name": "id", "location": "path", "type": "integer"},
+            ]
+        },
+        headers=headers,
+    )
+    long_path = await client.patch(url, json={"path": "/" + "a" * 1200}, headers=headers)
+
+    assert {too_long.status_code, duplicated.status_code, long_path.status_code} <= {400, 422}

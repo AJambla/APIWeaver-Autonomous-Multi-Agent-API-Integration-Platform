@@ -9,8 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db
-from app.core.errors import NotFoundError
-from app.models.enums import ActorType
+from app.core.errors import ConflictError, NotFoundError
 from app.models.project import Project
 from app.models.spec import APISpec, Endpoint, EndpointParameter
 from app.rbac.enforce import require_project_permission
@@ -74,6 +73,22 @@ async def patch_endpoint(
         if required in update_data and update_data[required] is None:
             update_data.pop(required)
 
+    new_method = update_data.get("method", endpoint.method)
+    new_path = update_data.get("path", endpoint.path)
+    if (new_method, new_path) != (endpoint.method, endpoint.path):
+        # Each (method, path) is unique within a spec; the collision used to surface as
+        # an IntegrityError and a 500.
+        clash = await session.scalar(
+            select(Endpoint.id).where(
+                Endpoint.api_spec_id == endpoint.api_spec_id,
+                Endpoint.method == new_method,
+                Endpoint.path == new_path,
+                Endpoint.id != endpoint.id,
+            )
+        )
+        if clash is not None:
+            raise ConflictError(f"This spec already has an endpoint {new_method} {new_path}.")
+
     for field, value in update_data.items():
         if hasattr(endpoint, field):
             setattr(endpoint, field, value)
@@ -113,9 +128,9 @@ async def patch_endpoint(
     await audit_service.record(
         session,
         action="endpoint.updated",
-        actor_type=ActorType.USER,
+        # An API key is recorded as the system actor, not as a user with no id.
+        **audit_service.actor(principal),
         organization_id=project.organization_id,
-        actor_user_id=principal.user_id,
         resource_type="endpoint",
         resource_id=str(endpoint.id),
         metadata={"before": before_state, "after": after_state},
