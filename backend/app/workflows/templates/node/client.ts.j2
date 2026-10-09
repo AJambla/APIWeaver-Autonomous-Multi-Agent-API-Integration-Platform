@@ -7,8 +7,7 @@ import type {
 {% for resource, endpoints in resources.items() %}
 {% for ep in endpoints %}
 {% if ep.get('request_schema') %}
-{% set op_id = ep.get('operationId', ep.path.replace('/', '_').replace('{', '').replace('}', '')) %}
-  {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request,
+  {{ ep.model_stem }}Request,
 {% endif %}
 {% endfor %}
 {% endfor %}
@@ -104,15 +103,15 @@ export interface ClientConfig {
   maxRetries?: number;
 }
 
-export class {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }} {
+export class {{ client_class_name }} {
   private baseUrl: string;
   private apiKey?: string;
   private timeout: number;
   private maxRetries: number;
 
   constructor(config: ClientConfig = {}) {
-    this.baseUrl = config.baseUrl || process.env.{{ title.upper().replace(' ', '_').replace('-', '_') }}_BASE_URL || "{{ base_url }}";
-    this.apiKey = config.apiKey || process.env.{{ title.upper().replace(' ', '_').replace('-', '_') }}_API_KEY;
+    this.baseUrl = config.baseUrl || process.env[{{ (env_prefix ~ '_BASE_URL') | lit }}] || {{ base_url | lit }};
+    this.apiKey = config.apiKey || process.env[{{ (env_prefix ~ '_API_KEY') | lit }}];
     this.timeout = config.timeout || 30000;
     this.maxRetries = config.maxRetries || 3;
   }
@@ -254,7 +253,7 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
   {% set method = ep.method.lower() %}
   {% set path = ep.path %}
   {% set summary = ep.summary or path %}
-  {% set op_id = ep.get('operationId', path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
+  {% set op_id = ep.operationId %}
 
   async {{ op_id }}(
     {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
@@ -264,14 +263,14 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
     {{ param.name }}?: {{ param.type | ts_type }},
     {% endfor %}
     {% if ep.get('request_schema') %}
-    body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | Record<string, unknown>,
+    body?: {{ ep.model_stem }}Request | Record<string, unknown>,
     {% endif %}
   ): Promise<{ data: unknown; response: Response }> {
     /** {{ summary }}. */
-    let url = "{{ path }}";
+    let url = {{ path | lit }};
     {% for param in ep.get('parameters', []) %}
     {% if param.location == 'path' %}
-    url = url.replace("{{ '{' + param.name + '}' }}", String({{ param.name }}));
+    url = url.replace({{ param.path_token | lit }}, encodeURIComponent(String({{ param.name }})));
     {% endif %}
     {% endfor %}
 
@@ -279,14 +278,14 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
     {% for param in ep.get('parameters', []) %}
     {% if param.location == 'query' %}
     {% if param.required %}
-    params["{{ param.name }}"] = Array.isArray({{ param.name }}) ? {{ param.name }}.join(",") : String({{ param.name }});
+    params[{{ param.wire_name | lit }}] = Array.isArray({{ param.name }}) ? {{ param.name }}.join(",") : String({{ param.name }});
     {% else %}
-    if ({{ param.name }} !== undefined) params["{{ param.name }}"] = Array.isArray({{ param.name }}) ? {{ param.name }}.join(",") : String({{ param.name }});
+    if ({{ param.name }} !== undefined) params[{{ param.wire_name | lit }}] = Array.isArray({{ param.name }}) ? {{ param.name }}.join(",") : String({{ param.name }});
     {% endif %}
     {% endif %}
     {% endfor %}
 
-    return this.request("{{ method.upper() }}", url, {
+    return this.request({{ method.upper() | lit }}, url, {
       params,
       {% if ep.get('request_schema') %}
       body: body,
@@ -301,7 +300,7 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
 // Convenience functions
 {% for resource, endpoints in resources.items() %}
 {% for ep in endpoints %}
-{% set op_id = ep.get('operationId', ep.path.replace('/', '_').replace('{', '').replace('}', '').replace('-', '_')) %}
+{% set op_id = ep.operationId %}
 export async function {{ op_id }}(
   {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
   {{ param.name }}: {{ param.type | ts_type }},
@@ -310,11 +309,11 @@ export async function {{ op_id }}(
   {{ param.name }}?: {{ param.type | ts_type }},
   {% endfor %}
   {% if ep.get('request_schema') %}
-  body?: {{ resource.title().replace('-', '') }}{{ ep.method.upper() }}{{ ep.path.split('/')[-1].replace('{', '').replace('}', '').title() }}Request | Record<string, unknown>,
+  body?: {{ ep.model_stem }}Request | Record<string, unknown>,
   {% endif %}
-  client?: {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}
+  client?: {{ client_class_name }}
 ): Promise<{ data: unknown; response: Response }> {
-  const c = client || new {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }}();
+  const c = client || new {{ client_class_name }}();
   return c.{{ op_id }}(
     {% for param in ep.get('parameters', []) if param.location == 'path' or (param.location == 'query' and param.required) %}
     {{ param.name }},
@@ -331,4 +330,4 @@ export async function {{ op_id }}(
 {% endfor %}
 {% endfor %}
 
-export { {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }} as Client };
+export { {{ client_class_name }} as Client };
