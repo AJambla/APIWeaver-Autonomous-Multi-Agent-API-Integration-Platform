@@ -64,7 +64,10 @@ services:
       context: ../../backend
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      # Loopback only. `web` (nginx) is the public entry point; an API reachable directly
+      # lets a client choose its own right-most X-Forwarded-For and rotate rate-limit
+      # identities (trusted_proxy_hops=1 assumes nginx is the only hop).
+      - "127.0.0.1:8000:8000"
     volumes:
       # Local-only JWT key mount. Production keys are mounted by the Vault Agent.
       - ../../secrets:/app/secrets:ro
@@ -208,7 +211,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-apiweaver}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apiweaver}
     ports:
-      - "5432:5432"
+      # Datastores are published on loopback only: reachable for local tooling, never
+      # from the network (they use development credentials and Redis has no auth).
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
@@ -223,7 +228,7 @@ services:
     image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: apiweaver-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
     networks:
@@ -238,7 +243,7 @@ services:
     image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
     container_name: apiweaver-qdrant
     ports:
-      - "6333:6333"
+      - "127.0.0.1:6333:6333"
     volumes:
       - qdrantdata:/qdrant/storage
       - ../../scripts/qdrant-healthcheck.sh:/qdrant-healthcheck.sh:ro
@@ -261,7 +266,7 @@ services:
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:-root}
     ports:
-      - "8200:8200"
+      - "127.0.0.1:8200:8200"
     networks:
       - apiweaver
     healthcheck:
@@ -291,8 +296,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - miniodata:/data
     networks:
