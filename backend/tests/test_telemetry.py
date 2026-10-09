@@ -106,6 +106,37 @@ def test_langsmith_correlation_sets_span_processor(monkeypatch):
 
         processor.on_end(mock_span)
         assert processor.client.create_run.called
+        call_kwargs = processor.client.create_run.call_args[1]
+        assert call_kwargs["run_id"] != call_kwargs["trace_id"]
+        assert call_kwargs["trace_id"] == "00000000000000000000000000003039"
+
+
+def test_strip_ansi_in_logging():
+    from app.core.logging import _redact_value, strip_ansi
+    sample = "\033[1;36m[LANGGRAPH]\033[0m \033[1mSTARTED\033[0m"
+    assert strip_ansi(sample) == "[LANGGRAPH] STARTED"
+    redacted = _redact_value({"log": sample})
+    assert redacted == {"log": "[LANGGRAPH] STARTED"}
+
+
+def test_otlp_tls_configurability(monkeypatch):
+    import app.core.telemetry as tel_module
+    from app.core.telemetry import _build_tracer_provider
+    tel_module._tracer_provider = None
+
+    captured_insecure = []
+
+    class DummyExporter:
+        def __init__(self, endpoint, insecure):
+            captured_insecure.append(insecure)
+
+    monkeypatch.setattr("opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter", DummyExporter)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com:4317")
+
+    provider = _build_tracer_provider()
+    assert provider is not None
+    assert captured_insecure == [False]
+    tel_module._tracer_provider = None
 
 
 def test_http_instrumentation_from_create_app_emits_server_spans(monkeypatch):

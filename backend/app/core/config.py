@@ -197,6 +197,7 @@ class Settings(BaseSettings):
     # --- Observability (recommended) ------------------------------------------
     langsmith_api_key: str | None = None
     otel_exporter_otlp_endpoint: str | None = None
+    otel_exporter_otlp_insecure: bool | None = None
     # Shared secret the scraper sends as X-Metrics-Token. Production will not expose
     # /metrics at all without it (audit M4).
     metrics_token: str | None = None

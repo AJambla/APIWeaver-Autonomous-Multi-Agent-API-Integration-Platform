@@ -56,6 +56,13 @@ _SENSITIVE_VALUE_PATTERNS = (
 
 _MAX_REDACT_DEPTH = 6
 
+_ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes from text to ensure clean log aggregator ingestion."""
+    return _ANSI_REGEX.sub("", text)
+
 
 # "token" also matches LLM token *counts* (tokens_used, total_tokens, tokens_before, ...),
 # which are cost telemetry, not secrets; redacting them blanked every usage figure in the
@@ -71,7 +78,7 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def _redact_value(value: Any, depth: int = 0) -> Any:
-    """Recursively redact secrets from a log value.
+    """Recursively redact secrets and strip ANSI escapes from a log value.
 
     Depth-bounded: a pathological nested structure should degrade to a placeholder
     rather than blow the stack inside a logging call.
@@ -79,6 +86,7 @@ def _redact_value(value: Any, depth: int = 0) -> Any:
     if depth > _MAX_REDACT_DEPTH:
         return "***TRUNCATED***"
     if isinstance(value, str):
+        value = strip_ansi(value)
         for pattern in _SENSITIVE_VALUE_PATTERNS:
             value = pattern.sub(REDACTED, value)
         return value
