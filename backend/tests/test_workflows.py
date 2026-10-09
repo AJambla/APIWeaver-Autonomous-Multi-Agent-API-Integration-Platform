@@ -419,6 +419,45 @@ async def test_a_resumed_run_bills_only_its_own_tokens(
     assert billed[0] < already_billed
 
 
+
+async def test_planner_hydrated_spec_reaches_later_stages(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch
+) -> None:
+    """The planner loaded endpoints from the DB but only mutated its input dict."""
+    from app.models.spec import APISpec, Endpoint
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
+
+    project_id, run_id = await _seed_project_run(session_factory, "hydrate")
+    async with session_factory() as session:
+        spec = APISpec(project_id=uuid.UUID(project_id), raw_normalized={}, title="Users API")
+        session.add(spec)
+        await session.flush()
+        session.add(
+            Endpoint(api_spec_id=spec.id, method="GET", path="/users", summary="", response_schemas={})
+        )
+        await session.commit()
+
+    seen_by_planner: list[int] = []
+
+    async def fake_planner(state: Any) -> dict[str, Any]:
+        seen_by_planner.append(len((state.get("normalized_spec") or {}).get("endpoints") or []))
+        return {"execution_plan": {"phases": [{"phase_number": 1}]}, "total_tokens_used": 0}
+
+    monkeypatch.setattr("app.workflows.langgraph_pipeline.run_planner_agent", fake_planner)
+    state = {
+        "project_id": project_id,
+        "workflow_run_id": run_id,
+        "stages": ["plan"],
+        "normalized_spec": {"title": "Users API", "endpoints": []},
+        "errors": [],
+    }
+
+    result = await Orchestrator(session_factory).run(uuid.UUID(run_id), state)
+
+    assert seen_by_planner == [1]
+    assert [e["path"] for e in result["normalized_spec"]["endpoints"]] == ["/users"]
+
+
 class _FakeAsyncResult:
     def __init__(self, updates: dict[str, Any]) -> None:
         self._updates = updates
