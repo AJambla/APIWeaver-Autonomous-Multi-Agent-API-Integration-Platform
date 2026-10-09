@@ -17,8 +17,8 @@ import redis.asyncio as aioredis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.core.config import Settings
-from app.services.qdrant_service import VECTOR_DIMENSION, HttpQdrantClient
+from app.core.config import Settings, get_settings
+from app.services.qdrant_service import HttpQdrantClient
 from app.services.storage_service import AsyncS3ObjectStorage
 from app.services.vault_service import HttpVaultClient
 
@@ -231,7 +231,7 @@ class TestQdrantIntegration:
             chunk_id = str(uuid.uuid4())
 
             # Generate synthetic vector
-            vector = [0.1] * VECTOR_DIMENSION
+            vector = [0.1] * get_settings().embedding_dimensions
 
             chunks = [
                 {

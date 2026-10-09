@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from app.core.logging import get_logger
+from app.core.metrics import pipeline_error_total
 from app.models.enums import DocumentFormat
 from app.services import spec_normalizer
 from app.services.chunker import chunk_text
@@ -249,4 +250,7 @@ async def _upsert_to_qdrant(
         )
         logger.info("qdrant_upsert_complete", project_id=proj_id, document_id=doc_id, chunks=len(chunks))
     except Exception as exc:
-        logger.warning("qdrant_upsert_failed", error=str(exc))
+        # Retrieval feeds code generation; a failure here used to be a bare warning, so
+        # every run quietly generated without context. Count it and log it as an error.
+        pipeline_error_total.labels(subsystem="rag_upsert", error_type=type(exc).__name__).inc()
+        logger.error("qdrant_upsert_failed", error=str(exc))

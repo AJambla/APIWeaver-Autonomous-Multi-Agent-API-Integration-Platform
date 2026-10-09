@@ -46,6 +46,10 @@ class LLMResponseTruncatedError(DependencyUnavailableError):
     message = "The LLM provider truncated its response before completing it."
 
 
+class EmbeddingDimensionMismatchError(RuntimeError):
+    """The embedding provider's vectors do not fit the configured dimension (a config bug)."""
+
+
 class _TransientProviderError(Exception):
     """A retryable provider failure; carries the status code and Retry-After hint."""
 
@@ -516,17 +520,24 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        expected_dims = self.settings.embedding_dimensions
         payload: dict[str, Any] = {
             "model": self.settings.embedding_model,
             "input": text,
-            "dimensions": 1536,
+            "dimensions": expected_dims,
         }
         async def send() -> list[float]:
             try:
                 async with httpx.AsyncClient(timeout=self.settings.llm_request_timeout) as client:
                     res = await client.post(url, json=payload, headers=headers)
-                    if res.status_code == 400 and "dimensions" in payload:
-                        # Fallback for providers that reject the 'dimensions' parameter
+                    if (
+                        res.status_code == 400
+                        and "dimensions" in payload
+                        and "dimension" in res.text.lower()
+                    ):
+                        # Only for providers that reject the parameter itself. Retrying
+                        # without it on *any* 400 (input too long, bad model) returned
+                        # native-size vectors the collection then refused.
                         del payload["dimensions"]
                         res = await client.post(url, json=payload, headers=headers)
                     res.raise_for_status()
@@ -542,7 +553,16 @@ Return a JSON object mapping artifact_name -> s3_key + metadata.
             except httpx.TransportError as exc:
                 raise _TransientProviderError(f"openai transport error: {exc}") from exc
             data = res.json()
-            return data["data"][0]["embedding"]
+            vector: list[float] = data["data"][0]["embedding"]
+            if len(vector) != expected_dims:
+                raise EmbeddingDimensionMismatchError(
+                    f"Embedding model '{self.settings.embedding_model}' returned "
+                    f"{len(vector)}-dimensional vectors but EMBEDDING_DIMENSIONS is "
+                    f"{expected_dims}. Set EMBEDDING_DIMENSIONS to {len(vector)} and "
+                    "recreate the Qdrant collection, or use a model that supports "
+                    f"{expected_dims} dimensions."
+                )
+            return vector
 
         return await self._call_provider("openai", send)
 
