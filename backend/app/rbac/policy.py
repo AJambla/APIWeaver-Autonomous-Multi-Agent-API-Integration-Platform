@@ -117,6 +117,17 @@ class RoleRequirement:
     project_role: str | None = None
 
 
+# Organization actions an API key never performs, whatever role backs it. Managing keys,
+# members and billing from a key would let one leaked automation credential mint or revoke
+# every other credential (the owner's included) and lock humans out of their own org.
+HUMAN_ONLY_ORG_PERMISSIONS: frozenset[Permission] = frozenset(
+    {
+        Permission.ORG_MANAGE_API_KEYS,
+        Permission.ORG_MANAGE_MEMBERS,
+        Permission.ORG_EDIT_BILLING,
+    }
+)
+
 PERMISSIONS: dict[Permission, RoleRequirement] = {
     # --- Organization ---------------------------------------------------------------
     Permission.ORG_READ: RoleRequirement(org_role=OrgRole.MEMBER),

@@ -203,3 +203,52 @@ async def test_llm_probe_requires_an_org_admin(
     assert res.status_code == 403, res.text
     status = await client.get("/api/v1/health/llm")
     assert status.status_code == 401
+
+
+async def test_an_owner_backed_api_key_cannot_pass_owner_only_gates(
+    client: AsyncClient, session_factory, test_settings
+) -> None:
+    """Owner-only gates (approval, export, credential writes) need a human session."""
+    seed = await _seed(session_factory, test_settings)
+    project_id = seed["project_a"].id
+    key_headers = await _key(
+        session_factory, org_id=seed["project_a"].organization_id, creator_id=seed["owner"].id
+    )
+
+    # Editor-level work still succeeds with the key.
+    listed = await client.get(f"/api/v1/projects/{project_id}", headers=key_headers)
+    assert listed.status_code == 200, listed.text
+
+    credentials = await client.put(
+        f"/api/v1/projects/{project_id}/auth",
+        json={"scheme": "api_key", "config_json": {"header_name": "X-Key"}, "credentials": {"api_key": "x"}},
+        headers=key_headers,
+    )
+    assert credentials.status_code == 403, credentials.text
+
+    export = await client.post(
+        f"/api/v1/projects/{project_id}/export",
+        json={"export_types": ["sdk"]},
+        headers=key_headers,
+    )
+    assert export.status_code == 403, export.text
+
+
+async def test_api_keys_cannot_manage_the_org_api_keys(
+    client: AsyncClient, session_factory, test_settings
+) -> None:
+    """A leaked key must not be able to list, mint or revoke every other org credential."""
+    seed = await _seed(session_factory, test_settings)
+    org_id = seed["project_a"].organization_id
+    key_headers = await _key(session_factory, org_id=org_id, creator_id=seed["owner"].id)
+
+    listed = await client.get(f"/api/v1/org/{org_id}/api-keys", headers=key_headers)
+    assert listed.status_code == 403, listed.text
+    minted = await client.post(
+        f"/api/v1/org/{org_id}/api-keys", json={"name": "child"}, headers=key_headers
+    )
+    assert minted.status_code == 403, minted.text
+
+    # The human owner still manages keys.
+    human = await client.get(f"/api/v1/org/{org_id}/api-keys", headers=seed["owner_headers"])
+    assert human.status_code == 200, human.text
