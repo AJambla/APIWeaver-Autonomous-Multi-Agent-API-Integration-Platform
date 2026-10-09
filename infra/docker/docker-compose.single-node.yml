@@ -73,6 +73,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-apiweaver}:${POSTGRES_PASSWORD:-apiweaver}@postgres:5432/${POSTGRES_DB:-apiweaver}
       REDIS_URL: redis://redis:6379/0
+      # The API publishes workflow tasks by name to the worker's broker.
+      CELERY_BROKER_URL: redis://redis:6379/1
       QDRANT_URL: http://qdrant:6333
       S3_ENDPOINT_URL: http://minio:9000
       VAULT_ADDR: http://vault:8200

@@ -202,6 +202,9 @@ def test_settings(jwt_keypair: tuple[Path, Path]) -> Iterator[Settings]:
     required = {
         "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
         "REDIS_URL": "redis://localhost:6379/15",
+        # In-memory kombu transport: a test that forgets to fake the producer must not
+        # publish a real task to whatever broker happens to be listening on localhost.
+        "CELERY_BROKER_URL": "memory://",
         "JWT_PRIVATE_KEY_PATH": str(private_key),
         "JWT_PUBLIC_KEY_PATH": str(public_key),
     }
@@ -221,6 +224,7 @@ def test_settings(jwt_keypair: tuple[Path, Path]) -> Iterator[Settings]:
         yield Settings(
             database_url="sqlite+aiosqlite:///:memory:",
             redis_url="redis://localhost:6379/15",
+            celery_broker_url="memory://",
             jwt_private_key_path=private_key,
             jwt_public_key_path=public_key,
             app_env="development",

@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core import celery_client
 from app.core.config import Settings
 from app.core.errors import DependencyUnavailableError
 from app.core.logging import get_logger
@@ -131,9 +132,8 @@ async def dispatch_run(
     """
     if uses_celery(settings, requested_mode):
         try:
-            from agent_worker.celery_app import app as celery_app
-
-            celery_app.send_task(
+            await celery_client.send_task(
+                settings,
                 RUN_WORKFLOW_TASK,
                 args=[str(run_id), portable_state(state), post_run],
                 # Unique per dispatch: an approval resumes the same run id, and a reused
@@ -152,8 +152,10 @@ async def dispatch_run(
                     run.status = WorkflowStatus.FAILED
                     run.completed_at = datetime.datetime.now(datetime.UTC)
                     await session.commit()
+                # The broker error names hosts and ports; it belongs in the log, not the response.
+                logger.error("celery_dispatch_failed", run_id=str(run_id), error=str(exc))
                 raise DependencyUnavailableError(
-                    f"The workflow queue is unavailable: {exc}"
+                    "The workflow queue is unavailable. Please retry shortly."
                 ) from exc
             logger.warning("celery_dispatch_failed_running_inline", run_id=str(run_id), error=str(exc))
 
