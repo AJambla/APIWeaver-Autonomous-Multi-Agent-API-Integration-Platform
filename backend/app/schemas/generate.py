@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
 from pydantic import Field
 
@@ -20,10 +21,10 @@ class GenerateRequest(StrictModel):
     """Request to trigger code generation for a project."""
 
     stages: list[WorkflowStage] = Field(
-        default_factory=lambda: list(DEFAULT_WORKFLOW_STAGES), min_length=1, max_length=5
+        default_factory=lambda: cast(list[WorkflowStage], list(DEFAULT_WORKFLOW_STAGES)), min_length=1, max_length=5
     )
     target_languages: list[TargetLanguage] = Field(
-        default_factory=lambda: list(DEFAULT_TARGET_LANGUAGES), min_length=1, max_length=2
+        default_factory=lambda: cast(list[TargetLanguage], list(DEFAULT_TARGET_LANGUAGES)), min_length=1, max_length=2
     )
     export_types: list[ExportType] | None = Field(
         default=None, max_length=10, description="Subset of exports to run."

@@ -8,7 +8,7 @@ import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy import select, tuple_
+from sqlalchemy import literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
@@ -131,7 +131,7 @@ async def list_api_keys(
             last_created = datetime.datetime.fromisoformat(position["created_at"])
             last_id = uuid.UUID(position["id"])
             stmt = stmt.where(
-                tuple_(APIKey.created_at, APIKey.id) < tuple_(last_created, last_id)
+                tuple_(APIKey.created_at, APIKey.id) < tuple_(literal(last_created), literal(last_id))
             )
         except (KeyError, TypeError, ValueError):
             pass

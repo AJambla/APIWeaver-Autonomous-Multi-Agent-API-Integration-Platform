@@ -12,9 +12,11 @@ import secrets
 import unicodedata
 import uuid
 from dataclasses import dataclass
+from typing import Any, cast
 
 import redis.asyncio as aioredis
 from sqlalchemy import func, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -410,7 +412,7 @@ async def refresh(
     # Claim the token atomically. Checking `used_at` above and then assigning it let two
     # concurrent redemptions of one token both succeed (and both mint successors),
     # defeating reuse detection; the conditional update lets exactly one win.
-    claimed = await session.execute(
+    claimed = cast(CursorResult[Any], await session.execute(
         update(RefreshToken)
         .where(
             RefreshToken.id == stored.id,
@@ -419,7 +421,7 @@ async def refresh(
         )
         .values(used_at=_utc_now())
         .execution_options(synchronize_session=False)
-    )
+    ))
     if claimed.rowcount != 1:
         await _revoke_family(session, stored.family_id)
         await audit_service.record(

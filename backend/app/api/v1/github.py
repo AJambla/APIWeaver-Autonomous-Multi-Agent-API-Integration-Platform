@@ -5,7 +5,6 @@ from __future__ import annotations
 import hmac
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from fastapi import APIRouter, Cookie, Depends, Query, Response, status
 from sqlalchemy import select
@@ -20,6 +19,7 @@ from app.rbac.enforce import require_own_org_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.github import (
     GitHubAuthUrlResponse,
+    GitHubInstallation,
     GitHubReposResponse,
     GitHubStatusResponse,
 )
@@ -167,13 +167,14 @@ async def github_callback(
 
     # Store connection in database
     # Check for existing connection
-    result = await session.execute(
-        select(GitHubConnection).where(
-            GitHubConnection.user_id == oauth_state.user_id,
-            GitHubConnection.github_user_id == github_user_id,
+    existing = (
+        await session.execute(
+            select(GitHubConnection).where(
+                GitHubConnection.user_id == oauth_state.user_id,
+                GitHubConnection.github_user_id == github_user_id,
+            )
         )
-    )
-    existing = result.scalar_one_or_none()
+    ).scalar_one_or_none()
 
     if existing:
         # Update existing connection
@@ -212,11 +213,11 @@ async def github_callback(
         connected=True,
         github_username=github_username,
         installations=[
-            {
-                "id": inst["id"],
-                "account": inst["account"]["login"],
-                "account_type": inst["account"]["type"],
-            }
+            GitHubInstallation(
+                id=inst["id"],
+                account=inst["account"]["login"],
+                account_type=inst["account"]["type"],
+            )
             for inst in installations
         ],
     )
@@ -237,7 +238,7 @@ async def github_status(
 
     # Report the most recently linked connection
     conn = connections[0]
-    installations: list[dict[str, Any]] = []
+    installations: list[GitHubInstallation] = []
 
     if conn.access_token_vault_path:
         try:
@@ -245,19 +246,19 @@ async def github_status(
             if token_secret and "token" in token_secret:
                 raw_inst = await app_client.get_user_installations(token_secret["token"])
                 installations = [
-                    {
-                        "id": inst["id"],
-                        "account": (
+                    GitHubInstallation(
+                        id=inst["id"],
+                        account=(
                             inst.get("account", {}).get("login", "")
                             if isinstance(inst.get("account"), dict)
                             else ""
                         ),
-                        "account_type": (
+                        account_type=(
                             inst.get("account", {}).get("type", "User")
                             if isinstance(inst.get("account"), dict)
                             else "User"
                         ),
-                    }
+                    )
                     for inst in raw_inst
                     if isinstance(inst, dict) and "id" in inst
                 ]

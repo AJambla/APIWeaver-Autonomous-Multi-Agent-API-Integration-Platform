@@ -6,7 +6,7 @@ import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy import select, tuple_
+from sqlalchemy import literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db
@@ -44,7 +44,7 @@ async def get_project_history(
             last_created = datetime.datetime.fromisoformat(position["created_at"])
             last_id = uuid.UUID(position["id"])
             stmt = stmt.where(
-                tuple_(WorkflowRun.created_at, WorkflowRun.id) < tuple_(last_created, last_id)
+                tuple_(WorkflowRun.created_at, WorkflowRun.id) < tuple_(literal(last_created), literal(last_id))
             )
         except (KeyError, TypeError, ValueError):
             pass
@@ -72,9 +72,9 @@ async def get_project_history(
             .order_by(WorkflowCheckpoint.created_at.desc())
         )
         all_checkpoints = list((await session.execute(checkpoints_stmt)).scalars().all())
-        for cp in all_checkpoints:
-            if cp.workflow_run_id not in latest_cp_by_run:
-                latest_cp_by_run[cp.workflow_run_id] = cp
+        for checkpoint in all_checkpoints:
+            if checkpoint.workflow_run_id not in latest_cp_by_run:
+                latest_cp_by_run[checkpoint.workflow_run_id] = checkpoint
 
     items = []
     for row in page_rows:
@@ -117,7 +117,7 @@ async def get_project_versions(
             last_id = uuid.UUID(position["id"])
             stmt = stmt.where(
                 tuple_(ArtifactVersion.created_at, ArtifactVersion.id)
-                < tuple_(last_created, last_id)
+                < tuple_(literal(last_created), literal(last_id))
             )
         except (KeyError, TypeError, ValueError):
             pass

@@ -419,7 +419,8 @@ def resolve_auth(spec: dict[str, Any]) -> dict[str, str]:
     Header and query names come from the (untrusted) spec, so they are allow-listed;
     anything unusual falls back to bearer.
     """
-    components = spec.get("components") if isinstance(spec.get("components"), dict) else {}
+    raw_components = spec.get("components")
+    components: dict[str, Any] = raw_components if isinstance(raw_components, dict) else {}
     schemes: dict[str, Any] = {}
     for source in (components.get("securitySchemes"), spec.get("securityDefinitions")):
         if isinstance(source, dict):
@@ -916,7 +917,7 @@ async def run_code_agent(
                     logger.debug("existing_file_download_failed", file=f.get("file_path"), error=str(e))
 
         # Smart merge: start with existing files or template files
-        all_files: dict[str, str] = dict(existing_lang_files)
+        all_files = dict(existing_lang_files)
         for fp, tmpl_content in template_files.items():
             if fp not in all_files:
                 if fp.endswith(".py") and not _source_is_parseable(fp, tmpl_content):
