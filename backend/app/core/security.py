@@ -37,7 +37,9 @@ _password_hasher = PasswordHasher(
 
 # Minimum password length. Breached-password checking (Security.md §8, A07) needs an
 # external corpus and lands with the full signup hardening pass.
-MIN_PASSWORD_LENGTH = 7
+# NIST SP 800-63B requires at least 8. Applies to newly chosen passwords; existing ones
+# keep working until changed.
+MIN_PASSWORD_LENGTH = 8
 
 
 def hash_password(password: str) -> str:
@@ -186,6 +188,7 @@ def create_access_token(
         "exp": int(expires_at.timestamp()),
         "jti": jti,
         "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
     }
 
     token = jwt.encode(
@@ -214,7 +217,9 @@ def decode_access_token(token: str, settings: Settings | None = None) -> dict[st
             load_keys(settings).public_key,
             algorithms=[settings.jwt_algorithm],
             issuer=settings.jwt_issuer,
-            options={"require": ["sub", "exp", "iat", "jti"]},
+            # A token minted for another service by the same issuer/key is not ours.
+            audience=settings.jwt_audience,
+            options={"require": ["sub", "exp", "iat", "jti", "aud"]},
         )
     except jwt.ExpiredSignatureError as exc:
         raise JWTError("access token has expired", expired=True) from exc
