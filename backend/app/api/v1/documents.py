@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 import redis.asyncio as aioredis
 from fastapi import (
     APIRouter,
@@ -20,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import client_ip, get_current_principal, get_db, get_object_storage, get_redis
-from app.core.errors import UnprocessableEntityError
+from app.core.errors import NotFoundError, UnprocessableEntityError
 from app.models.enums import ActorType, HTTPMethod, WorkflowStatus
 from app.models.project import Project
 from app.models.spec import APISpec, Endpoint
@@ -95,7 +97,8 @@ async def upload_document(
     ).all()
     for stale in stale_runs:
         stale.status = WorkflowStatus.CANCELLED
-        stale.error_details = {"reason": "superseded_by_new_upload"}
+        # Superseded: cancelled by the newer run, finished now.
+        stale.completed_at = stale.completed_at or datetime.datetime.now(datetime.UTC)
 
     # Create associated workflow run for parsing & planning pipeline
     run = WorkflowRun(
@@ -216,7 +219,7 @@ async def get_spec(
         .limit(1)
     )
     if spec is None:
-        raise UnprocessableEntityError("No normalized API specification exists for this project.")
+        raise NotFoundError("No normalized API specification exists for this project.")
     return SpecResponse.model_validate(spec)
 
 

@@ -53,7 +53,7 @@ export const RunDetailPage: React.FC = () => {
     Promise.allSettled([
       apiFetch<WorkflowRunInfo>(`/workflows/${runId}`),
       apiFetch<ToolCall[]>(`/workflows/${runId}/tool-calls`),
-      projectId ? apiFetch<Page<Record<string, unknown>>>(`/projects/${projectId}/logs?limit=100`) : Promise.resolve(null),
+      projectId ? apiFetch<Page<Record<string, unknown>>>(`/projects/${projectId}/logs?limit=100&run_id=${runId}`) : Promise.resolve(null),
     ]).then(([r, t, l]) => {
       if (cancelled) return;
       if (r.status === 'fulfilled') setRun(r.value);

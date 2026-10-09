@@ -44,12 +44,14 @@ async def get_project_history(
             last_created = datetime.datetime.fromisoformat(position["created_at"])
             last_id = uuid.UUID(position["id"])
             stmt = stmt.where(
-                tuple_(WorkflowRun.started_at, WorkflowRun.id) < tuple_(last_created, last_id)
+                tuple_(WorkflowRun.created_at, WorkflowRun.id) < tuple_(last_created, last_id)
             )
         except (KeyError, TypeError, ValueError):
             pass
 
-    stmt = stmt.order_by(WorkflowRun.started_at.desc(), WorkflowRun.id.desc()).limit(limit + 1)
+    # `created_at` is never NULL: paging on `started_at` crashed on queued runs and
+    # skipped them (a row-value compare with NULL is never true).
+    stmt = stmt.order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc()).limit(limit + 1)
 
     rows = list((await session.execute(stmt)).scalars().all())
     has_more = len(rows) > limit
@@ -58,7 +60,7 @@ async def get_project_history(
     next_cursor = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = encode_cursor({"created_at": last.started_at.isoformat(), "id": str(last.id)})
+        next_cursor = encode_cursor({"created_at": last.created_at.isoformat(), "id": str(last.id)})
 
     run_ids = [row.id for row in page_rows]
     latest_cp_by_run: dict[uuid.UUID, WorkflowCheckpoint] = {}

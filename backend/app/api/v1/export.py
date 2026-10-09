@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -191,7 +191,7 @@ async def export_mcp(
 async def list_exports(
     project: Project = Depends(require_project_permission(Permission.EXPORT_READ)),
     session: AsyncSession = Depends(get_db),
-    limit: int = 20,
+    limit: int = Query(default=20, ge=1, le=100),
 ) -> list[dict]:
     """List export records for a project."""
     stmt = (
@@ -242,9 +242,9 @@ async def download_export(
         f"exports/{project.id}/{export.export_type}/Dockerfile",
         f"exports/{project.id}/{export.export_type}/package.json",
         f"exports/{project.id}/{export.export_type}/manifest.json",
-        f"exports/{project.id}/mcp/manifest.json",
-        f"exports/{project.id}/mcp/mcp_manifest.json",
     ])
+    # Only this export's own type: falling back to another type's key served the wrong
+    # artifact (an MCP manifest for a Docker export).
 
     content: bytes | None = None
     matched_key: str | None = None

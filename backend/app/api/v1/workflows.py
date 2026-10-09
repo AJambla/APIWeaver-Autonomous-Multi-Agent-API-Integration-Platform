@@ -81,7 +81,8 @@ async def trigger_workflow(
     ).all()
     for stale in stale_runs:
         stale.status = WorkflowStatus.CANCELLED
-        stale.error_details = {"reason": "superseded_by_new_trigger"}
+        # Superseded: cancelled by the newer run, finished now.
+        stale.completed_at = stale.completed_at or datetime.datetime.now(datetime.UTC)
 
     run = WorkflowRun(
         project_id=project.id,
@@ -141,7 +142,7 @@ async def list_workflows(
     stmt = (
         select(WorkflowRun)
         .where(WorkflowRun.project_id == project_id)
-        .order_by(WorkflowRun.id.desc())
+        .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
         .limit(limit)
     )
     runs = list((await session.execute(stmt)).scalars().all())

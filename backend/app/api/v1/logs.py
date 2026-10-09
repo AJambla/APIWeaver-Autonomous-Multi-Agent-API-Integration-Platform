@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
@@ -25,23 +26,29 @@ async def get_project_logs(
     session: AsyncSession = Depends(get_db),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: str | None = Query(default=None),
+    run_id: uuid.UUID | None = Query(default=None, description="Only this run's events"),
 ) -> Page[dict]:
-    """Paginated agent events for a project."""
+    """Paginated agent events for a project, optionally narrowed to one run."""
     stmt = (
         select(AgentEvent)
         .join(WorkflowRun, AgentEvent.workflow_run_id == WorkflowRun.id)
         .where(WorkflowRun.project_id == project.id)
     )
+    if run_id is not None:
+        stmt = stmt.where(AgentEvent.workflow_run_id == run_id)
 
     if cursor and (position := decode_cursor(cursor)):
         try:
-            last_created = position["created_at"]
-            last_id = position["id"]
-            stmt = stmt.where(
-                (AgentEvent.created_at, AgentEvent.id) < (last_created, last_id)
-            )
+            last_created = datetime.datetime.fromisoformat(position["created_at"])
+            last_id = int(position["id"])
         except (KeyError, TypeError, ValueError):
             pass
+        else:
+            # A Python tuple comparison here compiled to `created_at < '<iso string>'`
+            # and failed on every second page; tuple_ is the SQL row-value compare.
+            stmt = stmt.where(
+                tuple_(AgentEvent.created_at, AgentEvent.id) < tuple_(last_created, last_id)
+            )
 
     stmt = stmt.order_by(AgentEvent.created_at.desc(), AgentEvent.id.desc()).limit(limit + 1)
     rows = list((await session.execute(stmt)).scalars().all())
