@@ -998,7 +998,7 @@ class DockerSandboxExecutor:
             for source in (request_data, fixture):
                 if isinstance(source, dict):
                     for k, v in source.items():
-                        if k not in reserved_keys and not isinstance(v, (dict, list)):
+                        if k not in reserved_keys and not isinstance(v, dict | list):
                             params_data.setdefault(k, v)
 
             # Ensure all path template parameters (e.g. {petId}) are present
@@ -1021,7 +1021,7 @@ class DockerSandboxExecutor:
             body_data = request_data.get("body")
             if body_data is None:
                 for b_key in ("data", "json", "formData"):
-                    if isinstance(request_data.get(b_key), (dict, list)):
+                    if isinstance(request_data.get(b_key), dict | list):
                         body_data = request_data[b_key]
                         break
 

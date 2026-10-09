@@ -183,12 +183,13 @@ async def test_langgraph_orchestrator_pauses_for_approval(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancelled_run_costs_and_metrics(session_factory, db) -> None:
     """Cancelled runs must compute estimated_cost_usd and persist UsageMetric."""
+    from sqlalchemy import select
+
     from app.models.metrics import UsageMetric
     from app.models.organization import Organization
     from app.models.project import Project
     from app.models.workflow import WorkflowRun
-    from app.workflows.langgraph_pipeline import WorkflowCancelledError, calculate_token_cost_usd
-    from sqlalchemy import select
+    from app.workflows.langgraph_pipeline import WorkflowCancelledError
 
     org_id = uuid.uuid4()
     proj_id = uuid.uuid4()

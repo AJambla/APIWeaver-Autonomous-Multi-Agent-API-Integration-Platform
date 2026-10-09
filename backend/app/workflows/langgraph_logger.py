@@ -223,7 +223,7 @@ class LangGraphAgentLogger:
         action: str | None = None,
     ) -> None:
         """Logs real-time agent thoughts and granular actions to terminal."""
-        run_tag = run_id[:8] if run_id else "unknown"
+        run_id[:8] if run_id else "unknown"
         display_name = node_name.replace("_", " ").title()
         time_str = time.strftime("%H:%M:%S")
         action_tag = f" {CYAN}({action}){RESET}" if action else ""

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import uuid
-import pytest
 
 from app.workflows.agents.schema_synthesizer import resolve_ref, synthesize_schema_data
 from app.workflows.agents.test_agent import _generate_deterministic_fixture

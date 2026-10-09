@@ -162,8 +162,8 @@ class User(BaseModel):
     @pytest.mark.asyncio
     async def test_create_sandbox_node_sdk(self):
         """Verify _create_sandbox supports node when target_languages includes node."""
-        from app.workflows.agents.test_agent import _create_sandbox
         from app.services.sandbox_service import DockerSandboxExecutor
+        from app.workflows.agents.test_agent import _create_sandbox
 
         state = {
             "project_id": "test-p",

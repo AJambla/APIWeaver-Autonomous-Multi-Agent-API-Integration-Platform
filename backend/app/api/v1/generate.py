@@ -14,8 +14,6 @@ from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger
 from app.models.codegen import CodeGenerationRun, GeneratedFile
-
-logger = get_logger(__name__)
 from app.models.enums import ActorType, WorkflowStatus
 from app.models.project import Project
 from app.models.versioning import ArtifactVersion
@@ -29,6 +27,8 @@ from app.services import audit_service
 from app.services.event_publisher import EventPublisher
 from app.workflows.langgraph_pipeline import LangGraphOrchestrator
 from app.workflows.state import WorkflowState
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["generate"])
 

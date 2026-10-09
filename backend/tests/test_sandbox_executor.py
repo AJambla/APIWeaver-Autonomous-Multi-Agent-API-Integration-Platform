@@ -9,6 +9,7 @@ import time
 import types
 from contextlib import redirect_stdout
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
