@@ -24,7 +24,7 @@ docker compose -f docker-compose.dev.yml up --build
 | MinIO (S3-compatible, local) | 9000 |
 | Local LLM (optional, Ollama/Llama) | 11434 |
 
-Hot-reload enabled for both frontend (Vite dev server) and backend (`uvicorn --reload`). Seed data script (`scripts/seed_dev.py`) populates a sample project with a pre-parsed OpenAPI spec for immediate UI development without needing a real upload.
+Hot-reload enabled for both frontend (Vite dev server) and backend (`uvicorn --reload`). A seed-data script (a sample project with a pre-parsed OpenAPI spec) is planned but not implemented yet; upload a spec through the UI to get started.
 
 ---
 
