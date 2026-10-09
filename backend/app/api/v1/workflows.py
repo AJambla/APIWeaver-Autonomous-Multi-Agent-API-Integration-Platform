@@ -245,11 +245,13 @@ async def approve_workflow_gate(
 
     # Claim the gate atomically: two concurrent approvals both saw PAUSED above, and
     # each started a resume orchestrator. Only the request that flips the row proceeds.
-    new_status = WorkflowStatus.RUNNING if payload.approved else WorkflowStatus.FAILED
+    # Approval re-queues the run; the executor's claim moves it to RUNNING. The fresh
+    # heartbeat restarts the queue-timeout clock (created_at may be days old by now).
+    new_status = WorkflowStatus.QUEUED if payload.approved else WorkflowStatus.FAILED
     claimed = await session.execute(
         update(WorkflowRun)
         .where(WorkflowRun.id == run.id, WorkflowRun.status == WorkflowStatus.PAUSED_FOR_APPROVAL)
-        .values(status=new_status)
+        .values(status=new_status, heartbeat_at=datetime.datetime.now(datetime.UTC))
         .execution_options(synchronize_session=False)
     )
     if claimed.rowcount != 1:

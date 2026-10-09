@@ -101,10 +101,11 @@ async def upload_document(
         stale.completed_at = stale.completed_at or datetime.datetime.now(datetime.UTC)
 
     # Create associated workflow run for parsing & planning pipeline
+    # Queued: the executor's claim is what moves a run to RUNNING (and starts its lease).
     run = WorkflowRun(
         project_id=project.id,
         triggered_by=principal.user_id,
-        status=WorkflowStatus.RUNNING,
+        status=WorkflowStatus.QUEUED,
     )
     session.add(run)
     await session.flush()

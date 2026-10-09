@@ -6,6 +6,7 @@ project CRUD, with every error rendered in the `API.md §5` envelope.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -28,8 +29,9 @@ from app.core.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
 from app.core.ratelimit import RateLimitMiddleware
 from app.core.security import load_keys
 from app.core.telemetry import instrument_backends, instrument_http
-from app.db.session import dispose_engine, get_engine
+from app.db.session import dispose_engine, get_engine, get_sessionmaker
 from app.services.storage_service import create_object_storage
+from app.workflows.reaper import run_reaper_forever
 
 logger = get_logger(__name__)
 
@@ -82,10 +84,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     instrument_backends(engine)
 
+    # Fails runs whose executor died or that nobody claimed (workflows/reaper.py).
+    reaper = asyncio.create_task(run_reaper_forever(get_sessionmaker(settings), settings))
+
     logger.info("application_started", app_env=settings.app_env)
     try:
         yield
     finally:
+        reaper.cancel()
         await app.state.redis.aclose()
         await app.state.redis_stream.aclose()
         await dispose_engine()

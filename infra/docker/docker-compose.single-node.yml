@@ -174,6 +174,10 @@ services:
     networks:
       - apiweaver
     command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4 -Q celery,dlq
+    # Celery's warm shutdown finishes in-flight tasks; docker's default 10 s then SIGKILLs.
+    # A run killed anyway is failed by the API's lease reaper (workflows/reaper.py), not
+    # left "running" or restarted from scratch by redelivery.
+    stop_grace_period: 2m
     # No healthcheck, deliberately (`audit M10`). The previous one - `celery inspect ping` with
     # `timeout: 5s` - reported a healthy worker as unhealthy and leaked a process every poll.
     # Measured against a throwaway container of apiweaver/agent-worker:latest while the stack's

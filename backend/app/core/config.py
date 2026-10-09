@@ -228,6 +228,13 @@ class Settings(BaseSettings):
     # shorter Celery defaults; a full pipeline (LLM codegen + sandbox tests + repairs)
     # routinely needs more than five minutes.
     workflow_task_time_limit_seconds: int = 3600
+    # Run leases (workflows/reaper.py). An executing run refreshes heartbeat_at every
+    # interval; one silent for longer than the lease lost its worker. A queued run nobody
+    # claimed within the queue timeout is failed rather than left "queued" forever.
+    workflow_heartbeat_interval_seconds: int = 30
+    workflow_lease_seconds: int = 300
+    workflow_queue_timeout_seconds: int = 7200
+    workflow_reaper_interval_seconds: int = 60
     # Workflow progress percentage mapping by node name
     workflow_node_progress_map: dict[str, int] = Field(
         default_factory=lambda: dict(DEFAULT_WORKFLOW_NODE_PROGRESS)
