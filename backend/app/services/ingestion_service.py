@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import uuid
@@ -16,7 +17,7 @@ from app.core.logging import get_logger
 from app.models.document import Document, DocumentVersion
 from app.models.enums import DependencyRelationship, DocumentFormat
 from app.models.spec import APISpec, Endpoint, EndpointDependency, EndpointParameter
-from app.services.spec_normalizer import NormalizedSpec, normalize
+from app.services.spec_normalizer import NormalizedSpec, UnsafeDocumentError, normalize
 from app.services.storage_service import ObjectStorage
 
 logger = get_logger(__name__)
@@ -64,12 +65,16 @@ async def ingest_document(
     """
     # Try deterministic normalization first
     try:
-        normalized = normalize(content, filename, format_hint)
+        # Parsing a spec of up to max_upload_bytes is pure CPU; keep it off the event loop.
+        normalized = await asyncio.to_thread(normalize, content, filename, format_hint)
+    except UnsafeDocumentError:
+        # Not "unstructured": unsafe to process at all, including as freeform text.
+        raise
     except UnprocessableEntityError as exc:
         if format_hint is not None:
             # If a format hint was passed and failed, attempt pure content-sniffing without the hint
             try:
-                normalized = normalize(content, filename, None)
+                normalized = await asyncio.to_thread(normalize, content, filename, None)
             except UnprocessableEntityError:
                 normalized = None
         else:
