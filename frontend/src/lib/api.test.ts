@@ -62,7 +62,9 @@ describe('resolveEndpoint', () => {
 });
 
 describe('apiFetchAll', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
   it('follows next_cursor until has_more is false', async () => {
     const pages: Record<string, unknown> = {

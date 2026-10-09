@@ -57,18 +57,18 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         started = time.perf_counter()
         try:
             response = await call_next(request)
+            response.headers[REQUEST_ID_HEADER] = request_id
+            # Logged before the context var is reset, so the access line carries it.
+            logger.info(
+                "request_completed",
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            )
+            return response
         finally:
             request_id_ctx.reset(token)
-
-        response.headers[REQUEST_ID_HEADER] = request_id
-        logger.info(
-            "request_completed",
-            method=request.method,
-            path=request.url.path,
-            status_code=response.status_code,
-            duration_ms=round((time.perf_counter() - started) * 1000, 2),
-        )
-        return response
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

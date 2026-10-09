@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import uuid
 
@@ -59,7 +60,8 @@ async def trigger_generate(
     ).all()
     for stale in stale_runs:
         stale.status = WorkflowStatus.CANCELLED
-        stale.error_details = {"reason": "superseded_by_new_generate"}
+        # Superseded: cancelled by the newer run, finished now.
+        stale.completed_at = stale.completed_at or datetime.datetime.now(datetime.UTC)
 
     # Find or create workflow run
     run = WorkflowRun(

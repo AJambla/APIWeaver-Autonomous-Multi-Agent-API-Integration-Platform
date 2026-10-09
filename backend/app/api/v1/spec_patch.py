@@ -69,6 +69,10 @@ async def patch_endpoint(
     # Apply partial update
     update_data = payload.model_dump(exclude_unset=True)
     parameters = update_data.pop("parameters", None)
+    # These columns are NOT NULL: an explicit null means "leave as is", not "erase".
+    for required in ("method", "path", "response_schemas", "deprecated", "is_destructive"):
+        if required in update_data and update_data[required] is None:
+            update_data.pop(required)
 
     for field, value in update_data.items():
         if hasattr(endpoint, field):
