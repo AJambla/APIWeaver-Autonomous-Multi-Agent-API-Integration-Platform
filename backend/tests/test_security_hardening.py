@@ -241,31 +241,39 @@ def test_a_blank_metrics_token_counts_as_unset(test_settings: Settings) -> None:
 
 
 async def test_password_hashing_does_not_block_the_event_loop() -> None:
-    """Argon2 takes ~200 ms; run inline it froze every other request on the worker."""
+    """Argon2 takes ~200 ms; run inline it froze every other request on the worker.
+
+    Measured as the longest gap between ticks of a concurrent task, against the duration
+    of one synchronous hash on this machine: blocking would make the gap at least that
+    long. (Counting ticks was flaky on Windows, where sleep(0.005) lasts ~15.6 ms.)
+    """
     import asyncio
     import time
 
-    from app.core.security import hash_password_async, verify_password_async
+    from app.core.security import hash_password, hash_password_async, verify_password_async
 
-    ticks = 0
+    started = time.perf_counter()
+    hash_password("calibration password")
+    one_hash = time.perf_counter() - started
+
+    gaps: list[float] = []
     stop = False
 
     async def ticker() -> None:
-        nonlocal ticks
+        last = time.perf_counter()
         while not stop:
-            ticks += 1
-            await asyncio.sleep(0.005)
+            await asyncio.sleep(0)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
 
     task = asyncio.create_task(ticker())
-    started = time.perf_counter()
     hashed = await hash_password_async("correct horse battery")
     assert await verify_password_async("correct horse battery", hashed)
-    elapsed = time.perf_counter() - started
     stop = True
     await task
 
-    # The loop kept running for most of the hashing time instead of stalling.
-    assert ticks >= max(3, int(elapsed / 0.005 * 0.3)), (ticks, elapsed)
+    assert max(gaps) < one_hash / 2, (max(gaps), one_hash)
 
 
 def test_log_redaction_removes_every_character_of_a_real_api_key() -> None:
@@ -319,3 +327,67 @@ def test_token_counts_are_logged_but_credentials_are_not() -> None:
     assert redacted["tokens_before"] == 10
     for secret_key in ("access_token", "refresh_tokens", "token", "api_token"):
         assert redacted[secret_key] == REDACTED, secret_key
+
+
+def test_llm_probe_reports_a_category_not_the_raw_provider_error() -> None:
+    import httpx
+
+    from app.api.v1.health import describe_provider_error
+
+    request = httpx.Request("POST", "https://llm.example/v1/chat?key=sk-secret-in-url")
+    rejected = httpx.HTTPStatusError(
+        "401 Unauthorized: {'error': 'bad key sk-secret-in-body'}",
+        request=request,
+        response=httpx.Response(401, request=request),
+    )
+    message = describe_provider_error(rejected)
+    assert "401" in message and "rejected" in message
+    assert "sk-secret" not in message
+    assert "sk-secret" not in describe_provider_error(RuntimeError("boom sk-secret-x"))
+
+
+async def test_oversized_bodies_are_refused_before_parsing(client, test_settings) -> None:
+    """Only nginx bounded bodies; reached directly, the API spooled them to disk first."""
+    from app.core.middleware import MAX_JSON_BODY_BYTES
+
+    declared = await client.post(
+        "/api/v1/auth/login",
+        content=b"{" + b" " * (MAX_JSON_BODY_BYTES + 10) + b"}",
+        headers={"content-type": "application/json"},
+    )
+    assert declared.status_code == 413, declared.text
+    assert declared.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
+
+    async def chunks():
+        for _ in range(3):
+            yield b" " * (MAX_JSON_BODY_BYTES // 2 + 1)
+
+    streamed = await client.post(
+        "/api/v1/auth/login", content=chunks(), headers={"content-type": "application/json"}
+    )
+    assert streamed.status_code == 413, streamed.text
+
+    small = await client.post(
+        "/api/v1/auth/login", json={"email": "a@example.com", "password": "wrong-password"}
+    )
+    assert small.status_code == 401
+
+
+async def test_a_500_still_carries_cors_and_request_id(app, client) -> None:
+    """The generic handler ran outside CORS and request-id: browsers saw a CORS error."""
+
+    async def boom() -> None:
+        raise RuntimeError("database password=hunter2 leaked in a stack frame")
+
+    app.add_api_route("/api/v1/__boom", boom, methods=["GET"])
+    origin = app.state.settings.cors_origins[0]
+
+    res = await client.get("/api/v1/__boom", headers={"Origin": origin, "X-Request-ID": "req_trace123"})
+
+    assert res.status_code == 500
+    assert res.headers.get("access-control-allow-origin") == origin
+    assert res.headers.get("x-request-id") == "req_trace123"
+    body = res.json()
+    assert body["error"]["code"] == "INTERNAL_ERROR"
+    assert body["error"]["request_id"] == "req_trace123"
+    assert "hunter2" not in res.text

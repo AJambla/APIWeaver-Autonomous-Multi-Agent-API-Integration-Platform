@@ -11,10 +11,14 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 
+from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.core.errors import ErrorCode, build_error_body
 from app.core.logging import get_logger, request_id_ctx
 
 logger = get_logger(__name__)
@@ -93,3 +97,106 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         return response
 
+
+
+# Room for multipart boundaries and form fields around a max-size file.
+_MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+# Every non-upload route takes small JSON bodies.
+MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
+
+
+class BodySizeLimitMiddleware:
+    """Refuse request bodies larger than the route could ever accept.
+
+    The upload route checked `max_upload_bytes` only after Starlette had already spooled
+    the whole multipart body to disk, and nothing bounded JSON bodies at all; only nginx's
+    client_max_body_size stood in front, which does not apply when the API is reached
+    directly or through the ALB. A declared Content-Length over the limit is refused
+    before reading; a chunked body is counted as it streams.
+    """
+
+    def __init__(self, app: ASGIApp, *, max_upload_bytes: int) -> None:
+        self.app = app
+        self.max_upload_bytes = max_upload_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        limit = (
+            self.max_upload_bytes + _MULTIPART_OVERHEAD_BYTES
+            if headers.get("content-type", "").startswith("multipart/form-data")
+            else MAX_JSON_BODY_BYTES
+        )
+        declared = headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > limit:
+            response = JSONResponse(
+                status_code=413,
+                content=build_error_body(
+                    code=ErrorCode.PAYLOAD_TOO_LARGE,
+                    message="The request body is larger than this endpoint accepts.",
+                    request_id=scope.get("state", {}).get("request_id", ""),
+                ),
+            )
+            await response(scope, receive, send)
+            return
+
+        received = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    # An HTTPException: FastAPI's body parsing re-raises these unchanged
+                    # (anything else becomes a generic 400 "error parsing the body").
+                    raise HTTPException(
+                        status_code=413,
+                        detail="The request body is larger than this endpoint accepts.",
+                    )
+            return message
+
+        await self.app(scope, limited_receive, send)
+
+
+class UnhandledErrorMiddleware:
+    """Turn an unhandled exception into the 500 envelope *inside* CORS and request-id.
+
+    FastAPI's `Exception` handler runs in Starlette's outermost ServerErrorMiddleware, so
+    its 500 skipped every user middleware: the browser saw a CORS failure instead of the
+    envelope, there was no X-Request-ID to quote, and `request_completed` was never logged.
+    Answered here, the response travels back out through those middlewares like any other.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        response_started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception:
+            if response_started:
+                raise  # too late for a clean response; let the server close the stream
+            logger.exception("unhandled_exception", path=scope.get("path"))
+            response = JSONResponse(
+                status_code=500,
+                content=build_error_body(
+                    code=ErrorCode.INTERNAL_ERROR,
+                    message="An internal error occurred.",
+                    request_id=scope.get("state", {}).get("request_id", ""),
+                ),
+            )
+            await response(scope, receive, send)

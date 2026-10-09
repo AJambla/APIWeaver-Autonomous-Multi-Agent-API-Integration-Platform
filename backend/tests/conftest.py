@@ -97,6 +97,9 @@ class FakeRedis:
     async def exists(self, key: str) -> int:
         return 1 if self._live(key) is not None else 0
 
+    async def get(self, key: str) -> str | None:
+        return self._live(key)
+
     async def setex(self, key: str, ttl: int, value: str) -> None:
         self._store[key] = (value, time.time() + ttl)
 

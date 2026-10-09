@@ -112,6 +112,7 @@ def test_decode_refuses_an_hs256_token_signed_with_the_public_key(
         "exp": int((now + datetime.timedelta(hours=1)).timestamp()),
         "jti": str(uuid.uuid4()),
         "iss": test_settings.jwt_issuer,
+        "aud": test_settings.jwt_audience,
     }
     segments = [
         _b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()),
@@ -562,3 +563,59 @@ async def test_role_revocation_takes_effect_before_token_expiry(
     # Still authenticated, but now carries no org membership.
     assert response.status_code == 200
     assert response.json()["organizations"] == []
+
+
+
+async def test_a_token_for_another_audience_is_rejected(test_settings) -> None:
+    """Same issuer and key, minted for a different service: not accepted here."""
+    import jwt as pyjwt
+
+    from app.core.security import JWTError, decode_access_token, load_keys
+
+    now = datetime.datetime.now(datetime.UTC)
+    claims = {
+        "sub": str(uuid.uuid4()),
+        "iat": int(now.timestamp()),
+        "exp": int((now + datetime.timedelta(minutes=5)).timestamp()),
+        "jti": str(uuid.uuid4()),
+        "iss": test_settings.jwt_issuer,
+    }
+    key = load_keys(test_settings).private_key
+    for audience in (None, "billing-service"):
+        token = pyjwt.encode(
+            {**claims, **({"aud": audience} if audience else {})}, key, algorithm="RS256"
+        )
+        with pytest.raises(JWTError):
+            decode_access_token(token, test_settings)
+
+
+async def test_logout_works_with_only_the_refresh_token(client: AsyncClient) -> None:
+    """A client whose access token expired could not revoke its refresh family."""
+    email = f"logout-{uuid.uuid4().hex[:8]}@example.com"
+    registered = await client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": TEST_PASSWORD, "full_name": "L", "organization_name": "L Org"},
+    )
+    refresh_token = registered.json()["refresh_token"]
+
+    out = await client.post("/api/v1/auth/logout", json={"refresh_token": refresh_token})
+    assert out.status_code == 204, out.text
+
+    reuse = await client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
+    assert reuse.status_code == 401
+
+    anonymous = await client.post("/api/v1/auth/logout", json={})
+    assert anonymous.status_code == 401
+
+
+async def test_new_passwords_need_eight_characters(client: AsyncClient) -> None:
+    res = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": f"short-{uuid.uuid4().hex[:8]}@example.com",
+            "password": "abcdefg",
+            "full_name": "S",
+            "organization_name": "S Org",
+        },
+    )
+    assert res.status_code in (400, 422), res.text

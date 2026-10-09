@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import APIError, NotFoundError
+from app.core.logging import get_logger
 from app.models.enums import ExportType, WorkflowStatus
 from app.models.export import Export
 from app.models.project import Project
@@ -29,6 +30,8 @@ from app.services.workflow_input_service import (
 from app.workflows.agents.export_agent import ExportAgent
 from app.workflows.dispatch import dispatch_run
 from app.workflows.state import WorkflowState
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["export"])
 
@@ -178,8 +181,13 @@ async def export_mcp(
     await session.commit()
 
     if mcp_failed or mcp_artifact is None:
-        error_msg = (mcp_artifact.get("error") if mcp_artifact else None) or "MCP export packaging failed."
-        raise APIError(error_msg)
+        # The packager's error is internal (exception text, storage keys); log it.
+        logger.error(
+            "mcp_export_failed",
+            project_id=str(project.id),
+            error=(mcp_artifact.get("error") if mcp_artifact else None),
+        )
+        raise APIError("MCP export packaging failed.")
 
     return MCPExportResponse(
         mcp_manifest_url=f"/api/v1/projects/{project.id}/exports/mcp/manifest.json",
