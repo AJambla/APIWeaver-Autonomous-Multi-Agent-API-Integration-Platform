@@ -7,6 +7,7 @@ in-memory implementation.
 
 from __future__ import annotations
 
+import mimetypes
 from typing import Any, Protocol
 
 from app.core.config import Settings
@@ -56,6 +57,9 @@ class AsyncS3ObjectStorage:
     def _target_bucket_for_key(self, key: str, bucket: str | None = None) -> str:
         if bucket:
             return bucket
+        # Uploaded documents and specs belong in the uploads bucket
+        if "/documents/" in key or key.startswith(("documents/", "uploads/")):
+            return self._uploads_bucket
         # Artifacts, exports, generated SDKs and repair files belong in the dedicated artifacts bucket
         if key.startswith(("exports/", "artifacts/", "projects/", "generated/")):
             return self._artifacts_bucket
@@ -101,7 +105,9 @@ class AsyncS3ObjectStorage:
     async def put(self, *, key: str, content: bytes, content_type: str | None = None, bucket: str | None = None) -> None:
         key = validate_storage_key(key)
         target_bucket = self._target_bucket_for_key(key, bucket)
-        extra = {"ContentType": content_type} if content_type else {}
+        if not content_type:
+            content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+        extra = {"ContentType": content_type}
         async with await self._get_client() as client:
             await client.put_object(Bucket=target_bucket, Key=key, Body=content, **extra)
         s3_upload_bytes_total.inc(len(content))
@@ -119,7 +125,8 @@ class AsyncS3ObjectStorage:
                     logger.debug("storage_fallback_delete_failed", key=key, bucket=fallback, error=str(del_err))
 
     async def upload(self, key: str, content: bytes, bucket: str | None = None) -> None:
-        await self.put(key=key, content=content, content_type="text/plain", bucket=bucket)
+        content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+        await self.put(key=key, content=content, content_type=content_type, bucket=bucket)
 
     async def download(self, key: str, bucket: str | None = None) -> bytes:
         result = await self.get(key=key, bucket=bucket)

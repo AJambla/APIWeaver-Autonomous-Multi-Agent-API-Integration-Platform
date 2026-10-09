@@ -43,6 +43,7 @@ class QdrantClient(Protocol):
         project_id: uuid.UUID,
         document_id: uuid.UUID,
         chunks: list[dict[str, Any]],
+        organization_id: uuid.UUID | None = None,
         collection_name: str = DEFAULT_COLLECTION,
     ) -> None: ...
 
@@ -52,6 +53,7 @@ class QdrantClient(Protocol):
         project_id: uuid.UUID,
         query_vector: list[float],
         limit: int = 5,
+        organization_id: uuid.UUID | None = None,
         collection_name: str = DEFAULT_COLLECTION,
     ) -> list[ScoredChunk]: ...
 
@@ -60,6 +62,7 @@ class QdrantClient(Protocol):
         *,
         project_id: uuid.UUID,
         document_id: uuid.UUID,
+        organization_id: uuid.UUID | None = None,
         collection_name: str = DEFAULT_COLLECTION,
     ) -> None: ...
 
@@ -110,30 +113,47 @@ class HttpQdrantClient:
         project_id: uuid.UUID,
         document_id: uuid.UUID,
         chunks: list[dict[str, Any]],
+        organization_id: uuid.UUID | None = None,
         collection_name: str = DEFAULT_COLLECTION,
     ) -> None:
         await self.ensure_collection(collection_name)
+        # Delete prior chunks for this document to prevent orphans when chunk count changes (C-10)
+        await self.delete_by_document(
+            project_id=project_id,
+            document_id=document_id,
+            organization_id=organization_id,
+            collection_name=collection_name,
+        )
+        if not chunks:
+            return
+
         url = f"{self.base_url}/collections/{collection_name}/points"
         points = []
-        for chunk in chunks:
-            point_id = chunk.get("id") or str(uuid.uuid4())
+        doc_uuid = uuid.UUID(str(document_id))
+        for idx, chunk in enumerate(chunks):
+            # Deterministic uuid5 based on document_id and chunk index (C-09)
+            point_id = chunk.get("id") or str(uuid.uuid5(doc_uuid, str(idx)))
+            payload: dict[str, Any] = {
+                **chunk.get("metadata", {}),
+                "project_id": str(project_id),
+                "document_id": str(document_id),
+                "text": chunk["text"],
+            }
+            if organization_id:
+                payload["organization_id"] = str(organization_id)
             points.append({
                 "id": point_id,
                 "vector": chunk["vector"],
-                # Tenant keys last: chunk metadata must never overwrite project_id, the
-                # key every search filters on.
-                "payload": {
-                    **chunk.get("metadata", {}),
-                    "project_id": str(project_id),
-                    "document_id": str(document_id),
-                    "text": chunk["text"],
-                },
+                "payload": payload,
             })
 
+        batch_size = 100
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
-                res = await client.put(url, json={"points": points})
-                res.raise_for_status()
+                for i in range(0, len(points), batch_size):
+                    batch = points[i : i + batch_size]
+                    res = await client.put(url, json={"points": batch})
+                    res.raise_for_status()
             except Exception as exc:
                 logger.error("qdrant_upsert_failed", error=str(exc))
                 raise
@@ -144,17 +164,19 @@ class HttpQdrantClient:
         project_id: uuid.UUID,
         query_vector: list[float],
         limit: int = 5,
+        organization_id: uuid.UUID | None = None,
         collection_name: str = DEFAULT_COLLECTION,
     ) -> list[ScoredChunk]:
         url = f"{self.base_url}/collections/{collection_name}/points/search"
+        must_filters: list[dict[str, Any]] = [
+            {"key": "project_id", "match": {"value": str(project_id)}},
+        ]
+        if organization_id:
+            must_filters.append({"key": "organization_id", "match": {"value": str(organization_id)}})
         payload = {
             "vector": query_vector,
             "limit": limit,
-            "filter": {
-                "must": [
-                    {"key": "project_id", "match": {"value": str(project_id)}},
-                ]
-            },
+            "filter": {"must": must_filters},
             "with_payload": True,
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -186,17 +208,17 @@ class HttpQdrantClient:
         *,
         project_id: uuid.UUID,
         document_id: uuid.UUID,
+        organization_id: uuid.UUID | None = None,
         collection_name: str = DEFAULT_COLLECTION,
     ) -> None:
         url = f"{self.base_url}/collections/{collection_name}/points/delete"
-        payload = {
-            "filter": {
-                "must": [
-                    {"key": "project_id", "match": {"value": str(project_id)}},
-                    {"key": "document_id", "match": {"value": str(document_id)}},
-                ]
-            }
-        }
+        must_filters: list[dict[str, Any]] = [
+            {"key": "project_id", "match": {"value": str(project_id)}},
+            {"key": "document_id", "match": {"value": str(document_id)}},
+        ]
+        if organization_id:
+            must_filters.append({"key": "organization_id", "match": {"value": str(organization_id)}})
+        payload = {"filter": {"must": must_filters}}
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 res = await client.post(url, json=payload)

@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import client_ip, get_current_principal, get_db, get_object_storage, get_redis
-from app.core.errors import NotFoundError, UnprocessableEntityError
+from app.core.errors import NotFoundError, PayloadTooLargeError, UnprocessableEntityError
 from app.models.enums import ActorType, HTTPMethod, WorkflowStatus
 from app.models.project import Project
 from app.models.spec import APISpec, Endpoint
@@ -61,11 +61,23 @@ async def upload_document(
 ) -> UploadResponse:
     if not file.filename:
         raise UnprocessableEntityError("A filename is required.")
-    content = await file.read(settings.max_upload_bytes + 1)
-    if len(content) > settings.max_upload_bytes:
-        raise UnprocessableEntityError("The uploaded file exceeds the configured size limit.")
-    if not content:
+    chunk_size = 64 * 1024
+    chunks: list[bytes] = []
+    total_bytes = 0
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > settings.max_upload_bytes:
+            raise PayloadTooLargeError(
+                f"File size exceeds limit of {settings.max_upload_bytes} bytes."
+            )
+        chunks.append(chunk)
+
+    if total_bytes == 0:
         raise UnprocessableEntityError("The uploaded file is empty.")
+    content = b"".join(chunks)
 
     # A refusal raised here propagates as 422, like the input checks above: `status: 202`
     # means an async workflow started (`API.md §5`), and there is nothing to process if no
