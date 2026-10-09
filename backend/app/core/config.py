@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     rate_limit_free_rpm: int = 120
     rate_limit_pro_rpm: int = 600
     rate_limit_enterprise_rpm: int = 3000
+    # Ceiling for an organization's self-service rate-limit override. Org owners set the
+    # override themselves, so without a cap one tenant could configure itself out of the
+    # cluster-protection limiter entirely.
+    rate_limit_override_max_rpm: int = 10_000
 
     # --- LLM providers (conditional) ------------------------------------------
     openai_api_key: str | None = None
