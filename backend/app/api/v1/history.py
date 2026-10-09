@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db
 from app.core.errors import ConflictError, NotFoundError
-from app.models.enums import ActorType
 from app.models.project import Project
 from app.models.versioning import ArtifactVersion
 from app.models.workflow import WorkflowRun
@@ -174,18 +173,12 @@ async def rollback_version(
     if version.project_id != project.id:
         raise NotFoundError("Version not found in this project.")
 
-    # Deactivate all other versions of same type
-    await session.execute(
-        select(ArtifactVersion)
-        .where(
-            ArtifactVersion.project_id == project.id,
-            ArtifactVersion.artifact_type == version.artifact_type,
-            ArtifactVersion.id != version.id,
-            ArtifactVersion.is_active == True,  # noqa: E712
-        )
-    )
-    # SQLAlchemy 2.0 style update
+    # Serialize rollbacks per project (row lock on Postgres), so two concurrent
+    # rollbacks cannot each deactivate the other's target and leave two active versions.
+    # Migration 0014's partial unique index is the backstop.
     from sqlalchemy import update
+
+    await session.execute(select(Project.id).where(Project.id == project.id).with_for_update())
     await session.execute(
         update(ArtifactVersion)
         .where(
@@ -203,9 +196,8 @@ async def rollback_version(
     await audit_service.record(
         session,
         action="artifact.rollback",
-        actor_type=ActorType.USER,
+        **audit_service.actor(principal),
         organization_id=project.organization_id,
-        actor_user_id=principal.user_id,
         resource_type="artifact_version",
         resource_id=str(version.id),
         metadata={"artifact_type": version.artifact_type, "version_number": version.version_number},
