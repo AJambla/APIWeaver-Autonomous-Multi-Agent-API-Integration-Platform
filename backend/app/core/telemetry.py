@@ -66,7 +66,14 @@ def _build_tracer_provider() -> Any:
     provider = TracerProvider(resource=resource)
 
     if endpoint:
-        exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+        insecure_env = os.getenv("OTEL_EXPORTER_OTLP_INSECURE")
+        if insecure_env is not None:
+            insecure = insecure_env.lower() in ("true", "1", "yes")
+        elif settings.otel_exporter_otlp_insecure is not None:
+            insecure = settings.otel_exporter_otlp_insecure
+        else:
+            insecure = not endpoint.startswith("https://")
+        exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
         provider.add_span_processor(BatchSpanProcessor(exporter))
 
     trace.set_tracer_provider(provider)
@@ -162,13 +169,31 @@ def _setup_langsmith_correlation() -> None:
 
             def on_end(self, span: Any) -> None:
                 try:
-                    trace_id = format(span.get_span_context().trace_id, "032x")
+                    import uuid
+
+                    span_ctx = span.get_span_context()
+                    trace_id = format(span_ctx.trace_id, "032x")
+                    span_id = getattr(span_ctx, "span_id", None)
+                    if span_id is not None:
+                        run_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{trace_id}-{span_id}"))
+                    else:
+                        run_id = str(uuid.uuid4())
+
+                    parent_run_id = None
+                    parent_span = getattr(span, "parent", None)
+                    if (
+                        parent_span is not None
+                        and getattr(parent_span, "is_valid", False)
+                        and getattr(parent_span, "span_id", None)
+                    ):
+                        parent_run_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{trace_id}-{parent_span.span_id}"))
+
                     span_status = "completed" if span.status.status_code == trace.StatusCode.UNSET else "error"
                     self.client.create_run(
                         name=span.name,
-                        run_id=trace_id,
+                        run_id=run_id,
                         trace_id=trace_id,
-                        parent_run_id=None,
+                        parent_run_id=parent_run_id,
                         start_time=span.start_time,
                         end_time=span.end_time,
                         status=span_status,
