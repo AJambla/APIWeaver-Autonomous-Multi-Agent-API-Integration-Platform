@@ -120,3 +120,129 @@ async def test_github_oauth_client_requests_use_configured_urls(monkeypatch):
     assert urls[0] == "https://ghe.mycorp.internal/login/oauth/access_token"
     assert urls[1] == "https://ghe.mycorp.internal/api/v3/user"
     assert urls[2] == "https://ghe.mycorp.internal/api/v3/user/emails"
+
+
+class _FakeGitHub(httpx.AsyncBaseTransport):
+    """Just enough of the Git Data API to tell empty, missing-branch and normal repos apart."""
+
+    def __init__(self, *, empty: bool, branches: dict[str, str] | None = None) -> None:
+        self.empty = empty
+        self.branches = dict(branches or {})
+        self.commits: dict[str, dict[str, Any]] = {sha: {"tree": f"tree-{sha}"} for sha in self.branches.values()}
+        self.calls: list[tuple[str, str, Any]] = []
+        self._n = 0
+
+    def _sha(self, kind: str) -> str:
+        self._n += 1
+        return f"{kind}{self._n}"
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        path = request.url.path.removeprefix("/repos/acme/sdk")
+        body = _json.loads(request.content) if request.content else None
+        self.calls.append((request.method, path, body))
+        if request.method == "GET" and path.startswith("/git/refs/heads/"):
+            if self.empty:
+                return httpx.Response(409, json={"message": "Git Repository is empty."})
+            sha = self.branches.get(path.removeprefix("/git/refs/heads/"))
+            return httpx.Response(200, json={"object": {"sha": sha}}) if sha else httpx.Response(404)
+        if request.method == "GET" and path == "":
+            return httpx.Response(200, json={"default_branch": "main"})
+        if request.method == "PUT" and path == "/contents/README.md":
+            sha = self._sha("init")
+            self.empty = False
+            self.branches[body["branch"]] = sha
+            self.commits[sha] = {"tree": f"tree-{sha}"}
+            return httpx.Response(201, json={"commit": {"sha": sha}})
+        if request.method == "GET" and path.startswith("/git/commits/"):
+            commit = self.commits.get(path.removeprefix("/git/commits/"))
+            return httpx.Response(200, json={"tree": {"sha": commit["tree"]}}) if commit else httpx.Response(404)
+        if request.method == "POST" and path == "/git/blobs":
+            if self.empty:
+                return httpx.Response(409, json={"message": "Git Repository is empty."})
+            return httpx.Response(201, json={"sha": self._sha("blob")})
+        if request.method == "POST" and path == "/git/trees":
+            return httpx.Response(201, json={"sha": self._sha("tree")})
+        if request.method == "POST" and path == "/git/commits":
+            sha = self._sha("commit")
+            self.commits[sha] = {"tree": body["tree"], "parents": body["parents"]}
+            return httpx.Response(201, json={"sha": sha})
+        if request.method == "POST" and path == "/git/refs":
+            self.branches[body["ref"].removeprefix("refs/heads/")] = body["sha"]
+            return httpx.Response(201, json={})
+        if request.method == "PATCH" and path.startswith("/git/refs/heads/"):
+            branch = path.removeprefix("/git/refs/heads/")
+            if branch not in self.branches or body.get("force"):
+                return httpx.Response(422)
+            self.branches[branch] = body["sha"]
+            return httpx.Response(200, json={})
+        return httpx.Response(404)
+
+
+def _client_with(monkeypatch, fake: _FakeGitHub) -> GitHubAppClient:
+    original = httpx.AsyncClient
+
+    def _patched(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = fake
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _patched)
+    return GitHubAppClient(
+        Settings(
+            app_env="development",
+            jwt_private_key_path="backend/tests/fixtures/jwt_private.pem",
+            jwt_public_key_path="backend/tests/fixtures/jwt_public.pem",
+        )
+    )
+
+
+FILES = [{"path": "client.py", "content": "x = 1\n"}]
+
+
+@pytest.mark.asyncio
+async def test_push_into_an_empty_repository_initializes_it_first(monkeypatch):
+    fake = _FakeGitHub(empty=True)
+    client = _client_with(monkeypatch, fake)
+
+    commit = await client.push_files_via_git_data_api("tok", "acme/sdk", FILES, "SDK", "main")
+
+    assert fake.branches["main"] == commit
+    assert fake.commits[commit]["parents"] == ["init1"]
+
+
+@pytest.mark.asyncio
+async def test_push_to_a_new_branch_creates_it_from_the_default_branch(monkeypatch):
+    fake = _FakeGitHub(empty=False, branches={"main": "base"})
+    client = _client_with(monkeypatch, fake)
+
+    commit = await client.push_files_via_git_data_api("tok", "acme/sdk", FILES, "SDK", "sdk-v1")
+
+    assert fake.branches == {"main": "base", "sdk-v1": commit}
+    assert fake.commits[commit]["parents"] == ["base"]
+
+
+@pytest.mark.asyncio
+async def test_push_to_an_existing_branch_fast_forwards_without_force(monkeypatch):
+    fake = _FakeGitHub(empty=False, branches={"main": "base"})
+    client = _client_with(monkeypatch, fake)
+
+    commit = await client.push_files_via_git_data_api("tok", "acme/sdk", FILES, "SDK", "main")
+
+    assert fake.branches["main"] == commit
+    patches = [body for method, path, body in fake.calls if method == "PATCH"]
+    assert patches == [{"sha": commit, "force": False}]
+
+
+def test_authorization_url_is_properly_encoded():
+    settings = Settings(
+        app_env="development",
+        jwt_private_key_path="backend/tests/fixtures/jwt_private.pem",
+        jwt_public_key_path="backend/tests/fixtures/jwt_public.pem",
+        github_app_client_id="client-xyz",
+        github_oauth_redirect_uri="https://app.example/cb?next=/a&b=1",
+    )
+    url = GitHubOAuthClient(settings).get_authorization_url(state="s t")
+    assert "redirect_uri=https%3A%2F%2Fapp.example%2Fcb%3Fnext%3D%2Fa%26b%3D1" in url
+    assert "scope=repo+read%3Auser+read%3Aorg" in url
+    assert "state=s+t" in url

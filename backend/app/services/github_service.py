@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 import jwt
@@ -111,15 +112,22 @@ class GitHubAppClient:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 url,
-                json={"name": name, "private": private, "auto_init": False},
+                # auto_init gives the repo a first commit on its default branch. An
+                # empty repository has no ref to build on, and the Git Data API refuses
+                # blobs in it (409), so every push into a repo created here failed.
+                json={"name": name, "private": private, "auto_init": True},
                 headers={
                     "Authorization": f"Bearer {installation_token}",
                     "Accept": "application/vnd.github+json",
                 },
             )
             if response.status_code == 422:
-                # Repo may already exist
-                existing = await self.get_repository(installation_token, org, name)
+                # Repo may already exist. For a user repo the owner is the token's user:
+                # `/repos/{name}` without an owner is always a 404.
+                owner = org or await self._token_login(installation_token)
+                existing = (
+                    await self.get_repository(installation_token, owner, name) if owner else None
+                )
                 if existing:
                     return existing
             response.raise_for_status()
@@ -144,6 +152,14 @@ class GitHubAppClient:
             response.raise_for_status()
             return response.json()
 
+    async def _token_login(self, token: str) -> str | None:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(f"{self.api_base_url}/user", headers=self._auth_headers(token))
+            if response.status_code != 200:
+                return None
+            login = response.json().get("login")
+            return str(login) if login else None
+
     async def push_files_via_git_data_api(
         self,
         installation_token: str,
@@ -152,12 +168,25 @@ class GitHubAppClient:
         message: str,
         branch: str = "main",
     ) -> str:
-        """Push multiple files using Git Data API (blob -> tree -> commit -> ref)."""
-        # 1. Get the current HEAD commit SHA
-        head_sha = await self._get_head_sha(installation_token, repo_full_name, branch)
+        """Push multiple files as one commit (blob -> tree -> commit -> ref).
 
-        # 2. Get the base tree SHA
-        base_tree_sha = await self._get_tree_sha(installation_token, repo_full_name, head_sha)
+        Works on a branch that exists (fast-forward), a branch that does not (created from
+        the default branch) and an empty repository (initialized first). The ref update is
+        never forced: a branch that moved meanwhile fails loudly instead of having the
+        user's history overwritten.
+        """
+        token, repo = installation_token, repo_full_name
+        head_sha = await self._get_branch_sha(token, repo, branch)
+        create_branch = head_sha is None
+        if head_sha is None:
+            head_sha = await self._get_default_branch_sha(token, repo)
+        if head_sha is None:
+            # Empty repository: the contents API is the one call that can create the first
+            # commit (and with it the branch).
+            head_sha = await self._initialize_empty_repo(token, repo, branch)
+            create_branch = False
+
+        base_tree_sha = await self._get_tree_sha(token, repo, head_sha)
 
         # 3. Create blobs for each file
         blob_shas = []
@@ -182,20 +211,62 @@ class GitHubAppClient:
             installation_token, repo_full_name, message, head_sha, new_tree_sha
         )
 
-        # 6. Update ref
-        await self._update_ref(installation_token, repo_full_name, branch, commit_sha)
+        # 6. Point the branch at the new commit
+        if create_branch:
+            await self._create_ref(installation_token, repo_full_name, branch, commit_sha)
+        else:
+            await self._update_ref(installation_token, repo_full_name, branch, commit_sha)
 
         return commit_sha
 
-    async def _get_head_sha(self, token: str, repo: str, branch: str) -> str:
+    async def _get_branch_sha(self, token: str, repo: str, branch: str) -> str | None:
+        """The branch's head commit, or None if the branch (or any commit) is missing.
+
+        The old version returned the empty *tree* SHA here, which the next call then
+        looked up as a commit: a 404/422 on every new repository.
+        """
         url = f"{self.api_base_url}/repos/{repo}/git/refs/heads/{branch}"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(url, headers=self._auth_headers(token))
-            if response.status_code == 404:
-                # Empty repo, return empty tree SHA
-                return "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+            if response.status_code in (404, 409):  # 409: "Git Repository is empty"
+                return None
             response.raise_for_status()
-            return response.json()["object"]["sha"]
+            return str(response.json()["object"]["sha"])
+
+    async def _get_default_branch_sha(self, token: str, repo: str) -> str | None:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{self.api_base_url}/repos/{repo}", headers=self._auth_headers(token)
+            )
+            response.raise_for_status()
+            default_branch = response.json().get("default_branch")
+        if not default_branch:
+            return None
+        return await self._get_branch_sha(token, repo, str(default_branch))
+
+    async def _initialize_empty_repo(self, token: str, repo: str, branch: str) -> str:
+        url = f"{self.api_base_url}/repos/{repo}/contents/README.md"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.put(
+                url,
+                json={
+                    "message": "Initialize repository",
+                    "content": base64.b64encode(b"# Generated by APIWeaver\n").decode(),
+                    "branch": branch,
+                },
+                headers=self._auth_headers(token),
+            )
+            response.raise_for_status()
+            return str(response.json()["commit"]["sha"])
+
+    async def _create_ref(self, token: str, repo: str, branch: str, commit_sha: str) -> None:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.api_base_url}/repos/{repo}/git/refs",
+                json={"ref": f"refs/heads/{branch}", "sha": commit_sha},
+                headers=self._auth_headers(token),
+            )
+            response.raise_for_status()
 
     async def _get_tree_sha(self, token: str, repo: str, commit_sha: str) -> str:
         url = f"{self.api_base_url}/repos/{repo}/git/commits/{commit_sha}"
@@ -248,7 +319,8 @@ class GitHubAppClient:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.patch(
                 url,
-                json={"sha": commit_sha, "force": True},
+                # Fast-forward only: never overwrite history someone else pushed.
+                json={"sha": commit_sha, "force": False},
                 headers=self._auth_headers(token),
             )
             response.raise_for_status()
@@ -296,8 +368,8 @@ class GitHubOAuthClient:
             "state": state,
             "allow_signup": "false",
         }
-        query = "&".join(f"{k}={v}" for k, v in params.items())
-        return f"{self.authorize_url}?{query}"
+        # urlencode: the redirect URI and the space-separated scopes must be escaped.
+        return f"{self.authorize_url}?{urlencode(params)}"
 
     async def exchange_code(self, code: str) -> dict[str, Any]:
         """Exchange authorization code for access token."""
