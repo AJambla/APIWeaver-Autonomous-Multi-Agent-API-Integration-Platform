@@ -587,6 +587,7 @@ async def test_upload_dispatch_to_worker_carries_a_storage_key_not_bytes(
 ) -> None:
     """Broker messages are JSON: the worker reloads the document from object storage."""
     from agent_worker import celery_app as celery_module
+
     from app.core.config import get_settings
 
     project_id, _, headers = await _setup_project(client)
