@@ -159,3 +159,44 @@ class BodySizeLimitMiddleware:
             return message
 
         await self.app(scope, limited_receive, send)
+
+
+class UnhandledErrorMiddleware:
+    """Turn an unhandled exception into the 500 envelope *inside* CORS and request-id.
+
+    FastAPI's `Exception` handler runs in Starlette's outermost ServerErrorMiddleware, so
+    its 500 skipped every user middleware: the browser saw a CORS failure instead of the
+    envelope, there was no X-Request-ID to quote, and `request_completed` was never logged.
+    Answered here, the response travels back out through those middlewares like any other.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        response_started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception:
+            if response_started:
+                raise  # too late for a clean response; let the server close the stream
+            logger.exception("unhandled_exception", path=scope.get("path"))
+            response = JSONResponse(
+                status_code=500,
+                content=build_error_body(
+                    code=ErrorCode.INTERNAL_ERROR,
+                    message="An internal error occurred.",
+                    request_id=scope.get("state", {}).get("request_id", ""),
+                ),
+            )
+            await response(scope, receive, send)

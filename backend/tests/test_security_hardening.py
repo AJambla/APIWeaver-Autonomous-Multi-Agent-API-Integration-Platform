@@ -371,3 +371,23 @@ async def test_oversized_bodies_are_refused_before_parsing(client, test_settings
         "/api/v1/auth/login", json={"email": "a@example.com", "password": "wrong-password"}
     )
     assert small.status_code == 401
+
+
+async def test_a_500_still_carries_cors_and_request_id(app, client) -> None:
+    """The generic handler ran outside CORS and request-id: browsers saw a CORS error."""
+
+    async def boom() -> None:
+        raise RuntimeError("database password=hunter2 leaked in a stack frame")
+
+    app.add_api_route("/api/v1/__boom", boom, methods=["GET"])
+    origin = app.state.settings.cors_origins[0]
+
+    res = await client.get("/api/v1/__boom", headers={"Origin": origin, "X-Request-ID": "req_trace123"})
+
+    assert res.status_code == 500
+    assert res.headers.get("access-control-allow-origin") == origin
+    assert res.headers.get("x-request-id") == "req_trace123"
+    body = res.json()
+    assert body["error"]["code"] == "INTERNAL_ERROR"
+    assert body["error"]["request_id"] == "req_trace123"
+    assert "hunter2" not in res.text
