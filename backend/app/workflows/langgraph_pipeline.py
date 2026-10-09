@@ -899,6 +899,19 @@ def create_apiweaver_graph(
                 reason=f"{failed} test(s) failed inside sandbox: {failed_desc}",
                 fallback_action="Triggering self-healing repair cycle via repair_agent",
             )
+            grouped_errors: dict[str, int] = {}
+            for r in test_updates.get("test_suite", []):
+                if r.get("status") == "failed":
+                    err_msg = r.get("error") or "Unknown error"
+                    grouped_errors[err_msg] = grouped_errors.get(err_msg, 0) + 1
+            for err_text, count in list(grouped_errors.items())[:5]:
+                await _emit_thought(
+                    state,
+                    "test_agent",
+                    f"Failure Cause [{count} test(s)]: {err_text}",
+                    level="error",
+                    action="failure_summary",
+                )
 
         terminal_logger.log_complete(
             "test_agent",
@@ -1026,6 +1039,15 @@ def create_apiweaver_graph(
                 if ra.get("target_file") == target_file_path
             ],
         }
+
+        if failure_diagnosis.get("error"):
+            await _emit_thought(
+                state,
+                "repair_agent",
+                f"Diagnosing failure on {failure_diagnosis['method']} {failure_diagnosis['path']}: {failure_diagnosis['error']}",
+                level="info",
+                action="repair_diagnosis",
+            )
 
         try:
             from app.workflows.agents import code_agent as code_agent_module

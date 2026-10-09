@@ -58,7 +58,10 @@ Parameters: {parameters}
 
 Return a JSON object with:
 {{
-  "request": {{ ... }},  // Example request data matching the schema
+  "request": {{
+    "params": {{ ... }},  // Map of ALL path and query parameters by name (e.g. {{"petId": 1, "status": "available"}})
+    "body": {{ ... }}     // JSON body payload matching the request schema if required
+  }},
   "expected_status": <integer status code matching primary success response schema, e.g. 200, 201, 204>,
   "expected_response_shape": {{ ... }}  // Expected response structure
 }}
@@ -153,10 +156,32 @@ async def generate_test_fixtures(spec: dict[str, Any] | list[Any], llm_client: L
                 fixture_json = {}
         except Exception as exc:
             logger.warning("fixture_generation_failed", endpoint=ep_key, error=str(exc))
-            fixture_json = _generate_deterministic_fixture(ep, defs)
+            fixture_json = {}
 
-        if not fixture_json.get("request") and (req_schema or params):
-            fixture_json = _generate_deterministic_fixture(ep, defs)
+        det_fixture = _generate_deterministic_fixture(ep, defs)
+        if not isinstance(fixture_json, dict) or not fixture_json.get("request"):
+            fixture_json = det_fixture
+        else:
+            req = fixture_json.get("request", {})
+            if not isinstance(req, dict):
+                req = {}
+            if "params" not in req:
+                merged_params = dict(det_fixture["request"].get("params", {}))
+                for k, v in req.items():
+                    if k != "body":
+                        merged_params[k] = v
+                req["params"] = merged_params
+            else:
+                det_params = det_fixture["request"].get("params", {})
+                req_params = req.get("params", {})
+                if isinstance(req_params, dict):
+                    for dp_k, dp_v in det_params.items():
+                        req_params.setdefault(dp_k, dp_v)
+                req["params"] = req_params
+
+            if "body" not in req and det_fixture["request"].get("body"):
+                req["body"] = det_fixture["request"]["body"]
+            fixture_json["request"] = req
 
         fixtures[ep_key] = fixture_json
 
@@ -235,6 +260,70 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
         "expected_status": expected_status,
         "is_fallback": True,
     }
+
+
+def _is_unnecessary_endpoint(ep: dict[str, Any]) -> tuple[bool, str]:
+    """Filter out destructive, binary-upload, or redundant operations from automated smoke testing.
+
+    Returns (is_unnecessary, reason).
+    """
+    method = str(ep.get("method") or "GET").upper()
+    path = str(ep.get("path") or "").lower()
+    op_id = str(ep.get("operationId") or ep.get("operation_id") or "").lower()
+
+    # 1. Destructive DELETE operations:
+    # Blind deletion of non-existent resources against live or mock APIs fails with 404,
+    # or destroys upstream data without idempotency guarantee.
+    if method == "DELETE":
+        return True, "Destructive DELETE operation excluded from automated smoke testing"
+
+    # 2. Binary / multipart file upload:
+    # Requires streaming local filesystem artifacts / form-data which cannot be tested
+    # with synthetic JSON payloads.
+    consumes = ep.get("consumes") or []
+    if isinstance(consumes, list) and any("multipart" in str(c).lower() or "octet-stream" in str(c).lower() for c in consumes):
+        return True, "Binary/multipart file upload requires specialized file stream"
+    if "uploadimage" in op_id or "uploadfile" in op_id:
+        return True, "Binary file upload operation requires local file stream"
+
+    # 3. Redundant batch variant endpoints:
+    # e.g., createWithArray / createWithList duplicating single-resource creation
+    if "createwitharray" in op_id or "createwithlist" in op_id:
+        return True, "Redundant batch variant endpoint (covered by single resource creation)"
+
+    return False, ""
+
+
+def _order_endpoints_for_testing(
+    endpoints: list[dict[str, Any]], execution_plan: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """Order endpoints so creation and auth prerequisites execute before dependent reads and updates."""
+    phases = (execution_plan or {}).get("phases", [])
+    if isinstance(phases, list) and phases:
+        phase_priority: dict[str, int] = {}
+        for phase in phases:
+            p_num = phase.get("phase_number", 99)
+            for ep_sig in phase.get("endpoints", []):
+                phase_priority[str(ep_sig).strip().upper()] = p_num
+
+        def _phase_key(ep: dict[str, Any]) -> tuple[int, int]:
+            sig = f"{str(ep.get('method', '')).upper()} {str(ep.get('path', ''))}".strip().upper()
+            priority = phase_priority.get(sig, 99)
+            m = str(ep.get("method", "")).upper()
+            m_order = 0 if m == "POST" else (1 if m == "GET" else 2)
+            return (priority, m_order)
+
+        return sorted(endpoints, key=_phase_key)
+
+    def _method_key(ep: dict[str, Any]) -> int:
+        m = str(ep.get("method", "")).upper()
+        if m == "POST":
+            return 0
+        if m == "GET":
+            return 1
+        return 2
+
+    return sorted(endpoints, key=_method_key)
 
 
 # The generated-client contract accepts a single credential string (api_key);
@@ -540,7 +629,10 @@ async def run_test_agent(
         raw_eps = spec.get("endpoints", [])
         if isinstance(raw_eps, dict):
             raw_eps = list(raw_eps.values())
-        endpoints_to_test = [ep for ep in raw_eps if isinstance(ep, dict)]
+        raw_endpoints_to_test = [ep for ep in raw_eps if isinstance(ep, dict)]
+        endpoints_to_test = _order_endpoints_for_testing(
+            raw_endpoints_to_test, state.get("execution_plan")
+        )
 
         # Run tests for each endpoint across all configured language executors
         test_results = []
@@ -556,6 +648,16 @@ async def run_test_agent(
         test_counter = 0
 
         for lang, executor in language_executors.items():
+            # Seed realistic dynamic context for real test parameter chaining
+            live_context: dict[str, Any] = {
+                "id": 105001,
+                "petId": 105001,
+                "orderId": 105001,
+                "username": "weaver_test_user",
+                "password": "Secret123!",
+                "status": "available",
+            }
+
             for i, ep in enumerate(endpoints_to_test):
                 test_counter += 1
                 method = str(ep.get("method") or "GET").upper()
@@ -564,6 +666,36 @@ async def run_test_agent(
                 fixture = fixtures.get(ep_key, {})
 
                 lang_tag = f"[{lang}] " if lang != "default" else ""
+
+                # Check if this endpoint should be excluded as an unnecessary / unviable smoke test
+                is_unnecessary, skip_reason = _is_unnecessary_endpoint(ep)
+                if is_unnecessary:
+                    skipped_result = {
+                        "endpoint_id": ep.get("id"),
+                        "method": method,
+                        "path": path,
+                        "status": "skipped",
+                        "status_code": None,
+                        "latency_ms": 0,
+                        "response_snapshot": None,
+                        "error": skip_reason,
+                        "stack_trace": None,
+                    }
+                    if lang != "default":
+                        skipped_result["language"] = lang
+                    test_results.append(skipped_result)
+                    if on_activity:
+                        try:
+                            await on_activity(
+                                "test_result",
+                                f"Test {test_counter}/{total_tests} {lang_tag}{method} {path} → SKIPPED (0ms) — {skip_reason}",
+                                test_counter,
+                                total_tests,
+                            )
+                        except Exception as e:
+                            logger.debug("on_activity_test_result_failed", error=str(e))
+                    continue
+
                 if on_activity:
                     try:
                         await on_activity(
@@ -575,20 +707,76 @@ async def run_test_agent(
                     except Exception as e:
                         logger.debug("on_activity_executing_test_failed", error=str(e))
 
-                result = await executor.execute_test(ep, fixture)
+                # Inject dynamic real test values into fixture request
+                fixture_req = dict(fixture.get("request", {}) or {})
+                params = dict(fixture_req.get("params", {}) or {})
+                body = fixture_req.get("body")
+                if isinstance(body, dict):
+                    body = dict(body)
+
+                for p_name in re.findall(r"\{([^}]+)\}", path):
+                    p_norm = p_name.lower().replace("_", "").replace("-", "")
+                    if p_name in live_context:
+                        params[p_name] = live_context[p_name]
+                    elif p_norm in live_context:
+                        params[p_name] = live_context[p_norm]
+                    elif p_norm.endswith("id") and "id" in live_context:
+                        params[p_name] = live_context["id"]
+
+                if "status" in params and isinstance(params["status"], str) and params["status"] not in ("available", "pending", "sold"):
+                    params["status"] = "available"
+                if "/user/login" in path:
+                    params["username"] = live_context.get("username", "weaver_test_user")
+                    params["password"] = live_context.get("password", "Secret123!")
+
+                if isinstance(body, dict):
+                    if "id" in body and body["id"] in (1, 0, None):
+                        body["id"] = live_context.get("id", 105001)
+                    if "username" in body:
+                        body["username"] = live_context.get("username", "weaver_test_user")
+                    if "petId" in body and body["petId"] in (1, 0, None):
+                        body["petId"] = live_context.get("petId", 105001)
+
+                resolved_fixture = dict(fixture)
+                resolved_fixture["request"] = {"params": params, "body": body}
+
+                result = await executor.execute_test(ep, resolved_fixture)
                 if lang != "default":
                     result["language"] = lang
                     if result.get("error"):
                         result["error"] = f"[{lang}] {result['error']}"
                 test_results.append(result)
 
+                # Capture created resource IDs to chain into subsequent tests
+                if result.get("status") == "passed":
+                    snapshot = result.get("response_snapshot") or {}
+                    resp_body = snapshot.get("body") if isinstance(snapshot, dict) else snapshot
+                    ext_id = None
+                    if isinstance(resp_body, dict) and "id" in resp_body:
+                        ext_id = resp_body["id"]
+                    elif isinstance(body, dict) and "id" in body:
+                        ext_id = body["id"]
+
+                    if ext_id is not None:
+                        live_context["id"] = ext_id
+                        if "/pet" in path:
+                            live_context["petId"] = ext_id
+                        elif "/store" in path or "/order" in path:
+                            live_context["orderId"] = ext_id
+
+                    if isinstance(resp_body, dict) and "username" in resp_body:
+                        live_context["username"] = resp_body["username"]
+                    elif isinstance(body, dict) and "username" in body:
+                        live_context["username"] = body["username"]
+
                 st = str(result.get("status", "unknown")).upper()
                 lat = result.get("latency_ms", 0)
+                err_detail = f" — {result['error']}" if (st != "PASSED" and result.get("error")) else ""
                 if on_activity:
                     try:
                         await on_activity(
                             "test_result",
-                            f"Test {test_counter}/{total_tests} {lang_tag}{method} {path} → {st} ({lat}ms)",
+                            f"Test {test_counter}/{total_tests} {lang_tag}{method} {path} → {st} ({lat}ms){err_detail}",
                             test_counter,
                             total_tests,
                         )

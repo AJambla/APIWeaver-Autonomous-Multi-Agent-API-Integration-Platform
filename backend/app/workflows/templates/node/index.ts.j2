@@ -5,11 +5,16 @@
 
 export {
   APIWeaverError,
+  BadRequestError,
   AuthenticationError,
+  UnauthorizedError,
+  ForbiddenError,
+  NotFoundError,
+  MethodNotAllowedError,
+  ConflictError,
+  ValidationError,
   RateLimitError,
   ServerError,
-  NotFoundError,
-  ValidationError,
   {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }},
   Client,
 } from "./client.ts";

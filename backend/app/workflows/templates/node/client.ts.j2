@@ -24,10 +24,59 @@ export class APIWeaverError extends Error {
   }
 }
 
+export class BadRequestError extends APIWeaverError {
+  constructor(message = "Bad request") {
+    super(message, 400);
+    this.name = "BadRequestError";
+  }
+}
+
 export class AuthenticationError extends APIWeaverError {
   constructor(message = "Authentication failed") {
     super(message, 401);
     this.name = "AuthenticationError";
+  }
+}
+
+export class UnauthorizedError extends APIWeaverError {
+  constructor(message = "Unauthorized") {
+    super(message, 401);
+    this.name = "UnauthorizedError";
+  }
+}
+
+export class ForbiddenError extends APIWeaverError {
+  constructor(message = "Forbidden") {
+    super(message, 403);
+    this.name = "ForbiddenError";
+  }
+}
+
+export class NotFoundError extends APIWeaverError {
+  constructor(message = "Not found") {
+    super(message, 404);
+    this.name = "NotFoundError";
+  }
+}
+
+export class MethodNotAllowedError extends APIWeaverError {
+  constructor(message = "Method not allowed") {
+    super(message, 405);
+    this.name = "MethodNotAllowedError";
+  }
+}
+
+export class ConflictError extends APIWeaverError {
+  constructor(message = "Conflict") {
+    super(message, 409);
+    this.name = "ConflictError";
+  }
+}
+
+export class ValidationError extends APIWeaverError {
+  constructor(message = "Validation error") {
+    super(message, 422);
+    this.name = "ValidationError";
   }
 }
 
@@ -45,20 +94,6 @@ export class ServerError extends APIWeaverError {
   constructor(message = "Server error", statusCode = 500) {
     super(message, statusCode);
     this.name = "ServerError";
-  }
-}
-
-export class NotFoundError extends APIWeaverError {
-  constructor(message = "Not found") {
-    super(message, 404);
-    this.name = "NotFoundError";
-  }
-}
-
-export class ValidationError extends APIWeaverError {
-  constructor(message = "Validation error") {
-    super(message, 422);
-    this.name = "ValidationError";
   }
 }
 
@@ -89,6 +124,7 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
   private getHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      "Accept": "application/json",
     };
     if (this.apiKey) {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
@@ -109,7 +145,14 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
-        const url = new URL(path, this.baseUrl);
+        let url: URL;
+        if (path.startsWith("http://") || path.startsWith("https://")) {
+          url = new URL(path);
+        } else {
+          const cleanBase = this.baseUrl.replace(/\/+$/, "");
+          const cleanPath = path.startsWith("/") ? path : `/${path}`;
+          url = new URL(`${cleanBase}${cleanPath}`);
+        }
         if (options.params) {
           Object.entries(options.params).forEach(([key, value]) => {
             if (value !== undefined && value !== null) {
@@ -144,19 +187,49 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
           throw new ServerError(`Server error: ${response.status}`, response.status);
         }
 
-        const data = await response.json();
+        const contentType = response.headers.get("content-type") || "";
+        let data: any = null;
+        if (contentType.includes("application/json")) {
+          try {
+            data = await response.json();
+          } catch {
+            data = null;
+          }
+        } else {
+          try {
+            data = await response.text();
+          } catch {
+            data = null;
+          }
+        }
 
         if (!response.ok) {
+          const detail = typeof data === "object" && data !== null
+            ? (data.detail || data.message || JSON.stringify(data))
+            : (data || `Request failed with status ${response.status}`);
+
+          if (response.status === 400) {
+            throw new BadRequestError(detail);
+          }
           if (response.status === 401) {
-            throw new AuthenticationError();
+            throw new AuthenticationError(detail);
+          }
+          if (response.status === 403) {
+            throw new ForbiddenError(detail);
           }
           if (response.status === 404) {
-            throw new NotFoundError();
+            throw new NotFoundError(detail);
+          }
+          if (response.status === 405) {
+            throw new MethodNotAllowedError(detail);
+          }
+          if (response.status === 409) {
+            throw new ConflictError(detail);
           }
           if (response.status === 422) {
-            throw new ValidationError();
+            throw new ValidationError(detail);
           }
-          throw new APIWeaverError(data?.detail || "Request failed", response.status);
+          throw new APIWeaverError(detail, response.status);
         }
 
         return { data, response };
@@ -206,9 +279,9 @@ export class {{ client_class_name | default(title.replace(' ', '').replace('-', 
     {% for param in ep.get('parameters', []) %}
     {% if param.location == 'query' %}
     {% if param.required %}
-    params["{{ param.name }}"] = String({{ param.name }});
+    params["{{ param.name }}"] = Array.isArray({{ param.name }}) ? {{ param.name }}.join(",") : String({{ param.name }});
     {% else %}
-    if ({{ param.name }} !== undefined) params["{{ param.name }}"] = String({{ param.name }});
+    if ({{ param.name }} !== undefined) params["{{ param.name }}"] = Array.isArray({{ param.name }}) ? {{ param.name }}.join(",") : String({{ param.name }});
     {% endif %}
     {% endif %}
     {% endfor %}
