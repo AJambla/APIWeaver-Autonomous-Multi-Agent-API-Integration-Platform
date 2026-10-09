@@ -26,6 +26,8 @@ class VaultClient(Protocol):
 
     async def delete_secret(self, path: str) -> None: ...
 
+    async def renew_token(self, increment_seconds: int = 3600) -> bool: ...
+
 
 def validate_vault_path(path: str) -> str:
     """Validate Vault path to prevent path traversal."""
@@ -120,6 +122,22 @@ class HttpVaultClient:
             except Exception as exc:
                 logger.error("vault_delete_failed", path=path, error=str(exc))
                 raise
+
+    async def renew_token(self, increment_seconds: int = 3600) -> bool:
+        """Renew current Vault token lease (/v1/auth/token/renew-self)."""
+        url = f"{self.vault_addr}/v1/auth/token/renew-self"
+        payload = {"increment": f"{increment_seconds}s"}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                response = await client.post(url, json=payload, headers=self._headers)
+                if response.status_code in (200, 204):
+                    logger.info("vault_token_renewed", increment=increment_seconds)
+                    return True
+                logger.warning("vault_token_renewal_rejected", status_code=response.status_code)
+                return False
+            except Exception as exc:
+                logger.warning("vault_token_renewal_failed", error=str(exc))
+                return False
 
 
 

@@ -25,14 +25,12 @@ export class SessionExpiredError extends Error {
 
 async function rotateTokens(): Promise<string> {
   const refreshToken = sessionStorage.getItem('refresh_token');
-  if (!refreshToken) {
-    throw new SessionExpiredError();
-  }
   // A network error propagates as-is (not a SessionExpiredError): the session survives it.
   const refreshResponse = await fetch(`${API_PREFIX}/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh_token: refreshToken }),
+    credentials: 'same-origin',
+    body: JSON.stringify(refreshToken ? { refresh_token: refreshToken } : {}),
   });
   if ([400, 401, 403].includes(refreshResponse.status)) {
     throw new SessionExpiredError();
@@ -41,9 +39,11 @@ async function rotateTokens(): Promise<string> {
     // 429/5xx: the server could not answer, which says nothing about the token.
     throw new Error('The server could not refresh your session. Please retry.');
   }
-  const data = (await refreshResponse.json()) as { access_token: string; refresh_token: string };
+  const data = (await refreshResponse.json()) as { access_token: string; refresh_token?: string };
   sessionStorage.setItem('access_token', data.access_token);
-  sessionStorage.setItem('refresh_token', data.refresh_token);
+  if (data.refresh_token) {
+    sessionStorage.setItem('refresh_token', data.refresh_token);
+  }
   return data.access_token;
 }
 
@@ -153,14 +153,14 @@ async function authorizedFetch(endpoint: string, options: RequestInit = {}): Pro
   }
   authorize(sessionStorage.getItem('access_token'));
 
-  const response = await fetch(url, { ...options, headers });
+  const response = await fetch(url, { credentials: sameOrigin ? 'same-origin' : undefined, ...options, headers });
   const isAuthCall = endpoint.includes('/auth/login') || endpoint.includes('/auth/refresh');
   if (response.status !== 401 || isAuthCall || !sameOrigin) {
     return response;
   }
 
   authorize(await refreshAccessToken());
-  const retry = await fetch(url, { ...options, headers });
+  const retry = await fetch(url, { credentials: sameOrigin ? 'same-origin' : undefined, ...options, headers });
   if (retry.status === 401) {
     clearSessionAndRedirect();
   }
