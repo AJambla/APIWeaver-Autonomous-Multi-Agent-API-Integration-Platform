@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import httpx
 import jwt
 from fastapi import Depends
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
@@ -21,6 +22,20 @@ GITHUB_API_BASE = "https://api.github.com"
 GITHUB_OAUTH_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"
 
+def _is_transient_http_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {408, 429, 500, 502, 503, 504}
+    return False
+
+_github_retry = retry(
+    retry=retry_if_exception(_is_transient_http_error),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential_jitter(multiplier=0.1, max=1.5),
+    reraise=True,
+)
+
 
 class GitHubAppClient:
     """GitHub App client for installation-based API calls.
@@ -29,12 +44,30 @@ class GitHubAppClient:
     installation access tokens, then makes API calls on behalf of the installation.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
         self.app_id = settings.github_app_id
         self._private_key: str | None = None
-        self.timeout = getattr(settings, "github_timeout_seconds", 30.0)
+        self.timeout = httpx.Timeout(getattr(settings, "github_timeout_seconds", 30.0))
         self.api_base_url = (getattr(settings, "github_api_base_url", None) or GITHUB_API_BASE).rstrip("/")
+        self._client = client
+        self._owns_client = client is None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+            self._owns_client = True
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._owns_client and self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self) -> GitHubAppClient:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.aclose()
 
     def _load_private_key(self) -> str:
         if self._private_key is not None:
@@ -58,107 +91,113 @@ class GitHubAppClient:
         }
         return jwt.encode(payload, private_key, algorithm="RS256")
 
+    @_github_retry
     async def get_installation_token(self, installation_id: int) -> str:
         """Get an installation access token for the given installation ID."""
         jwt_token = self._generate_jwt()
         url = f"{self.api_base_url}/app/installations/{installation_id}/access_tokens"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {jwt_token}",
-                    "Accept": "application/vnd.github+json",
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["token"]
+        client = self._get_client()
+        response = await client.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {jwt_token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["token"]
 
+    @_github_retry
     async def get_user_installations(self, user_token: str) -> list[dict[str, Any]]:
         """List installations accessible to the user (using their OAuth token)."""
         url = f"{self.api_base_url}/user/installations"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(
-                url,
-                headers={
-                    "Authorization": f"Bearer {user_token}",
-                    "Accept": "application/vnd.github+json",
-                },
-            )
-            response.raise_for_status()
-            return response.json().get("installations", [])
+        client = self._get_client()
+        response = await client.get(
+            url,
+            headers={
+                "Authorization": f"Bearer {user_token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        response.raise_for_status()
+        return response.json().get("installations", [])
 
+    @_github_retry
     async def get_user_repositories(self, user_token: str) -> list[dict[str, Any]]:
         """List repositories accessible to the user (using their OAuth token)."""
         url = f"{self.api_base_url}/user/repos"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(
-                url,
-                params={"sort": "updated", "per_page": 100},
-                headers={
-                    "Authorization": f"Bearer {user_token}",
-                    "Accept": "application/vnd.github+json",
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data if isinstance(data, list) else []
+        client = self._get_client()
+        response = await client.get(
+            url,
+            params={"sort": "updated", "per_page": 100},
+            headers={
+                "Authorization": f"Bearer {user_token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
 
+    @_github_retry
     async def create_repository(
         self, installation_token: str, org: str | None, name: str, private: bool = True
     ) -> dict[str, Any]:
         """Create a new repository via GitHub App installation token."""
         url = f"{self.api_base_url}/user/repos" if org is None else f"{self.api_base_url}/orgs/{org}/repos"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                url,
-                # auto_init gives the repo a first commit on its default branch. An
-                # empty repository has no ref to build on, and the Git Data API refuses
-                # blobs in it (409), so every push into a repo created here failed.
-                json={"name": name, "private": private, "auto_init": True},
-                headers={
-                    "Authorization": f"Bearer {installation_token}",
-                    "Accept": "application/vnd.github+json",
-                },
+        client = self._get_client()
+        response = await client.post(
+            url,
+            # auto_init gives the repo a first commit on its default branch. An
+            # empty repository has no ref to build on, and the Git Data API refuses
+            # blobs in it (409), so every push into a repo created here failed.
+            json={"name": name, "private": private, "auto_init": True},
+            headers={
+                "Authorization": f"Bearer {installation_token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        if response.status_code == 422:
+            # Repo may already exist. For a user repo the owner is the token's user:
+            # `/repos/{name}` without an owner is always a 404.
+            owner = org or await self._token_login(installation_token)
+            existing = (
+                await self.get_repository(installation_token, owner, name) if owner else None
             )
-            if response.status_code == 422:
-                # Repo may already exist. For a user repo the owner is the token's user:
-                # `/repos/{name}` without an owner is always a 404.
-                owner = org or await self._token_login(installation_token)
-                existing = (
-                    await self.get_repository(installation_token, owner, name) if owner else None
-                )
-                if existing:
-                    return existing
-            response.raise_for_status()
-            return response.json()
+            if existing:
+                return existing
+        response.raise_for_status()
+        return response.json()
 
+    @_github_retry
     async def get_repository(
         self, installation_token: str, org: str | None, name: str
     ) -> dict[str, Any] | None:
         """Get repository by name."""
         full_name = f"{org}/{name}" if org else name
         url = f"{self.api_base_url}/repos/{full_name}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(
-                url,
-                headers={
-                    "Authorization": f"Bearer {installation_token}",
-                    "Accept": "application/vnd.github+json",
-                },
-            )
-            if response.status_code == 404:
-                return None
-            response.raise_for_status()
-            return response.json()
+        client = self._get_client()
+        response = await client.get(
+            url,
+            headers={
+                "Authorization": f"Bearer {installation_token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json()
 
+    @_github_retry
     async def _token_login(self, token: str) -> str | None:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(f"{self.api_base_url}/user", headers=self._auth_headers(token))
-            if response.status_code != 200:
-                return None
-            login = response.json().get("login")
-            return str(login) if login else None
+        client = self._get_client()
+        response = await client.get(f"{self.api_base_url}/user", headers=self._auth_headers(token))
+        if response.status_code != 200:
+            return None
+        login = response.json().get("login")
+        return str(login) if login else None
 
     async def push_files_via_git_data_api(
         self,
@@ -219,6 +258,7 @@ class GitHubAppClient:
 
         return commit_sha
 
+    @_github_retry
     async def _get_branch_sha(self, token: str, repo: str, branch: str) -> str | None:
         """The branch's head commit, or None if the branch (or any commit) is missing.
 
@@ -226,104 +266,112 @@ class GitHubAppClient:
         looked up as a commit: a 404/422 on every new repository.
         """
         url = f"{self.api_base_url}/repos/{repo}/git/refs/heads/{branch}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(url, headers=self._auth_headers(token))
-            if response.status_code in (404, 409):  # 409: "Git Repository is empty"
-                return None
-            response.raise_for_status()
-            return str(response.json()["object"]["sha"])
+        client = self._get_client()
+        response = await client.get(url, headers=self._auth_headers(token))
+        if response.status_code in (404, 409):  # 409: "Git Repository is empty"
+            return None
+        response.raise_for_status()
+        return str(response.json()["object"]["sha"])
 
+    @_github_retry
     async def _get_default_branch_sha(self, token: str, repo: str) -> str | None:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(
-                f"{self.api_base_url}/repos/{repo}", headers=self._auth_headers(token)
-            )
-            response.raise_for_status()
-            default_branch = response.json().get("default_branch")
+        client = self._get_client()
+        response = await client.get(
+            f"{self.api_base_url}/repos/{repo}", headers=self._auth_headers(token)
+        )
+        response.raise_for_status()
+        default_branch = response.json().get("default_branch")
         if not default_branch:
             return None
         return await self._get_branch_sha(token, repo, str(default_branch))
 
+    @_github_retry
     async def _initialize_empty_repo(self, token: str, repo: str, branch: str) -> str:
         url = f"{self.api_base_url}/repos/{repo}/contents/README.md"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.put(
-                url,
-                json={
-                    "message": "Initialize repository",
-                    "content": base64.b64encode(b"# Generated by APIWeaver\n").decode(),
-                    "branch": branch,
-                },
-                headers=self._auth_headers(token),
-            )
-            response.raise_for_status()
-            return str(response.json()["commit"]["sha"])
+        client = self._get_client()
+        response = await client.put(
+            url,
+            json={
+                "message": "Initialize repository",
+                "content": base64.b64encode(b"# Generated by APIWeaver\n").decode(),
+                "branch": branch,
+            },
+            headers=self._auth_headers(token),
+        )
+        response.raise_for_status()
+        return str(response.json()["commit"]["sha"])
 
+    @_github_retry
     async def _create_ref(self, token: str, repo: str, branch: str, commit_sha: str) -> None:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.api_base_url}/repos/{repo}/git/refs",
-                json={"ref": f"refs/heads/{branch}", "sha": commit_sha},
-                headers=self._auth_headers(token),
-            )
-            response.raise_for_status()
+        client = self._get_client()
+        response = await client.post(
+            f"{self.api_base_url}/repos/{repo}/git/refs",
+            json={"ref": f"refs/heads/{branch}", "sha": commit_sha},
+            headers=self._auth_headers(token),
+        )
+        response.raise_for_status()
 
+    @_github_retry
     async def _get_tree_sha(self, token: str, repo: str, commit_sha: str) -> str:
         url = f"{self.api_base_url}/repos/{repo}/git/commits/{commit_sha}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(url, headers=self._auth_headers(token))
-            response.raise_for_status()
-            return response.json()["tree"]["sha"]
+        client = self._get_client()
+        response = await client.get(url, headers=self._auth_headers(token))
+        response.raise_for_status()
+        return response.json()["tree"]["sha"]
 
+    @_github_retry
     async def _create_blob(
         self, token: str, repo: str, content: str, encoding: str = "utf-8"
     ) -> str:
         url = f"{self.api_base_url}/repos/{repo}/git/blobs"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                url,
-                json={"content": content, "encoding": encoding},
-                headers=self._auth_headers(token),
-            )
-            response.raise_for_status()
-            return response.json()["sha"]
+        client = self._get_client()
+        response = await client.post(
+            url,
+            json={"content": content, "encoding": encoding},
+            headers=self._auth_headers(token),
+        )
+        response.raise_for_status()
+        return response.json()["sha"]
 
+    @_github_retry
     async def _create_tree(
         self, token: str, repo: str, base_tree_sha: str, blobs: list[dict]
     ) -> str:
         url = f"{self.api_base_url}/repos/{repo}/git/trees"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                url,
-                json={"base_tree": base_tree_sha, "tree": blobs},
-                headers=self._auth_headers(token),
-            )
-            response.raise_for_status()
-            return response.json()["sha"]
+        client = self._get_client()
+        response = await client.post(
+            url,
+            json={"base_tree": base_tree_sha, "tree": blobs},
+            headers=self._auth_headers(token),
+        )
+        response.raise_for_status()
+        return response.json()["sha"]
 
+    @_github_retry
     async def _create_commit(
         self, token: str, repo: str, message: str, parent_sha: str, tree_sha: str
     ) -> str:
         url = f"{self.api_base_url}/repos/{repo}/git/commits"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                url,
-                json={"message": message, "parents": [parent_sha], "tree": tree_sha},
-                headers=self._auth_headers(token),
-            )
-            response.raise_for_status()
-            return response.json()["sha"]
+        client = self._get_client()
+        response = await client.post(
+            url,
+            json={"message": message, "parents": [parent_sha], "tree": tree_sha},
+            headers=self._auth_headers(token),
+        )
+        response.raise_for_status()
+        return response.json()["sha"]
 
+    @_github_retry
     async def _update_ref(self, token: str, repo: str, branch: str, commit_sha: str) -> None:
         url = f"{self.api_base_url}/repos/{repo}/git/refs/heads/{branch}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.patch(
-                url,
-                # Fast-forward only: never overwrite history someone else pushed.
-                json={"sha": commit_sha, "force": False},
-                headers=self._auth_headers(token),
-            )
-            response.raise_for_status()
+        client = self._get_client()
+        response = await client.patch(
+            url,
+            # Fast-forward only: never overwrite history someone else pushed.
+            json={"sha": commit_sha, "force": False},
+            headers=self._auth_headers(token),
+        )
+        response.raise_for_status()
 
     def _auth_headers(self, token: str) -> dict[str, str]:
         return {
@@ -335,7 +383,7 @@ class GitHubAppClient:
 class GitHubOAuthClient:
     """User OAuth client for GitHub authorization flow."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
         self.client_id = settings.github_app_client_id
         self._client_secret: str | None = None
@@ -343,7 +391,25 @@ class GitHubOAuthClient:
         self.api_base_url = (getattr(settings, "github_api_base_url", None) or GITHUB_API_BASE).rstrip("/")
         self.authorize_url = getattr(settings, "github_oauth_authorize_url", None) or GITHUB_OAUTH_AUTHORIZE_URL
         self.token_url = getattr(settings, "github_oauth_token_url", None) or GITHUB_OAUTH_TOKEN_URL
-        self.timeout = getattr(settings, "github_timeout_seconds", 30.0)
+        self.timeout = httpx.Timeout(getattr(settings, "github_timeout_seconds", 30.0))
+        self._client = client
+        self._owns_client = client is None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+            self._owns_client = True
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._owns_client and self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self) -> GitHubOAuthClient:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.aclose()
 
     async def _get_client_secret(self) -> str:
         if self._client_secret is not None:
@@ -371,32 +437,34 @@ class GitHubOAuthClient:
         # urlencode: the redirect URI and the space-separated scopes must be escaped.
         return f"{self.authorize_url}?{urlencode(params)}"
 
+    @_github_retry
     async def exchange_code(self, code: str) -> dict[str, Any]:
         """Exchange authorization code for access token."""
         client_secret = await self._get_client_secret()
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.token_url,
-                data={
-                    "client_id": self.client_id,
-                    "client_secret": client_secret,
-                    "code": code,
-                    "redirect_uri": self.settings.github_oauth_redirect_uri,
-                },
-                headers={"Accept": "application/json"},
-            )
-            response.raise_for_status()
-            return response.json()
+        client = self._get_client()
+        response = await client.post(
+            self.token_url,
+            data={
+                "client_id": self.client_id,
+                "client_secret": client_secret,
+                "code": code,
+                "redirect_uri": self.settings.github_oauth_redirect_uri,
+            },
+            headers={"Accept": "application/json"},
+        )
+        response.raise_for_status()
+        return response.json()
 
+    @_github_retry
     async def get_user_info(self, access_token: str) -> dict[str, Any]:
         """Get authenticated user info."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(
-                f"{self.api_base_url}/user",
-                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
-            )
-            response.raise_for_status()
-            return response.json()
+        client = self._get_client()
+        response = await client.get(
+            f"{self.api_base_url}/user",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
+        )
+        response.raise_for_status()
+        return response.json()
 
 
 

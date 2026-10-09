@@ -13,6 +13,7 @@ cancelled run.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import uuid
 from typing import Any
@@ -131,33 +132,42 @@ async def dispatch_run(
     The caller must have committed the run row first, so the worker sees it.
     """
     if uses_celery(settings, requested_mode):
-        try:
-            await celery_client.send_task(
-                settings,
-                RUN_WORKFLOW_TASK,
-                args=[str(run_id), portable_state(state), post_run],
-                # Unique per dispatch: an approval resumes the same run id, and a reused
-                # task id would return the first dispatch's cached result.
-                task_id=f"run_workflow:{run_id}:{uuid.uuid4().hex[:12]}",
-            )
-            return
-        except Exception as exc:
-            required = settings.is_production or settings.require_celery_worker or (
-                settings.workflow_dispatch == "celery"
-            )
-            if required:
-                # Do not leave an orphaned QUEUED run behind a 503.
-                run = await session.get(WorkflowRun, run_id)
-                if run is not None and run.status == WorkflowStatus.QUEUED:
-                    run.status = WorkflowStatus.FAILED
-                    run.completed_at = datetime.datetime.now(datetime.UTC)
-                    await session.commit()
-                # The broker error names hosts and ports; it belongs in the log, not the response.
-                logger.error("celery_dispatch_failed", run_id=str(run_id), error=str(exc))
-                raise DependencyUnavailableError(
-                    "The workflow queue is unavailable. Please retry shortly."
-                ) from exc
-            logger.warning("celery_dispatch_failed_running_inline", run_id=str(run_id), error=str(exc))
+        last_exc: Exception | None = None
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                await celery_client.send_task(
+                    settings,
+                    RUN_WORKFLOW_TASK,
+                    args=[str(run_id), portable_state(state), post_run],
+                    # Unique per dispatch: an approval resumes the same run id, and a reused
+                    # task id would return the first dispatch's cached result.
+                    task_id=f"run_workflow:{run_id}:{uuid.uuid4().hex[:12]}",
+                )
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(0.2 * (2**attempt))
+                    continue
+
+        dispatch_err = last_exc or RuntimeError("Unknown celery dispatch error")
+        required = settings.is_production or settings.require_celery_worker or (
+            settings.workflow_dispatch == "celery"
+        )
+        if required:
+            # Do not leave an orphaned QUEUED run behind a 503.
+            run = await session.get(WorkflowRun, run_id)
+            if run is not None and run.status == WorkflowStatus.QUEUED:
+                run.status = WorkflowStatus.FAILED
+                run.completed_at = datetime.datetime.now(datetime.UTC)
+                await session.commit()
+            # The broker error names hosts and ports; it belongs in the log, not the response.
+            logger.error("celery_dispatch_failed", run_id=str(run_id), error=str(dispatch_err))
+            raise DependencyUnavailableError(
+                "The workflow queue is unavailable. Please retry shortly."
+            ) from dispatch_err
+        logger.warning("celery_dispatch_failed_running_inline", run_id=str(run_id), error=str(dispatch_err))
 
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False

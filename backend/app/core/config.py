@@ -127,6 +127,7 @@ class Settings(BaseSettings):
     # --- LLM resilience (transient failures + provider circuit breaker) -------
     llm_max_retries: int = 2
     llm_retry_backoff_seconds: float = 0.5
+    llm_retry_jitter: bool = False
     llm_circuit_failure_threshold: int = 5
     llm_circuit_cooldown_seconds: float = 30.0
 

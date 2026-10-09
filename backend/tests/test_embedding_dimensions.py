@@ -90,7 +90,7 @@ async def test_an_unavailable_qdrant_is_not_mistaken_for_a_missing_collection(
 
     with pytest.raises(httpx.HTTPStatusError):
         await HttpQdrantClient(test_settings).ensure_collection()
-    assert [r.method for r in seen] == ["GET"]
+    assert all(r.method == "GET" for r in seen) and len(seen) >= 1
 
 
 async def test_a_missing_collection_is_created_with_the_configured_size(

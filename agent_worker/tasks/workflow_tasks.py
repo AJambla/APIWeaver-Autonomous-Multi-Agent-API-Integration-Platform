@@ -29,6 +29,10 @@ class RunWorkflow(AsyncTask):
     # the failure before the hard kill.
     time_limit = _TIME_LIMIT
     soft_time_limit = max(_TIME_LIMIT - 60, 60)
+    autoretry_for = (ConnectionError, TimeoutError, OSError)
+    max_retries = 3
+    retry_backoff = True
+    retry_jitter = True
 
     async def run_async(
         self,
