@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     anthropic_model: str = "claude-3-5-sonnet-20241022"
     embedding_model: str = "text-embedding-3-small"
+    # Must match both the model's output and the Qdrant collection's vector size. It was
+    # hardcoded to 1536, so any other embedding model made every upsert fail - silently.
+    embedding_dimensions: int = Field(default=1536, ge=1, le=16384)
     llm_max_retry_delay_seconds: float = 8.0
     llm_max_retry_after_seconds: float = 10.0
     llm_temperature: float = 0.1
