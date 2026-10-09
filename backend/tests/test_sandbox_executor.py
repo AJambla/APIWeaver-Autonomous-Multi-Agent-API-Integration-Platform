@@ -17,6 +17,7 @@ import pytest
 from app.core.config import Settings
 from app.services.sandbox_service import (
     _RESULT_PREFIX,
+    HERMETIC_PLACEHOLDER_API_KEY,
     RUNNER_SOURCE,
     DockerSandboxExecutor,
     _cpu_to_nano_cpus,
@@ -181,7 +182,7 @@ async def test_execute_test_enforces_quotas_and_parses_result():
 async def test_execute_test_injects_credential_via_env():
     container = FakeContainer(exit_code=0, output="")
     client = FakeDockerClient(container)
-    executor = DockerSandboxExecutor(_make_settings(), docker_client=client)
+    executor = DockerSandboxExecutor(_make_settings(), docker_client=client, network_enabled=True)
     await executor.load(
         project_id="proj-1",
         files={"client.py": "x = 1\n"},
@@ -775,3 +776,29 @@ async def test_live_executor_sends_no_mock_and_uses_configured_egress():
     assert kwargs["environment"]["HTTPS_PROXY"] == "http://proxy:3128"
     payload = json.loads((executor._workspace / "payload.json").read_text(encoding="utf-8"))
     assert payload["mock"] is None
+
+
+@pytest.mark.asyncio
+async def test_hermetic_run_never_receives_the_real_credential():
+    """A mock-answered run cannot use the key; generated code must not see it either."""
+    container = FakeContainer(exit_code=0, output="")
+    client = FakeDockerClient(container)
+    executor = DockerSandboxExecutor(_make_settings(), docker_client=client)
+    await executor.load(
+        project_id="proj-1",
+        files={"client.py": "x = 1\n"},
+        base_url="https://api.target.example",
+        api_key="sk-live-secret",
+    )
+
+    await executor.execute_test({"method": "GET", "path": "/users"}, {})
+
+    kwargs = client.run_kwargs
+    assert kwargs["network_disabled"] is True
+    assert kwargs["environment"]["APIWEAVER_API_KEY"] == HERMETIC_PLACEHOLDER_API_KEY
+    assert "sk-live-secret" not in json.dumps(kwargs["environment"])
+
+
+def test_the_deprecated_network_flag_does_not_network_an_executor():
+    settings = _make_settings(sandbox_network_enabled=True)
+    assert DockerSandboxExecutor(settings).network_enabled is False
