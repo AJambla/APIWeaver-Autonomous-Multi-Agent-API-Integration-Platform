@@ -60,6 +60,10 @@ class Settings(BaseSettings):
 
     # --- Redis (required) ------------------------------------------------------
     redis_url: str
+    # Bounded so a blackholed Redis fails fast: the rate limiter fails open and the JWT
+    # denylist check fails closed (503) instead of every request hanging on a dead socket.
+    redis_connect_timeout_seconds: float = 1.0
+    redis_socket_timeout_seconds: float = 2.0
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
     redis_stream_workflow_maxlen: int = 1000
