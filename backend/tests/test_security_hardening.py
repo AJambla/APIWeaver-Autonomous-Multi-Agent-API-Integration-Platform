@@ -327,3 +327,20 @@ def test_token_counts_are_logged_but_credentials_are_not() -> None:
     assert redacted["tokens_before"] == 10
     for secret_key in ("access_token", "refresh_tokens", "token", "api_token"):
         assert redacted[secret_key] == REDACTED, secret_key
+
+
+def test_llm_probe_reports_a_category_not_the_raw_provider_error() -> None:
+    import httpx
+
+    from app.api.v1.health import describe_provider_error
+
+    request = httpx.Request("POST", "https://llm.example/v1/chat?key=sk-secret-in-url")
+    rejected = httpx.HTTPStatusError(
+        "401 Unauthorized: {'error': 'bad key sk-secret-in-body'}",
+        request=request,
+        response=httpx.Response(401, request=request),
+    )
+    message = describe_provider_error(rejected)
+    assert "401" in message and "rejected" in message
+    assert "sk-secret" not in message
+    assert "sk-secret" not in describe_provider_error(RuntimeError("boom sk-secret-x"))
