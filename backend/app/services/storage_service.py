@@ -10,6 +10,8 @@ from __future__ import annotations
 import mimetypes
 from typing import Any, Protocol
 
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
+
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.metrics import s3_download_bytes_total, s3_upload_bytes_total
@@ -38,6 +40,29 @@ def validate_storage_key(key: str) -> str:
     if any(part in ("..", ".") for part in parts) or not cleaned:
         raise ValueError(f"Invalid or unsafe storage key: {key}")
     return cleaned
+
+
+def _is_transient_s3_error(exc: BaseException) -> bool:
+    try:
+        import botocore.exceptions
+        if isinstance(exc, botocore.exceptions.BotoCoreError):
+            return True
+        if isinstance(exc, botocore.exceptions.ClientError):
+            code = exc.response.get("Error", {}).get("Code", "")
+            status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if status in {408, 429, 500, 502, 503, 504} or code in {"RequestTimeout", "SlowDown", "ServiceUnavailable"}:
+                return True
+    except ImportError:
+        pass
+    return False
+
+
+_s3_retry = retry(
+    retry=retry_if_exception(_is_transient_s3_error),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential_jitter(multiplier=0.1, max=1.5),
+    reraise=True,
+)
 
 
 class AsyncS3ObjectStorage:
@@ -78,6 +103,7 @@ class AsyncS3ObjectStorage:
             aws_secret_access_key=self._aws_secret_access_key,
         )
 
+    @_s3_retry
     async def get(self, *, key: str, bucket: str | None = None) -> bytes | None:
         import botocore.exceptions
 
@@ -102,6 +128,7 @@ class AsyncS3ObjectStorage:
                     return None
                 raise
 
+    @_s3_retry
     async def put(self, *, key: str, content: bytes, content_type: str | None = None, bucket: str | None = None) -> None:
         key = validate_storage_key(key)
         target_bucket = self._target_bucket_for_key(key, bucket)
@@ -112,6 +139,7 @@ class AsyncS3ObjectStorage:
             await client.put_object(Bucket=target_bucket, Key=key, Body=content, **extra)
         s3_upload_bytes_total.inc(len(content))
 
+    @_s3_retry
     async def delete(self, *, key: str, bucket: str | None = None) -> None:
         key = validate_storage_key(key)
         target_bucket = self._target_bucket_for_key(key, bucket)
