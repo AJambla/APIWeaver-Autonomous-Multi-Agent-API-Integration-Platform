@@ -84,12 +84,13 @@ async def get_project_metrics(
             total_tests += summary.get("total", 0)
     test_pass_rate = total_passed / total_tests if total_tests > 0 else None
 
-    # Monthly token spend (from usage_metrics)
+    # This project's spend, from its own runs. It used to sum the organization's
+    # usage_metrics, handing every project viewer (TEST_READ) org-wide billing data that
+    # otherwise requires ORG_VIEW_BILLING.
     monthly_spend = await session.scalar(
-        select(func.sum(UsageMetric.value)).where(
-            UsageMetric.organization_id == project.organization_id,
-            UsageMetric.metric_name == "token_cost_usd",
-            UsageMetric.recorded_at >= since,
+        select(func.sum(WorkflowRun.estimated_cost_usd)).where(
+            WorkflowRun.project_id == project.id,
+            WorkflowRun.created_at >= since,
         )
     ) or Decimal("0")
 
