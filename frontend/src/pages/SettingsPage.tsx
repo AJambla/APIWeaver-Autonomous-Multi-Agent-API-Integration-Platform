@@ -78,7 +78,7 @@ const CopyButton: React.FC<{ text: string }> = ({ text }) => {
 };
 
 const AccountSection: React.FC = () => {
-  const { user } = useAuth();
+  const { user, organizations, organizationId } = useAuth();
   return (
     <div className={`${cardCls} px-5 py-1`}>
       <div className="flex items-center gap-4 border-b border-white/5 py-5">
@@ -93,7 +93,7 @@ const AccountSection: React.FC = () => {
       <div className="divide-y divide-white/5">
         <InfoRow label="Full name">{user?.full_name || '—'}</InfoRow>
         <InfoRow label="Email">{user?.email || '—'}</InfoRow>
-        <InfoRow label="Role">{user?.role || 'member'}</InfoRow>
+        <InfoRow label="Role">{organizations.find(o => o.organization_id === organizationId)?.role || '—'}</InfoRow>
         <InfoRow label="User ID">
           <span className="font-mono text-xs">{user?.id}</span>
         </InfoRow>
