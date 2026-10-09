@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isWorkflowTerminal } from './use-workflow-events';
+import { isWorkflowTerminal, MAX_RETAINED_EVENTS } from './use-workflow-events';
 
 describe('use-workflow-events utilities', () => {
+  it('caps retained events at 500 to prevent unbounded memory growth', () => {
+    expect(MAX_RETAINED_EVENTS).toBe(500);
+  });
+
   it('identifies terminal lifecycle events', () => {
     expect(isWorkflowTerminal('workflow.completed', { status: 'completed' })).toBe(true);
     expect(isWorkflowTerminal('workflow.failed', { status: 'failed' })).toBe(true);
