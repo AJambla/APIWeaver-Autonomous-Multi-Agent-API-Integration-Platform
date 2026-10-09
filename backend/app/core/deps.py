@@ -183,6 +183,22 @@ async def get_current_principal(
 PrincipalDep = Annotated[Principal, Depends(get_current_principal)]
 
 
+async def get_optional_principal(
+    session: SessionDep,
+    redis_client: RedisDep,
+    authorization: Annotated[str | None, Header()] = None,
+    x_api_key: Annotated[str | None, Header()] = None,
+    settings: Settings = Depends(get_settings),
+) -> Principal | None:
+    """The principal if a valid credential was presented, else None (never a 401)."""
+    try:
+        return await get_current_principal(
+            session, redis_client, authorization, x_api_key, settings
+        )
+    except UnauthenticatedError:
+        return None
+
+
 def _as_ip(value: str | None) -> str | None:
     """`value` canonicalised, or None unless it really is an IP address.
 

@@ -8,7 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.deps import client_ip, get_current_principal, get_db, get_redis
+from app.core.deps import (
+    client_ip,
+    get_current_principal,
+    get_db,
+    get_optional_principal,
+    get_redis,
+)
 from app.core.errors import UnauthenticatedError
 from app.models.organization import Organization, OrganizationMember
 from app.models.user import User
@@ -114,21 +120,25 @@ async def refresh(
 async def logout(
     payload: LogoutRequest,
     request: Request,
-    principal: Principal = Depends(get_current_principal),
+    # Optional: a client whose access token already expired must still be able to end
+    # its session. Logout used to demand a live access token, so it could not.
+    principal: Principal | None = Depends(get_optional_principal),
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    if principal.user_id is None:
+    if principal is not None and principal.user_id is None:
         # An API key has no session to end; it is revoked via the org API-key endpoints.
         raise UnauthenticatedError("Logout requires a user session, not an API key.")
+    if principal is None and not payload.refresh_token:
+        raise UnauthenticatedError("Present the access token or the refresh token to log out.")
 
     await auth_service.logout(
         session,
         redis_client,
-        user_id=principal.user_id,
-        organization_id=principal.organization_id,
-        jti=principal.jti,
+        user_id=principal.user_id if principal else None,
+        organization_id=principal.organization_id if principal else None,
+        jti=principal.jti if principal else None,
         refresh_token=payload.refresh_token,
         settings=settings,
         context=_context(request, settings),

@@ -139,6 +139,7 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = 7
     jwt_algorithm: Literal["RS256"] = "RS256"
     jwt_issuer: str = "apiweaver"
+    jwt_audience: str = "apiweaver-api"
 
     # --- Per-account lockout (Security.md §1, audit M2) -----------------------
     # Counted in the `users` row, not the Redis limiter, because the Redis limiter
