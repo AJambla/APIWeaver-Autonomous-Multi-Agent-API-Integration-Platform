@@ -8,10 +8,6 @@ terraform {
   }
 }
 
-provider "aws" {
-  region = var.region
-}
-
 locals {
   name_prefix = "${var.environment}-apiweaver"
 }
@@ -87,23 +83,26 @@ resource "aws_db_instance" "main" {
   db_subnet_group_name   = aws_db_subnet_group.rds.name
   vpc_security_group_ids = [aws_security_group.rds.id]
 
-  db_name  = var.db_name
+  db_name = var.db_name
   # The application must not connect as this owner role: audit-log immutability
   # (backend/alembic/versions/0009_audit_log_immutability.py) can only be dropped or
   # disabled by the table owner. RDS grants no superuser, so a non-owner app role cannot
   # bypass the guard either.
   username = var.master_username
-  password = var.master_password
-  port     = 5432
+  # Generated and rotated by RDS in Secrets Manager, encrypted with the stack's key: no
+  # plaintext password in variables or state.
+  manage_master_user_password   = true
+  master_user_secret_kms_key_id = var.kms_key_id
+  port                          = 5432
 
-  multi_az             = true
-  publicly_accessible  = false
-  skip_final_snapshot  = var.environment == "production" ? false : true
+  multi_az                  = true
+  publicly_accessible       = false
+  skip_final_snapshot       = var.environment == "production" ? false : true
   final_snapshot_identifier = "${local.name_prefix}-postgres-final-snapshot"
 
-  backup_retention_period = var.backup_retention_period
-  backup_window           = "07:00-09:00"
-  maintenance_window      = "sun:10:00-sun:12:00"
+  backup_retention_period    = var.backup_retention_period
+  backup_window              = "07:00-09:00"
+  maintenance_window         = "sun:10:00-sun:12:00"
   auto_minor_version_upgrade = true
 
   enabled_cloudwatch_logs_exports = ["postgresql"]

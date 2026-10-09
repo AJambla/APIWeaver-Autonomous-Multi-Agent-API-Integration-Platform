@@ -8,8 +8,27 @@ terraform {
   }
 }
 
+# Modules declare no provider of their own (legacy provider blocks inside modules made
+# them unusable with count/for_each/depends_on and required a region input the root never
+# passed); they inherit this one.
 provider "aws" {
   region = var.region
+
+  # The modules accept `tags` but never applied them, so ManagedBy/Project/Environment
+  # tags were missing everywhere. Default tags cover every taggable resource.
+  default_tags {
+    tags = local.common_tags
+  }
+}
+
+# CloudFront-scoped WAF ACLs and CloudFront viewer certificates must live in us-east-1.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = local.common_tags
+  }
 }
 
 locals {
@@ -63,12 +82,13 @@ module "rds" {
 module "elasticache" {
   source = "./modules/elasticache"
 
-  environment       = var.environment
-  vpc_id            = module.vpc.vpc_id
+  environment        = var.environment
+  vpc_id             = module.vpc.vpc_id
   data_plane_subnets = module.vpc.data_plane_subnets
-  kms_key_id        = module.kms.key_arn
+  kms_key_id         = module.kms.key_arn
 
   allowed_security_groups = [module.eks.cluster_security_group_id]
+  auth_token              = var.elasticache_auth_token
 
   tags = local.common_tags
 }
@@ -85,12 +105,12 @@ module "s3" {
 module "alb" {
   source = "./modules/alb"
 
-  environment          = var.environment
-  vpc_id               = module.vpc.vpc_id
-  public_subnets       = module.vpc.public_subnets
-  alb_security_group   = module.vpc.alb_security_group_id
-  api_security_group   = module.vpc.api_security_group_id
-  web_security_group   = module.vpc.web_security_group_id
+  environment        = var.environment
+  vpc_id             = module.vpc.vpc_id
+  public_subnets     = module.vpc.public_subnets
+  alb_security_group = module.vpc.alb_security_group_id
+  api_security_group = module.vpc.api_security_group_id
+  web_security_group = module.vpc.web_security_group_id
 
   domain          = var.domain
   certificate_arn = var.certificate_arn
@@ -100,14 +120,18 @@ module "alb" {
 
 module "cloudfront" {
   source = "./modules/cloudfront"
+  providers = {
+    aws = aws.us_east_1
+  }
 
-  environment      = var.environment
-  alb_dns_name     = module.alb.alb_dns_name
-  alb_zone_id      = module.alb.alb_zone_id
-  web_origin_id    = "ALB-web"
-  api_origin_id    = "ALB-api"
-  domain           = var.domain
-  create_waf       = var.create_waf
+  environment     = var.environment
+  alb_dns_name    = module.alb.alb_dns_name
+  alb_zone_id     = module.alb.alb_zone_id
+  web_origin_id   = "ALB-web"
+  api_origin_id   = "ALB-api"
+  domain          = var.domain
+  create_waf      = var.create_waf
+  certificate_arn = var.cloudfront_certificate_arn
 
   tags = local.common_tags
 }
@@ -115,7 +139,7 @@ module "cloudfront" {
 module "eks" {
   source = "./modules/eks"
 
-  environment = var.environment
+  environment  = var.environment
   cluster_name = "apiweaver-${var.environment}"
 
   vpc_id          = module.vpc.vpc_id
@@ -124,9 +148,9 @@ module "eks" {
   public_access_cidrs = var.eks_public_access_cidrs
 
   s3_buckets = {
-    uploads    = module.s3.uploads_bucket
-    artifacts  = module.s3.artifacts_bucket
-    backups    = module.s3.backups_bucket
+    uploads   = module.s3.uploads_bucket
+    artifacts = module.s3.artifacts_bucket
+    backups   = module.s3.backups_bucket
   }
 
   tags = local.common_tags

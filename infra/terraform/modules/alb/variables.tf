@@ -1,8 +1,3 @@
-variable "region" {
-  description = "AWS region"
-  type        = string
-}
-
 variable "environment" {
   description = "Environment name"
   type        = string
@@ -46,7 +41,7 @@ variable "certificate_arn" {
 variable "api_path_patterns" {
   description = "Path patterns to route to API target group"
   type        = list(string)
-  default     = ["/api/*", "/ws/*"]
+  default     = ["/api/*"]
 }
 
 variable "tags" {
