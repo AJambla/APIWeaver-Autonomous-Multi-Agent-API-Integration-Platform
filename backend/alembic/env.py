@@ -10,7 +10,7 @@ import asyncio
 from logging.config import fileConfig
 from typing import Any
 
-from sqlalchemy import Connection, pool
+from sqlalchemy import Connection, pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
@@ -81,9 +81,22 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+# Any constant every runner agrees on ("APWM").
+_MIGRATION_LOCK_KEY = 0x4150574D
+
+
 def do_run_migrations(connection: Connection) -> None:
     context.configure(connection=connection, **_configure_common())
     with context.begin_transaction():
+        if connection.dialect.name == "postgresql":
+            # Serialize concurrent runners (several pods' init containers, a job retried
+            # while the first attempt is still going). The lock is transaction-scoped and
+            # the whole upgrade is one transaction, so a second runner waits, then finds
+            # the database already at head. Without it both raced to CREATE the same
+            # tables and one failed halfway.
+            connection.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"), {"key": _MIGRATION_LOCK_KEY}
+            )
         context.run_migrations()
 
 
