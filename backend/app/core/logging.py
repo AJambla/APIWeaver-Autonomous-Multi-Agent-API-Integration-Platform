@@ -42,8 +42,10 @@ _SENSITIVE_KEY_PARTS = (
 
 # Value-level patterns, for secrets that leak inside an otherwise-innocuous message.
 _SENSITIVE_VALUE_PATTERNS = (
-    # Platform API keys (Security.md §5)
-    re.compile(r"apw_(?:live|test)_[A-Za-z0-9]+"),
+    # Platform API keys (Security.md §5). The secret part is `secrets.token_urlsafe`
+    # output, whose alphabet includes `-` and `_`: matching only [A-Za-z0-9] stopped at
+    # the first one and logged the rest of the key (~74% of keys).
+    re.compile(r"apw_(?:live|test)_[A-Za-z0-9_\-]+"),
     # Authorization header values
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]+"),
     # JWTs anywhere
