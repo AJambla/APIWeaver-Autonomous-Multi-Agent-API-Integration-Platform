@@ -1021,14 +1021,15 @@ async def run_code_agent(
     # Self-review reflection pass before returning
     review = await _run_self_review(new_generated_files, state, client)
     total_tokens += review.get("self_review_tokens", 0)
+    passed = review.get("self_review_passed", False)
 
     return {
         "generated_files": new_generated_files,
         "current_node": "code_agent",
         "progress_percent": 75,
-        "status": "generated",
+        "status": "generated" if passed else "review_failed",
         "total_tokens_used": total_tokens,
-        "self_review_passed": review.get("self_review_passed", True),
+        "self_review_passed": passed,
         "self_review_issues": review.get("self_review_issues", []),
         "self_review_summary": review.get("self_review_summary", ""),
     }

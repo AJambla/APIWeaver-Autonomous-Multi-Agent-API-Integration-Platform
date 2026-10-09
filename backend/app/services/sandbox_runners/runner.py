@@ -19,12 +19,19 @@ import traceback
 _PREFIX = "APIWEAVER_RESULT:"
 # Read and drop the per-run nonce before any generated code is imported. The host only
 # accepts a result line carrying it, so code under test cannot print a forged "passed".
-_NONCE = os.environ.pop("APIWEAVER_RESULT_NONCE", "")
+# Captured in a local closure so generated client code cannot inspect module or global namespace.
+def _make_emitter():
+    nonce = os.environ.pop("APIWEAVER_RESULT_NONCE", "")
+
+    def _emit(result):
+        print(_PREFIX + nonce + ":" + json.dumps(result, default=str), flush=True)
+
+    return _emit
+
+
+_emit = _make_emitter()
+del _make_emitter
 _BODY_NAMES = ("body", "payload", "data", "request", "json_body", "json")
-
-
-def _emit(result):
-    print(_PREFIX + _NONCE + ":" + json.dumps(result, default=str), flush=True)
 
 
 def _norm(name):
