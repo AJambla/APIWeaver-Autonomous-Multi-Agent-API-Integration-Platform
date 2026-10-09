@@ -44,7 +44,7 @@ async def trigger_export(
 ) -> ExportResponse:
     """Trigger artifact exports for a project."""
     # Create export record
-    export_types = payload.export_types or [e.value for e in ExportType]
+    export_types = [str(t) for t in payload.export_types]
     artifacts_meta = []
 
     run = WorkflowRun(
@@ -255,6 +255,7 @@ async def download_export(
 ):
     """Download the generated export package bundle."""
     from fastapi import Response
+
     from app.core.errors import NotFoundError
     from app.services.storage_service import storage_service
 
@@ -310,6 +311,7 @@ async def download_mcp_manifest(
 ):
     """Download the MCP manifest JSON for a project."""
     from fastapi import Response
+
     from app.core.errors import NotFoundError
     from app.services.storage_service import storage_service
 

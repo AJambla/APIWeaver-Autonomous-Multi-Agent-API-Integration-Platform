@@ -316,6 +316,37 @@ class TestExportAPI:
         assert all(a["status"] == "queued" for a in data["artifacts"])
 
     @pytest.mark.asyncio
+    async def test_trigger_export_rejects_unknown_or_empty_types(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        """Unknown types used to reach the `exports` CHECK and answer 500 on Postgres."""
+        project_id = await self._setup_project(client, auth_headers)
+        for body in ({"export_types": ["zip-bomb"]}, {"export_types": []}):
+            res = await client.post(
+                f"/api/v1/projects/{project_id}/export", headers=auth_headers, json=body
+            )
+            assert res.status_code == 400, res.text
+
+    @pytest.mark.asyncio
+    async def test_trigger_export_accepts_fastapi_and_defaults_exclude_github(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        project_id = await self._setup_project(client, auth_headers)
+        res = await client.post(
+            f"/api/v1/projects/{project_id}/export",
+            headers=auth_headers,
+            json={"export_types": ["fastapi", "fastapi"]},
+        )
+        assert res.status_code == 202, res.text
+        assert [a["type"] for a in res.json()["artifacts"]] == ["fastapi"]
+
+        res = await client.post(f"/api/v1/projects/{project_id}/export", headers=auth_headers, json={})
+        assert res.status_code == 202, res.text
+        types = {a["type"] for a in res.json()["artifacts"]}
+        assert "github" not in types
+        assert {"sdk", "client", "fastapi", "mcp"} <= types
+
+    @pytest.mark.asyncio
     async def test_export_mcp_endpoint_no_spec(self, client: AsyncClient, auth_headers: dict[str, str]):
         """Test POST /projects/{id}/export/mcp without normalized spec returns 404."""
         project_id = await self._setup_project(client, auth_headers)
@@ -347,7 +378,7 @@ class TestExportAPI:
         assert res.status_code == 200, res.text
         data = res.json()
         assert data["tools_generated"] >= 1
-        assert data["mcp_manifest_url"].endswith(f"/exports/mcp/manifest.json")
+        assert data["mcp_manifest_url"].endswith("/exports/mcp/manifest.json")
 
         # Verify export record in list_exports
         list_res = await client.get(
