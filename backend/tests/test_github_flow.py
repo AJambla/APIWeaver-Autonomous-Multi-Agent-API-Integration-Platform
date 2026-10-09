@@ -393,14 +393,17 @@ async def test_an_expired_state_is_refused_and_consumed(
 async def test_the_public_callback_is_bounded_per_ip(
     client: AsyncClient,
     stub_github_clients: tuple[StubOAuthClient, StubAppClient],
+    monkeypatch,
 ) -> None:
     """Anonymous is not the same as unbounded.
 
     The router split leans on this: `router.py` drops the org-tier limiter for
     `public_router`, and the per-IP `RateLimitMiddleware` is what stands in front of it.
     Filling the bucket by request rather than by writing a Redis key keeps the test honest
-    about the real limit, and cannot straddle a window boundary mid-run.
+    about the real limit. The limiter's clock is pinned: on the wall clock the 121 requests
+    could straddle a fixed-window boundary and reset the count (observed under load).
     """
+    monkeypatch.setattr("app.core.ratelimit._clock", lambda: 1_800_000_000.0)
     oauth, _ = stub_github_clients
 
     statuses = []

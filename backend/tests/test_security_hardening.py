@@ -241,31 +241,39 @@ def test_a_blank_metrics_token_counts_as_unset(test_settings: Settings) -> None:
 
 
 async def test_password_hashing_does_not_block_the_event_loop() -> None:
-    """Argon2 takes ~200 ms; run inline it froze every other request on the worker."""
+    """Argon2 takes ~200 ms; run inline it froze every other request on the worker.
+
+    Measured as the longest gap between ticks of a concurrent task, against the duration
+    of one synchronous hash on this machine: blocking would make the gap at least that
+    long. (Counting ticks was flaky on Windows, where sleep(0.005) lasts ~15.6 ms.)
+    """
     import asyncio
     import time
 
-    from app.core.security import hash_password_async, verify_password_async
+    from app.core.security import hash_password, hash_password_async, verify_password_async
 
-    ticks = 0
+    started = time.perf_counter()
+    hash_password("calibration password")
+    one_hash = time.perf_counter() - started
+
+    gaps: list[float] = []
     stop = False
 
     async def ticker() -> None:
-        nonlocal ticks
+        last = time.perf_counter()
         while not stop:
-            ticks += 1
-            await asyncio.sleep(0.005)
+            await asyncio.sleep(0)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
 
     task = asyncio.create_task(ticker())
-    started = time.perf_counter()
     hashed = await hash_password_async("correct horse battery")
     assert await verify_password_async("correct horse battery", hashed)
-    elapsed = time.perf_counter() - started
     stop = True
     await task
 
-    # The loop kept running for most of the hashing time instead of stalling.
-    assert ticks >= max(3, int(elapsed / 0.005 * 0.3)), (ticks, elapsed)
+    assert max(gaps) < one_hash / 2, (max(gaps), one_hash)
 
 
 def test_log_redaction_removes_every_character_of_a_real_api_key() -> None:
