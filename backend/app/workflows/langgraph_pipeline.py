@@ -18,6 +18,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
 from app.core.config import DEFAULT_MODEL_PRICING_PER_TOKEN, Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES, DEFAULT_WORKFLOW_STAGES
@@ -485,6 +486,7 @@ def create_apiweaver_graph(
         run_id = state.get("workflow_run_id", "")
         spec = dict(state.get("normalized_spec") or {})
         endpoints = spec.get("endpoints", [])
+        hydrated_spec: dict[str, Any] | None = None
         if not endpoints and session_factory and state.get("project_id"):
             try:
                 async with session_factory() as session:
@@ -495,10 +497,14 @@ def create_apiweaver_graph(
                         .limit(1)
                     )
                     if api_spec_record:
+                        # Eager-load: `ep.parameters` below would otherwise lazy-load
+                        # inside async code and raise MissingGreenlet, which the except
+                        # turned into a warning, so hydration never actually happened.
                         endpoint_records = (
                             await session.scalars(
                                 select(Endpoint)
                                 .where(Endpoint.api_spec_id == api_spec_record.id)
+                                .options(selectinload(Endpoint.parameters))
                             )
                         ).all()
                         raw_data = api_spec_record.raw_normalized or {}
@@ -535,7 +541,7 @@ def create_apiweaver_graph(
                             "base_url": api_spec_record.base_url or raw_data.get("base_url", ""),
                             "endpoints": hydrated_endpoints if hydrated_endpoints else raw_data.get("endpoints", []),
                         }
-                        state["normalized_spec"] = spec
+                        hydrated_spec = spec
                         endpoints = spec.get("endpoints", [])
             except Exception as e:
                 logger.warning("planner_spec_hydration_failed", error=str(e))
@@ -547,9 +553,18 @@ def create_apiweaver_graph(
         )
         await _emit_thought(state, "planner_agent", f"Analyzing {len(endpoints)} endpoints for topological DAG ordering & dependency clustering...", action="graph_clustering")
 
+        # Mutating `state` inside a node is not a state update: the planner saw the
+        # hydrated spec, but every later node (codegen, tests, export) got the
+        # endpoint-less one. Pass it explicitly and return it below.
+        planner_state = (
+            cast(WorkflowState, {**state, "normalized_spec": hydrated_spec})
+            if hydrated_spec is not None
+            else state
+        )
+
         tokens_before = state.get("total_tokens_used", 0)
         try:
-            planner_updates = await run_planner_agent(state)
+            planner_updates = await run_planner_agent(planner_state)
         except Exception as exc:
             terminal_logger.log_failure("planner_agent", run_id, exc)
             await _emit_thought(state, "planner_agent", f"Planning failed: {exc}", level="error", action="plan_failed")
@@ -582,6 +597,8 @@ def create_apiweaver_graph(
             "progress_percent": 30,
             "current_node": "planner_agent",
         }
+        if hydrated_spec is not None:
+            updates["normalized_spec"] = hydrated_spec
 
         # Persist dependency graph if session_factory is available
         edges_written = 0
@@ -594,7 +611,7 @@ def create_apiweaver_graph(
                         execution_plan=planner_updates.get("execution_plan")
                         or state.get("execution_plan")
                         or {},
-                        normalized_spec=state.get("normalized_spec") or {},
+                        normalized_spec=planner_state.get("normalized_spec") or {},
                     )
                     await session.commit()
             except Exception as e:
