@@ -15,7 +15,7 @@ from fastapi import (
     status,
 )
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
@@ -29,10 +29,9 @@ from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.document import EndpointResponse, SpecResponse, UploadResponse
 from app.services import audit_service
-from app.services.event_publisher import EventPublisher
 from app.services.ingestion_service import ingest_document
 from app.services.storage_service import ObjectStorage
-from app.workflows.langgraph_pipeline import LangGraphOrchestrator
+from app.workflows.dispatch import dispatch_run
 from app.workflows.state import WorkflowState
 
 router = APIRouter(prefix="/projects", tags=["documents"])
@@ -141,6 +140,9 @@ async def upload_document(
         "workflow_run_id": str(run.id),
         "document_id": str(document.id),
         "raw_document_bytes": content,
+        # The worker reloads the bytes from object storage (they do not travel in the
+        # broker message).
+        "document_s3_key": document.s3_key,
         "document_filename": file.filename,
         "format_hint": format_hint,
         "stages": ["plan"],
@@ -156,14 +158,14 @@ async def upload_document(
     # Commit before dispatching background worker so concurrent sessions see all persisted rows
     await session.commit()
 
-    engine_session_factory = async_sessionmaker(
-        bind=session.bind, class_=AsyncSession, expire_on_commit=False
+    await dispatch_run(
+        run_id=run.id,
+        state=initial_state,
+        settings=settings,
+        session=session,
+        background_tasks=background_tasks,
+        redis_client=redis_client,
     )
-    orchestrator = LangGraphOrchestrator(
-        session_factory=engine_session_factory,
-        event_publisher=EventPublisher(redis_client),
-    )
-    background_tasks.add_task(orchestrator.run, run.id, initial_state)
 
     return UploadResponse(
         document_id=document.id,

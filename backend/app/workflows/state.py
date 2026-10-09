@@ -30,6 +30,8 @@ class WorkflowState(TypedDict, total=False):
     # Input artifacts
     document_id: str | None
     raw_document_bytes: bytes | None
+    # Object-storage key of the uploaded document; the worker reloads bytes from here.
+    document_s3_key: str | None
     document_filename: str | None
     format_hint: str | None
     spec_persisted: bool | None

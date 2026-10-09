@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import APIError, NotFoundError
@@ -20,14 +21,13 @@ from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.export import ExportRequest, ExportResponse, MCPExportResponse
 from app.services import audit_service
-from app.services.event_publisher import EventPublisher
 from app.services.workflow_input_service import (
     load_generated_files,
     load_latest_test_results,
     load_normalized_spec,
 )
 from app.workflows.agents.export_agent import ExportAgent
-from app.workflows.langgraph_pipeline import LangGraphOrchestrator
+from app.workflows.dispatch import dispatch_run
 from app.workflows.state import WorkflowState
 
 router = APIRouter(prefix="/projects", tags=["export"])
@@ -41,6 +41,7 @@ async def trigger_export(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
 ) -> ExportResponse:
     """Trigger artifact exports for a project."""
     # Create export record
@@ -86,11 +87,6 @@ async def trigger_export(
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = LangGraphOrchestrator(
-        session_factory=engine_session_factory,
-        event_publisher=EventPublisher(redis_client),
-    )
-
     # Export is a single-stage run: everything it packages has to be reloaded, because
     # this request did not pass through generation or testing.
     async with engine_session_factory() as hydrate_session:
@@ -118,50 +114,20 @@ async def trigger_export(
         "errors": [],
     }
 
-    background_tasks.add_task(
-        _execute_export_run, orchestrator, run.id, initial_state, engine_session_factory, export_ids
+    await dispatch_run(
+        run_id=run.id,
+        state=initial_state,
+        settings=settings,
+        session=session,
+        background_tasks=background_tasks,
+        redis_client=redis_client,
+        post_run={
+            "kind": "export",
+            "export_ids": {k: str(v) for k, v in export_ids.items()},
+        },
     )
 
     return ExportResponse(export_id=run.id, artifacts=artifacts_meta)
-
-
-async def _execute_export_run(
-    orchestrator: LangGraphOrchestrator,
-    run_id: uuid.UUID,
-    initial_state: WorkflowState,
-    session_factory: async_sessionmaker[AsyncSession],
-    export_ids: dict[str, uuid.UUID],
-) -> WorkflowState:
-    """Run the export stage, then give every queued `Export` row a terminal status."""
-    state = await orchestrator.run(run_id, initial_state)
-
-    artifacts = {
-        str(a.get("type")): a for a in (state.get("exports") or []) if isinstance(a, dict)
-    }
-
-    async with session_factory() as session:
-        for export_type, export_id in export_ids.items():
-            artifact = artifacts.get(export_type)
-            export = await session.get(Export, export_id)
-            if export is None:
-                continue
-            if artifact is None:
-                export.status = "failed"
-                continue
-            art_status = artifact.get("status")
-            if art_status in ("failed", "skipped"):
-                export.status = art_status
-            else:
-                export.status = "completed"
-            primary_key = None
-            if artifact.get("s3_key"):
-                primary_key = artifact.get("s3_key")
-            elif artifact.get("artifacts") and isinstance(artifact["artifacts"], list) and artifact["artifacts"]:
-                primary_key = artifact["artifacts"][0].get("s3_key")
-            if primary_key:
-                export.s3_key = primary_key
-        await session.commit()
-    return state
 
 
 @router.post("/{id}/export/mcp", response_model=MCPExportResponse)

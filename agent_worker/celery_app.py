@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+
 from celery import Celery
 
 BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/1")
@@ -28,16 +29,23 @@ app.conf.update(
     task_routes={
         "agent_worker.tasks.dead_letter": {"queue": "dlq"},
     },
-    broker_transport_options={"visibility_timeout": 3600},
+    # Must exceed the longest task's time limit (run_workflow: up to an hour), or Redis
+    # redelivers a still-running workflow to a second worker.
+    broker_transport_options={
+        "visibility_timeout": int(os.environ.get("WORKFLOW_TASK_TIME_LIMIT_SECONDS", "3600")) + 900
+    },
+    # One long workflow per prefetch slot: do not reserve a second behind it.
+    worker_prefetch_multiplier=1,
 )
 
-from agent_worker.tasks.codegen_tasks import run_code_agent_task
-from agent_worker.tasks.document_tasks import run_document_agent
-from agent_worker.tasks.dlq_tasks import dead_letter_task
-from agent_worker.tasks.export_tasks import run_export_agent
-from agent_worker.tasks.planner_tasks import run_planner_agent_task
-from agent_worker.tasks.testing_tasks import run_testing_agent
-from agent_worker.tasks.workflow_tasks import run_workflow
+# Imported after `app` exists: the tasks register against it.
+from agent_worker.tasks.codegen_tasks import run_code_agent_task  # noqa: E402
+from agent_worker.tasks.dlq_tasks import dead_letter_task  # noqa: E402
+from agent_worker.tasks.document_tasks import run_document_agent  # noqa: E402
+from agent_worker.tasks.export_tasks import run_export_agent  # noqa: E402
+from agent_worker.tasks.planner_tasks import run_planner_agent_task  # noqa: E402
+from agent_worker.tasks.testing_tasks import run_testing_agent  # noqa: E402
+from agent_worker.tasks.workflow_tasks import run_workflow  # noqa: E402
 
 for task in (
     run_document_agent,

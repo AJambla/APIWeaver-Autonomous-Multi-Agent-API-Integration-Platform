@@ -82,6 +82,14 @@ async def run_doc_agent(
         }
 
     raw_bytes = state.get("raw_document_bytes")
+    if not raw_bytes and state.get("document_s3_key"):
+        # Runs dispatched to the worker carry the storage key, not the bytes.
+        from app.services.storage_service import storage_service
+
+        try:
+            raw_bytes = await storage_service.download(state["document_s3_key"])
+        except Exception as exc:
+            logger.warning("doc_agent_document_download_failed", error=str(exc))
     filename = state.get("document_filename") or "document.txt"
     format_hint = state.get("format_hint")
 

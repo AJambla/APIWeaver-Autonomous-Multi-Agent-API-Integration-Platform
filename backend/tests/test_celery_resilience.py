@@ -187,4 +187,8 @@ def test_celery_conf_redelivery_settings():
     assert app.conf.task_acks_late is True
     assert app.conf.task_reject_on_worker_lost is True
     assert app.conf.task_routes["agent_worker.tasks.dead_letter"]["queue"] == "dlq"
-    assert app.conf.broker_transport_options["visibility_timeout"] == 3600
+    # Longer than the longest task (a whole workflow), or Redis redelivers it mid-run.
+    from agent_worker.tasks.workflow_tasks import RunWorkflow
+
+    assert app.conf.broker_transport_options["visibility_timeout"] > RunWorkflow.time_limit
+    assert RunWorkflow.time_limit > app.conf.task_time_limit
