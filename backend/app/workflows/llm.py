@@ -294,7 +294,13 @@ class LLMClient:
                 cleaned = cleaned[3:]
             if cleaned.endswith("```"):
                 cleaned = cleaned[:-3]
-            return json.loads(cleaned.strip()), tokens
+            try:
+                return json.loads(cleaned.strip()), tokens
+            except json.JSONDecodeError as err:
+                raise _TransientProviderError(
+                    f"openai returned malformed JSON: {err}",
+                    status_code=200,
+                ) from err
 
         return await self._call_provider("openai", send)
 
@@ -427,6 +433,12 @@ class LLMClient:
                 cleaned = cleaned[3:]
             if cleaned.endswith("```"):
                 cleaned = cleaned[:-3]
-            return json.loads(cleaned.strip()), tokens
+            try:
+                return json.loads(cleaned.strip()), tokens
+            except json.JSONDecodeError as err:
+                raise _TransientProviderError(
+                    f"anthropic returned malformed JSON: {err}",
+                    status_code=200,
+                ) from err
 
         return await self._call_provider("anthropic", send)

@@ -6,6 +6,7 @@ and stores them in S3 with metadata in Postgres.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -235,7 +236,15 @@ class ExportAgent:
 
             import io
             import zipfile
-            zip_buffer = io.BytesIO()
+
+            file_contents_map: dict[str, bytes] = {}
+            for f in lang_files:
+                try:
+                    f_content = await storage_service.download(f["content_s3_key"])
+                    file_contents_map[f.get("file_path", "unknown")] = f_content
+                except Exception as e:
+                    logger.warning("sdk_zip_file_failed", file=f.get("file_path"), error=str(e))
+
             normalized_spec = kwargs.get("normalized_spec") or {}
             if not isinstance(normalized_spec, dict):
                 normalized_spec = {}
@@ -244,21 +253,20 @@ class ExportAgent:
             base_url_literal = to_literal(
                 to_base_url(normalized_spec.get("base_url") or "https://api.example.com").rstrip("/")
             )
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                for f in lang_files:
-                    try:
-                        f_content = await storage_service.download(f["content_s3_key"])
-                        zf.writestr(f.get("file_path", "unknown"), f_content)
-                    except Exception as e:
-                        logger.warning("sdk_zip_file_failed", file=f.get("file_path"), error=str(e))
 
-                file_paths = {f.get("file_path", "") for f in lang_files}
-                if "README.md" not in file_paths:
-                    zf.writestr("README.md", f"# {spec_title} {language.capitalize()} SDK\n\nAuto-generated client by APIWeaver.\n")
-                client_cls = client_class_name(normalized_spec.get("title"))
-                if language == "python" and not any(p.startswith("tests/") for p in file_paths):
-                    zf.writestr("tests/__init__.py", "")
-                    py_test = f'''"""Unit test suite for {spec_title} Python SDK."""
+            def _build_zip_archive() -> bytes:
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for f_path, f_bytes in file_contents_map.items():
+                        zf.writestr(f_path, f_bytes)
+
+                    file_paths = {f.get("file_path", "") for f in lang_files}
+                    if "README.md" not in file_paths:
+                        zf.writestr("README.md", f"# {spec_title} {language.capitalize()} SDK\n\nAuto-generated client by APIWeaver.\n")
+                    client_cls = client_class_name(normalized_spec.get("title"))
+                    if language == "python" and not any(p.startswith("tests/") for p in file_paths):
+                        zf.writestr("tests/__init__.py", "")
+                        py_test = f'''"""Unit test suite for {spec_title} Python SDK."""
 import pytest
 from client import {client_cls}
 
@@ -267,9 +275,9 @@ def test_client_initialization():
     client = {client_cls}(base_url={base_url_literal})
     assert client.base_url.rstrip("/") == {base_url_literal}
 '''
-                    zf.writestr("tests/test_client.py", py_test)
-                elif language == "node" and not any(p.startswith("tests/") or p.endswith(".test.ts") for p in file_paths):
-                    ts_test = f'''import {{ describe, it, expect }} from "vitest";
+                        zf.writestr("tests/test_client.py", py_test)
+                    elif language == "node" and not any(p.startswith("tests/") or p.endswith(".test.ts") for p in file_paths):
+                        ts_test = f'''import {{ describe, it, expect }} from "vitest";
 import {{ {client_cls} }} from "../client";
 
 describe("{client_cls}", () => {{
@@ -279,10 +287,12 @@ describe("{client_cls}", () => {{
   }});
 }});
 '''
-                    zf.writestr("tests/client.test.ts", ts_test)
+                        zf.writestr("tests/client.test.ts", ts_test)
 
-                zf.writestr("package_metadata.json", json.dumps(package_metadata, indent=2))
-            zip_bytes = zip_buffer.getvalue()
+                    zf.writestr("package_metadata.json", json.dumps(package_metadata, indent=2))
+                return zip_buffer.getvalue()
+
+            zip_bytes = await asyncio.to_thread(_build_zip_archive)
             zip_s3_key = f"exports/{project_id}/sdk/{language}/sdk-{language}.zip"
             await storage_service.upload(zip_s3_key, zip_bytes)
 
@@ -555,7 +565,8 @@ import sys
 # Validate generated SDK imports
 try:
     import client
-    print("Successfully loaded generated client SDK.")
+    sys.stdout.write("Successfully loaded generated client SDK.\\n")
+    sys.stdout.flush()
 except ImportError:
     pass
 

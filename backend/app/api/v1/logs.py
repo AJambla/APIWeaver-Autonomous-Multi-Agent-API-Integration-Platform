@@ -10,6 +10,7 @@ from sqlalchemy import literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
+from app.core.logging import get_logger
 from app.models.project import Project
 from app.models.workflow import AgentEvent, WorkflowRun
 from app.rbac.enforce import require_project_permission
@@ -17,6 +18,7 @@ from app.rbac.policy import Permission
 from app.schemas.common import Page, PaginationMeta, decode_cursor, encode_cursor
 
 router = APIRouter(tags=["logs"])
+logger = get_logger(__name__)
 
 
 @router.get("/projects/{id}/logs", response_model=Page[dict])
@@ -41,8 +43,8 @@ async def get_project_logs(
         try:
             last_created = datetime.datetime.fromisoformat(position["created_at"])
             last_id = int(position["id"])
-        except (KeyError, TypeError, ValueError):
-            pass
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.debug("logs_cursor_invalid", cursor=cursor, error=str(exc))
         else:
             # A Python tuple comparison here compiled to `created_at < '<iso string>'`
             # and failed on every second page; tuple_ is the SQL row-value compare.
