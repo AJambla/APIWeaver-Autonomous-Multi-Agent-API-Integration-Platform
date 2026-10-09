@@ -50,6 +50,7 @@ async def test_concurrent_redemptions_of_one_refresh_token_mint_one_successor(
     assert statuses.count(401) >= 3, statuses
 
 
+@pytest.mark.concurrent_db
 async def test_parallel_wrong_passwords_still_lock_the_account(client: AsyncClient) -> None:
     account = await _register(client)
 

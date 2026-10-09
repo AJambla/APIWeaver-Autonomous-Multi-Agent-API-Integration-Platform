@@ -296,20 +296,32 @@ def _clear_caches(test_settings: Settings) -> Iterator[None]:
 
 @pytest.fixture
 async def session_factory(
-    test_settings: Settings,
+    test_settings: Settings, request: pytest.FixtureRequest, tmp_path
 ) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    """A fresh in-memory schema per test.
+    """A fresh schema per test.
 
-    `StaticPool` with a shared in-memory URL keeps every connection on the same database;
-    the default pool would hand each connection its own empty `:memory:`.
+    By default an in-memory database: `StaticPool` with a shared in-memory URL keeps every
+    connection on the same database (the default pool would hand each connection its own
+    empty `:memory:`). That is one shared connection, which cannot hold two transactions
+    at once - fine while requests happen to run one after another, wrong for tests whose
+    requests genuinely interleave. Those are marked `concurrent_db` and get a file database
+    with a connection per session, where SQLite's file lock serializes writers the way a
+    real database's row locks would.
     """
-    from sqlalchemy.pool import StaticPool
+    from sqlalchemy.pool import NullPool, StaticPool
 
-    engine = create_async_engine(
-        test_settings.database_url,
-        poolclass=StaticPool,
-        connect_args={"check_same_thread": False},
-    )
+    if request.node.get_closest_marker("concurrent_db"):
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{(tmp_path / 'concurrent.db').as_posix()}",
+            poolclass=NullPool,
+            connect_args={"check_same_thread": False, "timeout": 30},
+        )
+    else:
+        engine = create_async_engine(
+            test_settings.database_url,
+            poolclass=StaticPool,
+            connect_args={"check_same_thread": False},
+        )
     tables = non_partitioned_tables()
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tables))
