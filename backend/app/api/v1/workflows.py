@@ -94,7 +94,7 @@ async def trigger_workflow(
     await audit_service.record(
         session,
         action="workflow.triggered",
-        actor_type=ActorType.USER,
+        **audit_service.actor(principal),
         organization_id=project.organization_id,
         resource_type="workflow_run",
         resource_id=str(run.id),
@@ -193,8 +193,8 @@ async def get_workflow_run(
     if run is None:
         raise NotFoundError("Workflow run not found.")
 
-    # Multi-tenant check
-    await load_project_for_principal(session, principal, run.project_id)
+    # Tenant isolation and the project role: org membership alone is not enough.
+    await assert_project_permission(session, principal, Permission.WORKFLOW_READ, run.project_id)
 
     return await _run_to_response(run, session)
 
@@ -245,7 +245,7 @@ async def approve_workflow_gate(
     await audit_service.record(
         session,
         action="workflow.gate_approved" if payload.approved else "workflow.gate_rejected",
-        actor_type=ActorType.USER,
+        **audit_service.actor(principal),
         organization_id=project.organization_id,
         resource_type="workflow_run",
         resource_id=str(run.id),
@@ -358,7 +358,7 @@ async def list_workflow_tool_calls(
     if run is None:
         raise NotFoundError("Workflow run not found.")
 
-    await load_project_for_principal(session, principal, run.project_id)
+    await assert_project_permission(session, principal, Permission.WORKFLOW_READ, run.project_id)
 
     # Fetch tool calls associated with events in this workflow run
     from app.models.workflow import AgentEvent

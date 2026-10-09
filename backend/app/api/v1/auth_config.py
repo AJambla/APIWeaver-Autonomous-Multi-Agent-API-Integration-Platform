@@ -6,14 +6,13 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_db
-from app.core.errors import NotFoundError
+from app.core.deps import get_current_principal, get_db
+from app.core.errors import DependencyUnavailableError, NotFoundError
 from app.core.logging import get_logger
 from app.models.auth_config import AuthConfig, SecretRef
-from app.models.enums import ActorType
 from app.models.project import Project
 from app.rbac.enforce import require_project_permission
-from app.rbac.policy import Permission
+from app.rbac.policy import Permission, Principal
 from app.schemas.auth_config import AuthConfigRequest, AuthConfigResponse
 from app.services import audit_service
 from app.services.vault_service import VaultClient, create_vault_client
@@ -45,6 +44,7 @@ async def get_auth_config(
 async def put_auth_config(
     payload: AuthConfigRequest,
     project: Project = Depends(require_project_permission(Permission.AUTH_CONFIG_WRITE)),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     vault: VaultClient = Depends(create_vault_client),
 ) -> AuthConfigResponse:
@@ -83,7 +83,7 @@ async def put_auth_config(
     await audit_service.record(
         session,
         action="auth_config.updated",
-        actor_type=ActorType.USER,
+        **audit_service.actor(principal),
         organization_id=project.organization_id,
         resource_type="auth_config",
         resource_id=str(config.id),
@@ -118,11 +118,16 @@ async def delete_auth_config_with_vault(
         try:
             await vault.delete_secret(ref.vault_path)
         except Exception as exc:
+            # Keep the SecretRef (the RESTRICT FK exists for exactly this): deleting it
+            # would orphan a live credential in Vault with nothing pointing at it.
             logger.warning(
                 "failed_to_delete_vault_secret",
                 vault_path=ref.vault_path,
                 error=str(exc),
             )
+            raise DependencyUnavailableError(
+                "Could not remove the stored credentials from Vault; nothing was deleted."
+            ) from exc
         await session.delete(ref)
 
     await session.delete(auth_config)
@@ -132,6 +137,7 @@ async def delete_auth_config_with_vault(
 @router.delete("/{id}/auth", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_auth_config(
     project: Project = Depends(require_project_permission(Permission.AUTH_CONFIG_WRITE)),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     vault: VaultClient = Depends(create_vault_client),
 ) -> None:
@@ -150,7 +156,7 @@ async def delete_auth_config(
     await audit_service.record(
         session,
         action="auth_config.deleted",
-        actor_type=ActorType.USER,
+        **audit_service.actor(principal),
         organization_id=project.organization_id,
         resource_type="auth_config",
         resource_id=config_id,
