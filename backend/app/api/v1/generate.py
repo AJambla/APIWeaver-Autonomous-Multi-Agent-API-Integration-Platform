@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings, get_settings
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger
@@ -24,8 +25,7 @@ from app.schemas.generate import FileContentResponse, FileResponse
 from app.schemas.generate import GenerateRequest as GenerateRequestAlias
 from app.schemas.generate import GenerateResponse as GenerateResponseAlias
 from app.services import audit_service
-from app.services.event_publisher import EventPublisher
-from app.workflows.langgraph_pipeline import LangGraphOrchestrator
+from app.workflows.dispatch import dispatch_run
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -41,6 +41,7 @@ async def trigger_generate(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
 ) -> GenerateResponseAlias:
     """Trigger code generation for a project."""
     # Supersede any active or paused runs for this project
@@ -90,14 +91,15 @@ async def trigger_generate(
         "errors": [],
     }
 
-    engine_session_factory = __import__("sqlalchemy.ext.asyncio", fromlist=["async_sessionmaker"]).async_sessionmaker(
-        bind=session.bind, class_=AsyncSession, expire_on_commit=False
+    await session.commit()
+    await dispatch_run(
+        run_id=run.id,
+        state=initial_state,
+        settings=settings,
+        session=session,
+        background_tasks=background_tasks,
+        redis_client=redis_client,
     )
-    orchestrator = LangGraphOrchestrator(
-        session_factory=engine_session_factory,
-        event_publisher=EventPublisher(redis_client),
-    )
-    background_tasks.add_task(orchestrator.run, run.id, initial_state)
 
     return GenerateResponseAlias(workflow_run_id=run.id, status="queued")
 

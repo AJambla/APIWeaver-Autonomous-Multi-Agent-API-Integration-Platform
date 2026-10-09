@@ -209,6 +209,13 @@ class Settings(BaseSettings):
     # In production, require Celery workers for async workflows rather than
     # silently running on API process BackgroundTasks (fail-loud queueing).
     require_celery_worker: bool = False
+    # Where workflow runs execute: "celery" (the agent worker) or "inline" (FastAPI
+    # BackgroundTasks; development only). Production always uses the worker.
+    workflow_dispatch: Literal["inline", "celery"] = "inline"
+    # Hard/soft limits for one whole workflow run inside the worker. Stage tasks keep the
+    # shorter Celery defaults; a full pipeline (LLM codegen + sandbox tests + repairs)
+    # routinely needs more than five minutes.
+    workflow_task_time_limit_seconds: int = 3600
     # Workflow progress percentage mapping by node name
     workflow_node_progress_map: dict[str, int] = Field(
         default_factory=lambda: dict(DEFAULT_WORKFLOW_NODE_PROGRESS)

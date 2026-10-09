@@ -18,12 +18,16 @@ import uuid
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from httpx import AsyncClient
 
 import app.services.storage_service as storage_module
 from app.workflows.llm import LLMClient
 from tests.conftest import TEST_PASSWORD
 from tests.fakes import InMemoryObjectStorage
+
+# Generated code runs in real Docker sandboxes (the SANDBOX_IMAGE must exist locally).
+pytestmark = pytest.mark.integration
 
 SPEC_YAML = """\
 openapi: "3.0.3"
@@ -73,22 +77,31 @@ class SandboxEchoClient:
     async def close(self):
         await self._client.aclose()
 
-    def __getattr__(self, name):
-        async def operation(**kwargs):
-            return await self._client.request(
-                kwargs.get("method", "GET"), "/", json=kwargs.get("body")
-            )
+    # The hermetic sandbox checks the request each operation makes, so the double
+    # behaves like a real client: the spec's method and path, relative to base_url.
+    async def listUsers(self, **kwargs):
+        return await self._client.get("users")
 
-        return operation
+    async def createUser(self, body=None, **kwargs):
+        return await self._client.post("users", json=body)
 '''
 
 SANDBOX_NODE_CLIENT_CODE = '''\
 export class SandboxEchoClient {
-    async listUsers(options) {
-        return { status_code: 200, status: 200, data: { ok: true } };
+    constructor(config = {}) {
+        this.baseUrl = (config.baseUrl || "http://mock.local").replace(/\/+$/, "");
     }
-    async createUser(options) {
-        return { status_code: 201, status: 201, data: { ok: true } };
+    async listUsers() {
+        const response = await fetch(`${this.baseUrl}/users`);
+        return { status_code: response.status, data: await response.json() };
+    }
+    async createUser(body) {
+        const response = await fetch(`${this.baseUrl}/users`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body ?? {}),
+        });
+        return { status_code: response.status, data: await response.json() };
     }
 }
 '''

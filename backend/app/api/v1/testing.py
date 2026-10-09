@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime
 import uuid
 
 import redis.asyncio as aioredis
@@ -28,12 +27,11 @@ from app.schemas.testing import (
     TestRunSummaryResponse,
 )
 from app.services import audit_service
-from app.services.event_publisher import EventPublisher
 from app.services.workflow_input_service import (
     load_generated_files,
     load_normalized_spec,
 )
-from app.workflows.langgraph_pipeline import LangGraphOrchestrator
+from app.workflows.dispatch import dispatch_run
 from app.workflows.state import WorkflowState
 
 router = APIRouter(prefix="/projects", tags=["testing"])
@@ -95,11 +93,6 @@ async def trigger_test(
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = LangGraphOrchestrator(
-        session_factory=engine_session_factory,
-        event_publisher=EventPublisher(redis_client),
-    )
-
     # Testing is a single-stage run: the spec and the generated client have to come back
     # out of the database, because this request never passed through the earlier stages.
     async with engine_session_factory() as hydrate_session:
@@ -119,37 +112,17 @@ async def trigger_test(
         "errors": [],
     }
 
-    background_tasks.add_task(
-        _execute_test_run, orchestrator, run.id, initial_state, engine_session_factory, test_run.id
+    await dispatch_run(
+        run_id=run.id,
+        state=initial_state,
+        settings=settings,
+        session=session,
+        background_tasks=background_tasks,
+        redis_client=redis_client,
+        post_run={"kind": "test", "test_run_id": str(test_run.id)},
     )
 
     return TestRunResponse(test_run_id=test_run.id, status="running")
-
-
-async def _execute_test_run(
-    orchestrator: LangGraphOrchestrator,
-    run_id: uuid.UUID,
-    initial_state: WorkflowState,
-    session_factory: async_sessionmaker[AsyncSession],
-    test_run_id: uuid.UUID,
-) -> WorkflowState:
-    """Run the test stage, then close out the TestRun row.
-
-    `run_test_agent` records results itself; this only catches the paths where the stage
-    never executed (no spec, no generated files, or a raised error), which would otherwise
-    leave the run showing "running" forever.
-    """
-    state = await orchestrator.run(run_id, initial_state)
-
-    async with session_factory() as session:
-        test_run = await session.get(TestRun, test_run_id)
-        if test_run is not None and test_run.status == "running":
-            errors = [str(e) for e in (state.get("errors") or [])]
-            test_run.status = "failed"
-            test_run.summary = {"errors": errors or ["The test stage did not execute."]}
-            test_run.completed_at = datetime.datetime.now(datetime.UTC)
-            await session.commit()
-    return state
 
 
 async def _repairs_for(

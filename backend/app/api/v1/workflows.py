@@ -8,12 +8,12 @@ import uuid
 import redis.asyncio as aioredis
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
-from app.core.errors import DependencyUnavailableError, NotFoundError, UnprocessableEntityError
+from app.core.errors import NotFoundError, UnprocessableEntityError
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
 from app.models.enums import ActorType, WorkflowStatus
@@ -35,8 +35,7 @@ from app.schemas.workflow import (
     WorkflowRunResponse,
 )
 from app.services import audit_service
-from app.services.event_publisher import EventPublisher
-from app.workflows.langgraph_pipeline import LangGraphOrchestrator
+from app.workflows.dispatch import dispatch_run
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -56,6 +55,7 @@ async def trigger_workflow(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
 ) -> TriggerWorkflowResponse:
     """Trigger multi-agent orchestration for a project."""
     # Find latest spec if available
@@ -101,7 +101,6 @@ async def trigger_workflow(
         metadata={"stages": payload.stages, "target_languages": payload.target_languages},
     )
 
-    settings = get_settings()
     initial_state: WorkflowState = {
         "project_id": str(project.id),
         "organization_id": str(project.organization_id),
@@ -115,37 +114,17 @@ async def trigger_workflow(
         "token_budget": getattr(project, "token_budget", None) or settings.default_token_budget,
     }
 
-    engine_session_factory = async_sessionmaker(
-        bind=session.bind, class_=AsyncSession, expire_on_commit=False
-    )
-    event_publisher = EventPublisher(redis_client)
-
-    runner_instance = LangGraphOrchestrator(
-        session_factory=engine_session_factory,
-        event_publisher=event_publisher,
-        execution_mode=payload.execution_mode,
-        settings=settings,
-    )
-
-    # Commit before dispatching background worker so concurrent sessions see all persisted rows
+    # Commit before dispatching so the worker (or background task) sees every row.
     await session.commit()
-
-    if payload.execution_mode == "async":
-        try:
-            from agent_worker.celery_app import app as celery_app
-            celery_app.send_task(
-                "agent_worker.tasks.run_workflow",
-                args=[str(run.id), initial_state],
-                task_id=f"run_workflow:{run.id}",
-            )
-        except Exception as exc:
-            if settings.is_production or settings.require_celery_worker:
-                raise DependencyUnavailableError(
-                    f"Celery worker queue is unavailable for async workflow execution: {exc}"
-                ) from exc
-            background_tasks.add_task(runner_instance.run, run.id, initial_state)
-    else:
-        background_tasks.add_task(runner_instance.run, run.id, initial_state)
+    await dispatch_run(
+        run_id=run.id,
+        state=initial_state,
+        settings=settings,
+        session=session,
+        background_tasks=background_tasks,
+        redis_client=redis_client,
+        requested_mode=payload.execution_mode,
+    )
 
     return TriggerWorkflowResponse(workflow_run_id=run.id, status=WorkflowStatus.QUEUED)
 
@@ -228,6 +207,7 @@ async def approve_workflow_gate(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
 ) -> ApproveWorkflowResponse:
     """Approve a human-in-the-loop gate before generated code runs."""
     run = await session.get(WorkflowRun, run_id)
@@ -287,15 +267,14 @@ async def approve_workflow_gate(
             resume_state["stages"] = ["generate", "test", "export"]
 
         await session.commit()
-
-        engine_session_factory = async_sessionmaker(
-            bind=session.bind, class_=AsyncSession, expire_on_commit=False
+        await dispatch_run(
+            run_id=run.id,
+            state=resume_state,
+            settings=settings,
+            session=session,
+            background_tasks=background_tasks,
+            redis_client=redis_client,
         )
-        orchestrator = LangGraphOrchestrator(
-            session_factory=engine_session_factory,
-            event_publisher=EventPublisher(redis_client),
-        )
-        background_tasks.add_task(orchestrator.run, run.id, resume_state)
     else:
         await session.commit()
 

@@ -47,4 +47,5 @@ USER appuser
 # infra/docker/docker-compose.single-node.yml.
 
 # Run celery worker
-CMD ["celery", "-A", "agent_worker.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+# Consume the dead-letter queue too: nothing else reads `dlq`.
+CMD ["celery", "-A", "agent_worker.celery_app", "worker", "--loglevel=info", "--concurrency=4", "-Q", "celery,dlq"]
