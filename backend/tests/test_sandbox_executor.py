@@ -496,30 +496,6 @@ async def test_load_skips_path_traversal(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_docker_executor_prepare_and_run_test():
-    container = FakeContainer(exit_code=0, output="test passed")
-    client = FakeDockerClient(container)
-    settings = _make_settings()
-    executor = DockerSandboxExecutor(settings, docker_client=client)
-
-    await executor.prepare(
-        project_id="proj-1",
-        language="python",
-        files={"client.py": "class Client: pass"},
-    )
-    assert (executor._workspace / "client.py").exists()
-
-    res = await executor.run_test(
-        project_id="proj-1",
-        test_file="test_client.py",
-        test_code="def test_ok(): pass",
-    )
-    assert res.exit_code == 0
-    assert res.stdout == "test passed"
-    await executor.cleanup()
-
-
-@pytest.mark.asyncio
 async def test_execute_node_test_selects_node_image_and_runner():
     """Verify that staged Node.js/TS files select node:22-alpine and runner.mjs."""
     sentinel = _RESULT_PREFIX + "{NONCE}:" + json.dumps(
@@ -592,23 +568,6 @@ def test_docker_sandbox_custom_docker_host(monkeypatch):
 
     assert client == "custom_client_instance"
     assert captured_hosts == ["tcp://docker-dind:2375"]
-
-
-@pytest.mark.asyncio
-async def test_docker_executor_run_test_reports_failure_on_exception():
-    """Verify run_test returns non-zero exit code when docker execution encounters an exception."""
-    container = FakeContainer(exit_code=1, output="Traceback: SyntaxError")
-    client = FakeDockerClient(container)
-    settings = _make_settings()
-    executor = DockerSandboxExecutor(settings, docker_client=client)
-
-    res = await executor.run_test(
-        project_id="proj-1",
-        test_file="test_invalid.py",
-        test_code="def invalid syntax :::: ",
-    )
-    assert res.exit_code == 1
-    await executor.cleanup()
 
 
 def test_deterministic_fixtures_use_spec_examples_and_enums():

@@ -7,7 +7,6 @@ import uuid
 
 from pydantic import Field
 
-from app.models.enums import ProjectStatus
 from app.schemas.common import ResponseModel, StrictModel
 
 
@@ -35,8 +34,3 @@ class ProjectSummaryResponse(ProjectResponse):
 
     endpoint_count: int = 0
     last_run_status: str | None = None
-
-
-class ProjectListFilters(StrictModel):
-    status: ProjectStatus | None = None
-    organization_id: uuid.UUID | None = None

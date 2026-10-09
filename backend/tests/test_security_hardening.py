@@ -9,7 +9,6 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.services.ingestion_service import sanitize_filename
-from app.services.sandbox_service import create_sandbox_client
 from app.services.storage_service import validate_storage_key
 from app.services.vault_service import validate_vault_path
 from tests.fakes import FakeVaultClient, InMemoryObjectStorage
@@ -36,27 +35,6 @@ class TestSandboxIsolationSecurity:
     def test_production_refuses_mock_sandbox(self, test_settings: Settings) -> None:
         with pytest.raises(ValidationError, match="SANDBOX_BACKEND=mock"):
             _make_settings(test_settings, app_env="production", sandbox_backend="mock")
-
-    def test_create_sandbox_client_raises_in_production_if_not_docker(
-        self, test_settings: Settings
-    ) -> None:
-        settings = _make_settings(test_settings, app_env="production", sandbox_backend="docker")
-        object.__setattr__(settings, "sandbox_backend", "mock")
-        with pytest.raises(RuntimeError, match="cannot be used in production mode"):
-            create_sandbox_client(settings)
-
-    def test_create_sandbox_client_raises_in_staging_if_not_docker(
-        self, test_settings: Settings
-    ) -> None:
-        settings = _make_settings(test_settings, app_env="staging", sandbox_backend="docker")
-        object.__setattr__(settings, "sandbox_backend", "mock")
-        with pytest.raises(RuntimeError, match="cannot be used in staging mode"):
-            create_sandbox_client(settings)
-
-
-
-class TestStorageKeyValidation:
-    """Ensure storage operations reject path traversal."""
 
     def test_storage_key_rejects_traversal(self) -> None:
         with pytest.raises(ValueError, match="Invalid or unsafe storage key"):

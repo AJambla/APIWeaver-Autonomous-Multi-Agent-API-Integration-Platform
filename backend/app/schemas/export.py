@@ -78,15 +78,3 @@ class MCPExportResponse(ResponseModel):
     mcp_manifest_url: str
     tools_generated: int
     flagged_destructive: int
-
-
-class ExportArtifactResponse(ResponseModel):
-    """Metadata for a single export artifact."""
-
-    id: uuid.UUID
-    export_id: uuid.UUID
-    export_type: str
-    artifact_name: str
-    s3_key: str
-    metadata: dict[str, Any] | None = None
-    created_at: str | None = None

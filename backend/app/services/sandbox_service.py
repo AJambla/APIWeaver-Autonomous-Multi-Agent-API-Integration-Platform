@@ -29,10 +29,9 @@ import tarfile
 import tempfile
 import time
 import traceback
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 from urllib.parse import urlsplit
 
 from app.core.config import Settings
@@ -42,30 +41,6 @@ logger = get_logger(__name__)
 
 # What a hermetic (mock-answered, no-network) run sees in place of the target credential.
 HERMETIC_PLACEHOLDER_API_KEY = "apiweaver-hermetic-placeholder"
-
-
-@dataclass(frozen=True, slots=True)
-class SandboxResult:
-    exit_code: int
-    stdout: str
-    stderr: str
-    duration_ms: int
-    artifacts: dict[str, Any] = field(default_factory=dict)
-
-
-class SandboxClient(Protocol):
-    async def prepare(self, *, project_id: uuid.UUID, language: str, files: dict[str, str]) -> None: ...
-
-    async def run_test(
-        self,
-        *,
-        project_id: uuid.UUID,
-        test_file: str,
-        test_code: str,
-        env_vars: dict[str, str] | None = None,
-    ) -> SandboxResult: ...
-
-    async def cleanup(self, *, project_id: uuid.UUID) -> None: ...
 
 
 # Marker the sandbox runner prints before its nonce and single-line JSON result.
@@ -510,72 +485,6 @@ class DockerSandboxExecutor:
         target.write_text(content, encoding="utf-8")
         target.chmod(0o644)
 
-    async def prepare(
-        self,
-        *,
-        project_id: Any,
-        language: str,
-        files: dict[str, str],
-    ) -> None:
-        """Satisfies the SandboxClient protocol."""
-        await self.load(project_id=project_id, files=files, language=language)
-
-    async def run_test(
-        self,
-        *,
-        project_id: Any,
-        test_file: str,
-        test_code: str,
-        env_vars: dict[str, str] | None = None,
-    ) -> SandboxResult:
-        """Execute a standalone test file inside a quota-enforced Docker container."""
-        started = time.perf_counter()
-        if self._workspace is None:
-            self._workspace = await asyncio.to_thread(self._new_workspace, project_id)
-
-        target = _safe_workspace_target(self._workspace, test_file)
-        if target is None:
-            return SandboxResult(
-                exit_code=1,
-                stdout="",
-                stderr=f"Unsafe test file path rejected: {test_file}",
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
-        if test_file.endswith((".ts", ".tsx")):
-            test_code = _rewrite_ts_imports(test_code)
-        await asyncio.to_thread(self._write_file, target, test_code)
-
-        if test_file.endswith((".ts", ".js", ".mjs")):
-            image = self._settings.sandbox_node_image
-            command = ["node", "--experimental-strip-types", f"/sandbox/{test_file}"]
-        else:
-            image = self._settings.sandbox_image
-            command = ["python", "-P", f"/sandbox/{test_file}"]
-
-        environment = {"PYTHONDONTWRITEBYTECODE": "1", **(env_vars or {})}
-        try:
-            outcome = await self._run_container(image=image, command=command, environment=environment)
-        except Exception as exc:
-            return SandboxResult(
-                exit_code=1,
-                stdout="",
-                stderr=str(exc),
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
-        if outcome.timed_out:
-            return SandboxResult(
-                exit_code=1,
-                stdout="",
-                stderr=f"sandbox_timeout: exceeded {self._settings.sandbox_timeout_seconds}s",
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
-        return SandboxResult(
-            exit_code=outcome.exit_code,
-            stdout=outcome.output if outcome.exit_code == 0 else "",
-            stderr=outcome.output if outcome.exit_code != 0 else "",
-            duration_ms=int((time.perf_counter() - started) * 1000),
-        )
-
     def _stage(self, project_id: Any, files: dict[str, str]) -> Path:
         workspace = self._new_workspace(project_id)
         for rel_path, content in files.items():
@@ -844,13 +753,3 @@ class DockerSandboxExecutor:
         if self._workspace is not None:
             workspace, self._workspace = self._workspace, None
             await asyncio.to_thread(shutil.rmtree, workspace, True)
-
-
-def create_sandbox_client(settings: Settings) -> SandboxClient:
-    """Instantiate a production-level Docker sandbox executor."""
-    if settings.sandbox_backend != "docker":
-        raise RuntimeError(
-            f"SANDBOX_BACKEND={settings.sandbox_backend} cannot be used in {settings.app_env} mode. "
-            "Docker sandbox executor is strictly required."
-        )
-    return DockerSandboxExecutor(settings)

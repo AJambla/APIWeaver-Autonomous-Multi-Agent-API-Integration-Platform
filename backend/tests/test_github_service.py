@@ -66,7 +66,7 @@ def test_github_clients_custom_urls():
 
 @pytest.mark.asyncio
 async def test_github_oauth_client_requests_use_configured_urls(monkeypatch):
-    """Verify exchange_code, get_user_info, and get_user_emails use configured URLs."""
+    """Verify exchange_code, and get_user_info use configured URLs."""
     settings = Settings(
         app_env="development",
         jwt_private_key_path="backend/tests/fixtures/jwt_private.pem",
@@ -113,13 +113,10 @@ async def test_github_oauth_client_requests_use_configured_urls(monkeypatch):
     user_info = await oauth_client.get_user_info("gho_test_token")
     assert user_info["login"] == "gheuser"
 
-    emails = await oauth_client.get_user_emails("gho_test_token")
-    assert emails[0]["email"] == "gheuser@mycorp.com"
 
     urls = [r["url"] for r in captured_requests]
     assert urls[0] == "https://ghe.mycorp.internal/login/oauth/access_token"
     assert urls[1] == "https://ghe.mycorp.internal/api/v3/user"
-    assert urls[2] == "https://ghe.mycorp.internal/api/v3/user/emails"
 
 
 class _FakeGitHub(httpx.AsyncBaseTransport):

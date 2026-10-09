@@ -7,7 +7,7 @@ import binascii
 import json
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 class StrictModel(BaseModel):
@@ -43,11 +43,6 @@ class Page[T](ResponseModel):
 
     data: list[T]
     pagination: PaginationMeta
-
-
-class PaginationParams(StrictModel):
-    limit: int = Field(default=25, ge=1, le=100)
-    cursor: str | None = None
 
 
 def encode_cursor(payload: dict[str, Any]) -> str:

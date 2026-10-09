@@ -112,7 +112,7 @@ async def test_transient_500_retried_then_succeeds(monkeypatch):
     client = LLMClient(_make_settings(llm_max_retries=2))
 
     parsed, tokens = await client.generate_json(
-        system_prompt="s", user_prompt="u", fallback_json={"fallback": True}
+        system_prompt="s", user_prompt="u"
     )
 
     assert parsed == {"ok": True}

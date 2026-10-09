@@ -11,7 +11,7 @@ membership row for the resource, is denied. There is no fallthrough to allow.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 
 from app.models.enums import OrgRole, ProjectRole
@@ -235,8 +235,6 @@ class Principal:
     auth_method: str = "jwt"
     api_key_id: uuid.UUID | None = None
     jti: str | None = None
-    # Per-project roles resolved lazily by the enforcement layer and cached per request.
-    _project_roles: dict[uuid.UUID, str | None] = field(default_factory=dict, compare=False)
 
     @property
     def is_api_key(self) -> bool:

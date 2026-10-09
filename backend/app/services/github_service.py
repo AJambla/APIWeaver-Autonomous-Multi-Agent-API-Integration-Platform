@@ -398,15 +398,6 @@ class GitHubOAuthClient:
             response.raise_for_status()
             return response.json()
 
-    async def get_user_emails(self, access_token: str) -> list[dict[str, Any]]:
-        """Get user's email addresses."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(
-                f"{self.api_base_url}/user/emails",
-                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
-            )
-            response.raise_for_status()
-            return response.json()
 
 
 def create_github_app_client(settings: Settings = Depends(get_settings)) -> GitHubAppClient:

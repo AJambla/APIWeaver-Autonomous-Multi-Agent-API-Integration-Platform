@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import os
 import secrets
 import uuid
@@ -98,9 +97,8 @@ async def verify_password_async(password: str, password_hash: str | None) -> boo
 # deterministic hash so the value is directly indexable for lookup.
 
 REFRESH_TOKEN_BYTES = 32
-API_KEY_BYTES = 32
+
 API_KEY_LIVE_PREFIX = "apw_live_"
-API_KEY_TEST_PREFIX = "apw_test_"
 
 
 def generate_opaque_token(num_bytes: int = REFRESH_TOKEN_BYTES) -> str:
@@ -112,28 +110,10 @@ def hash_opaque_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def verify_opaque_token(token: str, token_hash: str) -> bool:
-    return hmac.compare_digest(hash_opaque_token(token), token_hash)
 
 
-@dataclass(frozen=True, slots=True)
-class GeneratedAPIKey:
-    """A freshly minted API key. `plaintext` is returned to the user exactly once."""
-
-    plaintext: str
-    prefix: str
-    key_hash: str
 
 
-def generate_api_key(*, live: bool = True) -> GeneratedAPIKey:
-    """Mint an API key in the `Security.md §5` format: `apw_live_<random>`."""
-    prefix = API_KEY_LIVE_PREFIX if live else API_KEY_TEST_PREFIX
-    plaintext = f"{prefix}{secrets.token_urlsafe(API_KEY_BYTES)}"
-    return GeneratedAPIKey(
-        plaintext=plaintext,
-        prefix=prefix,
-        key_hash=hash_opaque_token(plaintext),
-    )
 
 
 # --- JWT ----------------------------------------------------------------------------
