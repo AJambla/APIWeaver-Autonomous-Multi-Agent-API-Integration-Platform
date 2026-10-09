@@ -6,8 +6,10 @@ JWT with the exact claim set), and `§5` (API key format and hashed storage).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
+import os
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -63,6 +65,31 @@ def verify_password(password: str, password_hash: str | None) -> bool:
 def password_needs_rehash(password_hash: str) -> bool:
     """True when the stored hash predates the current work factor."""
     return _password_hasher.check_needs_rehash(password_hash)
+
+
+# Argon2 is deliberately slow (~200 ms measured) and synchronous: called from a route it
+# stalls every request and SSE stream on the worker. The async variants run it in a thread.
+# Each hash allocates `memory_cost` (64 MiB), so concurrency is bounded rather than left to
+# the default 32-thread pool, which a login burst would otherwise fill (~2 GiB).
+_HASH_CONCURRENCY = max(2, os.cpu_count() or 2)
+_hash_slots: asyncio.Semaphore | None = None
+
+
+def _slots() -> asyncio.Semaphore:
+    global _hash_slots
+    if _hash_slots is None:
+        _hash_slots = asyncio.Semaphore(_HASH_CONCURRENCY)
+    return _hash_slots
+
+
+async def hash_password_async(password: str) -> str:
+    async with _slots():
+        return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, password_hash: str | None) -> bool:
+    async with _slots():
+        return await asyncio.to_thread(verify_password, password, password_hash)
 
 
 # --- Opaque tokens (refresh tokens, API keys) ---------------------------------------
