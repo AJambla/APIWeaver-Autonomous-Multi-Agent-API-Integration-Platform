@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../lib/auth-context';
-import { apiFetch } from '../lib/api';
+import { apiFetch, apiFetchAll, mapSettled } from '../lib/api';
 import { HistoryItem, Page, Project, RUN_STATUSES } from '../lib/types';
 import { duration, relativeTime, shortId } from '../lib/format';
 import {
@@ -35,17 +35,18 @@ export const RunsPage: React.FC = () => {
   const [projectFilter, setProjectFilter] = useState('all');
 
   useEffect(() => {
-    if (!organizationId) return;
+    if (!organizationId) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
-    apiFetch<Page<Project>>(`/projects?limit=50&organization_id=${organizationId}`)
-      .then(async ({ data }) => {
+    apiFetchAll<Project>(`/projects?limit=100&organization_id=${organizationId}`)
+      .then(async data => {
         if (cancelled) return;
         setProjects(data);
-        const results = await Promise.allSettled(
-          data.map(p =>
-            apiFetch<Page<HistoryItem>>(`/projects/${p.id}/history?limit=15`).then(page =>
-              page.data.map(item => ({ ...item, projectName: p.name, projectId: p.id })),
-            ),
+        const results = await mapSettled(data, 4, p =>
+          apiFetch<Page<HistoryItem>>(`/projects/${p.id}/history?limit=15`).then(page =>
+            page.data.map(item => ({ ...item, projectName: p.name, projectId: p.id })),
           ),
         );
         if (!cancelled)

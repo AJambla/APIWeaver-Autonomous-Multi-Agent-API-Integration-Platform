@@ -5,14 +5,15 @@ from __future__ import annotations
 import uuid
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import APIError, NotFoundError
-from app.models.enums import ActorType, ExportType, WorkflowStatus
+from app.models.enums import ExportType, WorkflowStatus
 from app.models.export import Export
 from app.models.project import Project
 from app.models.workflow import WorkflowRun
@@ -20,14 +21,13 @@ from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.export import ExportRequest, ExportResponse, MCPExportResponse
 from app.services import audit_service
-from app.services.event_publisher import EventPublisher
 from app.services.workflow_input_service import (
     load_generated_files,
     load_latest_test_results,
     load_normalized_spec,
 )
 from app.workflows.agents.export_agent import ExportAgent
-from app.workflows.langgraph_pipeline import LangGraphOrchestrator
+from app.workflows.dispatch import dispatch_run
 from app.workflows.state import WorkflowState
 
 router = APIRouter(prefix="/projects", tags=["export"])
@@ -41,10 +41,11 @@ async def trigger_export(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
 ) -> ExportResponse:
     """Trigger artifact exports for a project."""
     # Create export record
-    export_types = payload.export_types or [e.value for e in ExportType]
+    export_types = [str(t) for t in payload.export_types]
     artifacts_meta = []
 
     run = WorkflowRun(
@@ -73,8 +74,8 @@ async def trigger_export(
 
     await audit_service.record(
         session,
+        **audit_service.actor(principal),
         action="export.triggered",
-        actor_type=ActorType.USER,
         organization_id=project.organization_id,
         resource_type="export",
         resource_id=str(project.id),
@@ -86,11 +87,6 @@ async def trigger_export(
     engine_session_factory = async_sessionmaker(
         bind=session.bind, class_=AsyncSession, expire_on_commit=False
     )
-    orchestrator = LangGraphOrchestrator(
-        session_factory=engine_session_factory,
-        event_publisher=EventPublisher(redis_client),
-    )
-
     # Export is a single-stage run: everything it packages has to be reloaded, because
     # this request did not pass through generation or testing.
     async with engine_session_factory() as hydrate_session:
@@ -118,50 +114,20 @@ async def trigger_export(
         "errors": [],
     }
 
-    background_tasks.add_task(
-        _execute_export_run, orchestrator, run.id, initial_state, engine_session_factory, export_ids
+    await dispatch_run(
+        run_id=run.id,
+        state=initial_state,
+        settings=settings,
+        session=session,
+        background_tasks=background_tasks,
+        redis_client=redis_client,
+        post_run={
+            "kind": "export",
+            "export_ids": {k: str(v) for k, v in export_ids.items()},
+        },
     )
 
     return ExportResponse(export_id=run.id, artifacts=artifacts_meta)
-
-
-async def _execute_export_run(
-    orchestrator: LangGraphOrchestrator,
-    run_id: uuid.UUID,
-    initial_state: WorkflowState,
-    session_factory: async_sessionmaker[AsyncSession],
-    export_ids: dict[str, uuid.UUID],
-) -> WorkflowState:
-    """Run the export stage, then give every queued `Export` row a terminal status."""
-    state = await orchestrator.run(run_id, initial_state)
-
-    artifacts = {
-        str(a.get("type")): a for a in (state.get("exports") or []) if isinstance(a, dict)
-    }
-
-    async with session_factory() as session:
-        for export_type, export_id in export_ids.items():
-            artifact = artifacts.get(export_type)
-            export = await session.get(Export, export_id)
-            if export is None:
-                continue
-            if artifact is None:
-                export.status = "failed"
-                continue
-            art_status = artifact.get("status")
-            if art_status in ("failed", "skipped"):
-                export.status = art_status
-            else:
-                export.status = "completed"
-            primary_key = None
-            if artifact.get("s3_key"):
-                primary_key = artifact.get("s3_key")
-            elif artifact.get("artifacts") and isinstance(artifact["artifacts"], list) and artifact["artifacts"]:
-                primary_key = artifact["artifacts"][0].get("s3_key")
-            if primary_key:
-                export.s3_key = primary_key
-        await session.commit()
-    return state
 
 
 @router.post("/{id}/export/mcp", response_model=MCPExportResponse)
@@ -225,7 +191,7 @@ async def export_mcp(
 async def list_exports(
     project: Project = Depends(require_project_permission(Permission.EXPORT_READ)),
     session: AsyncSession = Depends(get_db),
-    limit: int = 20,
+    limit: int = Query(default=20, ge=1, le=100),
 ) -> list[dict]:
     """List export records for a project."""
     stmt = (
@@ -255,6 +221,7 @@ async def download_export(
 ):
     """Download the generated export package bundle."""
     from fastapi import Response
+
     from app.core.errors import NotFoundError
     from app.services.storage_service import storage_service
 
@@ -275,9 +242,9 @@ async def download_export(
         f"exports/{project.id}/{export.export_type}/Dockerfile",
         f"exports/{project.id}/{export.export_type}/package.json",
         f"exports/{project.id}/{export.export_type}/manifest.json",
-        f"exports/{project.id}/mcp/manifest.json",
-        f"exports/{project.id}/mcp/mcp_manifest.json",
     ])
+    # Only this export's own type: falling back to another type's key served the wrong
+    # artifact (an MCP manifest for a Docker export).
 
     content: bytes | None = None
     matched_key: str | None = None
@@ -310,6 +277,7 @@ async def download_mcp_manifest(
 ):
     """Download the MCP manifest JSON for a project."""
     from fastapi import Response
+
     from app.core.errors import NotFoundError
     from app.services.storage_service import storage_service
 

@@ -37,6 +37,11 @@ from tests.fakes import FakeQdrantClient, FakeVaultClient
 
 TEST_PASSWORD = "correct-horse-battery-staple"
 
+# Hermetic settings: never read a developer's `.env`. Otherwise local values (for example
+# REQUIRE_CELERY_WORKER=true or a real broker URL) change test behaviour, and a test could
+# enqueue work onto a locally running worker.
+Settings.model_config["env_file"] = None
+
 # `agent_events` is Postgres-partitioned (migration 0002) and excluded from `create_all`;
 # this SQLite stand-in keeps the composite-PK shape while giving `id` the autoincrement
 # behavior BIGSERIAL provides in production.
@@ -155,17 +160,53 @@ def repo_root() -> Path:
 
 
 @pytest.fixture(scope="session")
-def test_settings(repo_root: Path) -> Iterator[Settings]:
-    """Settings pointed at an in-memory database and the dev JWT keypair."""
-    private_key = repo_root / "secrets" / "jwt_private.pem"
-    public_key = repo_root / "secrets" / "jwt_public.pem"
-    if not private_key.exists():
-        pytest.skip("run scripts/gen_jwt_keys.sh to generate the dev JWT keypair")
+def jwt_keypair(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    """An ephemeral RS256 keypair for the session.
+
+    Generated rather than read from `secrets/`: that directory is gitignored, and a
+    `pytest.skip` on its absence used to skip the entire suite in CI while exiting 0.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    directory = tmp_path_factory.mktemp("jwt")
+    private_key = directory / "jwt_private.pem"
+    public_key = directory / "jwt_public.pem"
+    private_key.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    public_key.write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    return private_key, public_key
+
+
+@pytest.fixture(scope="session")
+def test_settings(jwt_keypair: tuple[Path, Path]) -> Iterator[Settings]:
+    """Settings pointed at an in-memory database and an ephemeral JWT keypair."""
+    private_key, public_key = jwt_keypair
 
     # Workflow code calls get_settings() directly (outside FastAPI DI), so the
     # dependency override alone can't pin the sandbox backend — set the env var.
     # Tests opt into the in-process sandbox explicitly; production defaults to
     # the Docker backend (audit finding C2).
+    # Code that calls get_settings() directly (workflows, agents) must see the same
+    # required values as `test_settings`, without a `.env` to fall back on.
+    required = {
+        "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
+        "REDIS_URL": "redis://localhost:6379/15",
+        "JWT_PRIVATE_KEY_PATH": str(private_key),
+        "JWT_PUBLIC_KEY_PATH": str(public_key),
+    }
+    previous_required = {key: os.environ.get(key) for key in required}
+    os.environ.update(required)
     previous = os.environ.get("SANDBOX_BACKEND")
     previous_env = os.environ.get("APP_ENV")
     previous_openai_key = os.environ.get("OPENAI_API_KEY")
@@ -190,6 +231,11 @@ def test_settings(repo_root: Path) -> Iterator[Settings]:
             anthropic_api_key="",
         )
     finally:
+        for key, value in previous_required.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         if previous is None:
             os.environ.pop("SANDBOX_BACKEND", None)
         else:
@@ -210,6 +256,24 @@ def test_settings(repo_root: Path) -> Iterator[Settings]:
             os.environ.pop("ANTHROPIC_API_KEY", None)
         else:
             os.environ["ANTHROPIC_API_KEY"] = previous_anthropic_key
+
+
+@pytest.fixture(autouse=True)
+def _in_memory_global_storage() -> Iterator[None]:
+    """Agents use the global `storage_service`; give each test its own in-memory store.
+
+    Without this, tests reached whatever S3/MinIO a developer's environment pointed at
+    (and failed with NoCredentialsError where none was configured, as in CI).
+    """
+    from app.services import storage_service as storage_module
+    from tests.fakes import InMemoryObjectStorage
+
+    previous = storage_module._storage_instance
+    storage_module._storage_instance = InMemoryObjectStorage()
+    try:
+        yield
+    finally:
+        storage_module._storage_instance = previous
 
 
 @pytest.fixture(autouse=True)

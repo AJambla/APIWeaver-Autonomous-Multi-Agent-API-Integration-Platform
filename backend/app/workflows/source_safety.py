@@ -14,11 +14,11 @@ import re
 from keyword import iskeyword
 from typing import Any
 
+from app.core.constants import DEFAULT_BASE_URL
+
 HTTP_METHODS = frozenset(
     {"get", "put", "post", "patch", "delete", "options", "head", "trace"}
 )
-
-from app.core.constants import DEFAULT_BASE_URL
 
 # Quotes and backslashes end a literal, backticks and angle brackets end a template
 # string, and an asterisk would let a value close a block comment.
@@ -43,12 +43,100 @@ def to_text(value: Any, *, fallback: str = "", limit: int = 200) -> str:
     return text[:limit] or fallback
 
 
+# Words that cannot name a function, parameter or class in JavaScript/TypeScript. The
+# same identifier is emitted into both the Python and the TypeScript SDK, so a name must
+# be legal in both (`export async function delete(` is a syntax error).
+_JS_RESERVED = frozenset(
+    {
+        "break", "case", "catch", "class", "const", "continue", "debugger", "default",
+        "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for",
+        "function", "if", "implements", "import", "in", "instanceof", "interface", "let",
+        "new", "null", "package", "private", "protected", "public", "return", "static",
+        "super", "switch", "this", "throw", "true", "try", "typeof", "var", "void",
+        "while", "with", "yield", "await", "arguments", "eval",
+    }
+)
+
+
+def _is_reserved(name: str) -> bool:
+    return iskeyword(name) or name in _JS_RESERVED
+
+
 def to_identifier(value: Any, *, fallback: str, limit: int = 60) -> str:
-    """Shape a value into a usable Python/TypeScript identifier."""
+    """Shape a value into an identifier legal in both Python and TypeScript."""
     name = _UNSAFE_IDENT.sub("_", _as_str(value).strip())[:limit].rstrip("_")
-    if not name or not (name[0].isalpha() or name[0] == "_") or iskeyword(name):
+    if not name or not (name[0].isalpha() or name[0] == "_") or _is_reserved(name):
         return f"{fallback}_{name}"[:limit] if name else fallback
     return name
+
+
+_WORD_SPLIT = re.compile(r"[^A-Za-z0-9]+")
+
+
+def to_class_name(value: Any, *, fallback: str = "Model", limit: int = 80) -> str:
+    """PascalCase class/interface name from any text (`health-check` -> `HealthCheck`)."""
+    words = [w for w in _WORD_SPLIT.split(_as_str(value)) if w]
+    name = "".join(w[:1].upper() + w[1:] for w in words)[:limit]
+    if not name:
+        return fallback
+    if not name[0].isalpha():
+        name = f"{fallback}{name}"[:limit]
+    return name
+
+
+def client_class_name(title: Any) -> str:
+    """The generated SDK's client class, shared by the code and export agents."""
+    display = to_display_name(title, fallback="")
+    if not display:
+        return "APIClient"
+    return to_class_name(display, fallback="Api") + "Client"
+
+
+def to_env_prefix(title: Any) -> str:
+    """`UPPER_SNAKE` prefix for the SDK's environment variables (`process.env.<X>_API_KEY`)."""
+    words = [w for w in _WORD_SPLIT.split(_as_str(title)) if w]
+    prefix = "_".join(w.upper() for w in words)[:40] or "API"
+    if not prefix[0].isalpha():
+        prefix = f"API_{prefix}"
+    return prefix
+
+
+def to_package_name(title: Any, *, fallback: str = "api") -> str:
+    """Lowercase, hyphenated distribution name (PyPI/npm/GitHub repo safe)."""
+    words = [w.lower() for w in _WORD_SPLIT.split(_as_str(title)) if w]
+    name = "-".join(words)[:60].strip("-")
+    return name or fallback
+
+
+def to_module_name(title: Any, *, fallback: str = "api") -> str:
+    """Lowercase, underscored import name."""
+    return to_identifier(to_package_name(title, fallback=fallback).replace("-", "_"), fallback=fallback)
+
+
+_VERSION_CORE = re.compile(r"\d+(?:\.\d+){0,2}")
+
+
+def to_package_version(value: Any, *, fallback: str = "0.1.0") -> str:
+    """A `MAJOR.MINOR.PATCH` that is valid for both PEP 440 and npm semver.
+
+    API versions are free text (`v1`, `2023-10-16`, `1.0.0"; import os; ...`); only the
+    leading numeric core is kept, padded to three components.
+    """
+    match = _VERSION_CORE.search(_as_str(value))
+    if not match:
+        return fallback
+    parts = [str(int(p)) for p in match.group(0).split(".")]
+    while len(parts) < 3:
+        parts.append("0")
+    return ".".join(parts)
+
+
+_EMAIL = re.compile(r"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$")
+
+
+def to_email(value: Any, *, fallback: str) -> str:
+    email = _as_str(value).strip()
+    return email if _EMAIL.match(email) else fallback
 
 
 def to_display_name(value: Any, *, fallback: str = "API Client", limit: int = 60) -> str:
@@ -132,17 +220,50 @@ def derived_operation_id(method: str, path: str) -> str:
     return f"{method}_{to_path(path).replace('/', '_').replace('{', '').replace('}', '')}"
 
 
+# Names the generated method bodies already use; a parameter called `url` or `body`
+# would shadow them (or repeat an argument name, which is a SyntaxError).
+_RESERVED_ARGUMENTS = frozenset(
+    {"self", "body", "url", "params", "json_body", "client", "c", "headers", "config"}
+)
+
+
 def safe_parameter(param: dict[str, Any]) -> dict[str, Any]:
-    """Parameter whose fields are safe for argument names and annotations."""
+    """Parameter whose fields are safe for argument names and annotations.
+
+    `name` is the sanitized argument name. The name the API expects on the wire is kept
+    separately: `wire_name` (query keys, emitted only as a quoted literal) and
+    `path_token` (the `{placeholder}` exactly as it survives `to_path`), so `page-size`
+    is still sent as `page-size` and `{pet-id}` is still substituted.
+    """
     loc = to_identifier(param.get("location"), fallback="query")
     req = bool(param.get("required")) or (loc == "path")
+    raw_name = _as_str(param.get("name")).strip()
+    name = to_identifier(raw_name, fallback="param")
+    if name in _RESERVED_ARGUMENTS:
+        name = f"{name}_param"
     return {
         **param,
-        "name": to_identifier(param.get("name"), fallback="param"),
+        "name": name,
+        "wire_name": raw_name or name,
+        "path_token": "{" + _UNSAFE_PATH.sub("", raw_name) + "}",
         "type": to_type_name(param.get("type")),
         "location": loc,
         "required": req,
     }
+
+
+def _dedupe_names(params: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`page_size` and `page-size` sanitize to the same argument; suffix the repeats."""
+    seen: set[str] = set()
+    result = []
+    for param in params:
+        name = param["name"]
+        candidate, n = name, 2
+        while candidate in seen:
+            candidate, n = f"{name}_{n}", n + 1
+        seen.add(candidate)
+        result.append({**param, "name": candidate})
+    return result
 
 
 def safe_endpoint(endpoint: dict[str, Any]) -> dict[str, Any]:
@@ -150,9 +271,9 @@ def safe_endpoint(endpoint: dict[str, Any]) -> dict[str, Any]:
     method = to_http_method(endpoint.get("method", "GET"))
     path = to_path(endpoint.get("path", "/"))
     declared = endpoint.get("operationId") or derived_operation_id(method, path)
-    raw_params = [
-        safe_parameter(p) for p in endpoint.get("parameters") or [] if isinstance(p, dict)
-    ]
+    raw_params = _dedupe_names(
+        [safe_parameter(p) for p in endpoint.get("parameters") or [] if isinstance(p, dict)]
+    )
     # Sort parameters so required parameters precede optional parameters:
     # 1. path parameters (always required)
     # 2. required query parameters

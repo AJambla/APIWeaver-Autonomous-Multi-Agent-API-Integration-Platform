@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db
 from app.core.errors import ConflictError, NotFoundError
-from app.models.enums import ActorType
 from app.models.project import Project
 from app.models.versioning import ArtifactVersion
 from app.models.workflow import WorkflowRun
@@ -45,12 +44,14 @@ async def get_project_history(
             last_created = datetime.datetime.fromisoformat(position["created_at"])
             last_id = uuid.UUID(position["id"])
             stmt = stmt.where(
-                tuple_(WorkflowRun.started_at, WorkflowRun.id) < tuple_(last_created, last_id)
+                tuple_(WorkflowRun.created_at, WorkflowRun.id) < tuple_(last_created, last_id)
             )
         except (KeyError, TypeError, ValueError):
             pass
 
-    stmt = stmt.order_by(WorkflowRun.started_at.desc(), WorkflowRun.id.desc()).limit(limit + 1)
+    # `created_at` is never NULL: paging on `started_at` crashed on queued runs and
+    # skipped them (a row-value compare with NULL is never true).
+    stmt = stmt.order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc()).limit(limit + 1)
 
     rows = list((await session.execute(stmt)).scalars().all())
     has_more = len(rows) > limit
@@ -59,7 +60,7 @@ async def get_project_history(
     next_cursor = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = encode_cursor({"created_at": last.started_at.isoformat(), "id": str(last.id)})
+        next_cursor = encode_cursor({"created_at": last.created_at.isoformat(), "id": str(last.id)})
 
     run_ids = [row.id for row in page_rows]
     latest_cp_by_run: dict[uuid.UUID, WorkflowCheckpoint] = {}
@@ -174,18 +175,12 @@ async def rollback_version(
     if version.project_id != project.id:
         raise NotFoundError("Version not found in this project.")
 
-    # Deactivate all other versions of same type
-    await session.execute(
-        select(ArtifactVersion)
-        .where(
-            ArtifactVersion.project_id == project.id,
-            ArtifactVersion.artifact_type == version.artifact_type,
-            ArtifactVersion.id != version.id,
-            ArtifactVersion.is_active == True,  # noqa: E712
-        )
-    )
-    # SQLAlchemy 2.0 style update
+    # Serialize rollbacks per project (row lock on Postgres), so two concurrent
+    # rollbacks cannot each deactivate the other's target and leave two active versions.
+    # Migration 0014's partial unique index is the backstop.
     from sqlalchemy import update
+
+    await session.execute(select(Project.id).where(Project.id == project.id).with_for_update())
     await session.execute(
         update(ArtifactVersion)
         .where(
@@ -203,9 +198,8 @@ async def rollback_version(
     await audit_service.record(
         session,
         action="artifact.rollback",
-        actor_type=ActorType.USER,
+        **audit_service.actor(principal),
         organization_id=project.organization_id,
-        actor_user_id=principal.user_id,
         resource_type="artifact_version",
         resource_id=str(version.id),
         metadata={"artifact_type": version.artifact_type, "version_number": version.version_number},

@@ -1,58 +1,61 @@
 const API_PREFIX = '/api/v1';
 
-let isRefreshing = false;
-let failedQueue: Array<{
-  resolve: (token: string) => void;
-  reject: (error: unknown) => void;
-}> = [];
+/** The refresh in flight, shared by every caller in this tab.
+ *
+ * Refresh tokens are single use, and the backend revokes the whole token family when one
+ * is presented twice. Two concurrent 401s (say, the event stream reconnecting while a
+ * logs request retries) must therefore wait on one rotation instead of each redeeming
+ * the same token.
+ */
+let refreshInFlight: Promise<string> | null = null;
 
-const processQueue = (error: unknown, token: string | null = null) => {
-  failedQueue.forEach(request => {
-    if (error) {
-      request.reject(error);
-    } else {
-      request.resolve(token!);
-    }
-  });
-  failedQueue = [];
-};
+function clearSessionAndRedirect(): void {
+  sessionStorage.removeItem('access_token');
+  sessionStorage.removeItem('refresh_token');
+  window.location.href = '/login';
+}
 
-/** Rotate the refresh token into a fresh pair, coordinating concurrent callers
- * through the module-level queue so the single-use token is never redeemed twice.
- * On failure the session is cleared and the browser is sent to /login. */
-export async function refreshAccessToken(): Promise<string> {
-  isRefreshing = true;
-
-  try {
-    const refreshToken = sessionStorage.getItem('refresh_token');
-    if (!refreshToken) {
-      throw new Error('Your session has expired. Please sign in again.');
-    }
-
-    const refreshResponse = await fetch(`${API_PREFIX}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    });
-
-    if (!refreshResponse.ok) {
-      throw new Error('Your session has expired. Please sign in again.');
-    }
-
-    const data = await refreshResponse.json() as { access_token: string; refresh_token: string };
-    sessionStorage.setItem('access_token', data.access_token);
-    sessionStorage.setItem('refresh_token', data.refresh_token);
-    isRefreshing = false;
-    processQueue(null, data.access_token);
-    return data.access_token;
-  } catch (error) {
-    isRefreshing = false;
-    processQueue(error);
-    sessionStorage.removeItem('access_token');
-    sessionStorage.removeItem('refresh_token');
-    window.location.href = '/login';
-    throw error;
+async function rotateTokens(): Promise<string> {
+  const refreshToken = sessionStorage.getItem('refresh_token');
+  if (!refreshToken) {
+    throw new Error('Your session has expired. Please sign in again.');
   }
+  const refreshResponse = await fetch(`${API_PREFIX}/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!refreshResponse.ok) {
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+  const data = (await refreshResponse.json()) as { access_token: string; refresh_token: string };
+  sessionStorage.setItem('access_token', data.access_token);
+  sessionStorage.setItem('refresh_token', data.refresh_token);
+  return data.access_token;
+}
+
+/** Rotate the refresh token into a fresh pair. Concurrent callers share one rotation;
+ * where the Web Locks API exists it also serializes rotations across tabs. On failure
+ * the session is cleared and the browser is sent to /login. */
+export function refreshAccessToken(): Promise<string> {
+  if (refreshInFlight) return refreshInFlight;
+  const tokenBefore = sessionStorage.getItem('access_token');
+  const run = async (): Promise<string> => {
+    // Another holder of the lock may already have rotated; use its token if so.
+    const current = sessionStorage.getItem('access_token');
+    if (current && current !== tokenBefore) return current;
+    return rotateTokens();
+  };
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  refreshInFlight = (locks ? locks.request('apiweaver-token-refresh', run) : run())
+    .catch((error: unknown) => {
+      clearSessionAndRedirect();
+      throw error;
+    })
+    .finally(() => {
+      refreshInFlight = null;
+    });
+  return refreshInFlight;
 }
 
 /** The request `endpoint` resolves to, and whether this origin owns it.
@@ -63,7 +66,10 @@ export async function refreshAccessToken(): Promise<string> {
  * `http-fault/list` and false of a protocol-relative `//host/path`.
  */
 export function resolveEndpoint(endpoint: string): { url: string; sameOrigin: boolean } {
-  const candidate = endpoint.startsWith('http') ? endpoint : `${API_PREFIX}${endpoint}`;
+  const candidate =
+    endpoint.startsWith('http') || endpoint.startsWith(`${API_PREFIX}/`)
+      ? endpoint
+      : `${API_PREFIX}${endpoint}`;
   try {
     const url = new URL(candidate, window.location.origin);
     return { url: url.href, sameOrigin: url.origin === window.location.origin };
@@ -73,76 +79,120 @@ export function resolveEndpoint(endpoint: string): { url: string; sameOrigin: bo
   }
 }
 
-export async function apiFetch<T = unknown>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
+/** The API's error envelope (`{error: {message, details}}`), FastAPI's `detail`, or text. */
+async function errorFrom(response: Response): Promise<Error> {
+  const errorBody = await response.text();
+  let message = response.statusText || `Request failed (${response.status})`;
+  try {
+    const parsed = JSON.parse(errorBody) as {
+      detail?: string;
+      message?: string;
+      error?: { message?: string; details?: Array<{ field?: string; issue?: string }> };
+    };
+    message = parsed.error?.message || parsed.detail || parsed.message || message;
+    const details = (parsed.error?.details ?? [])
+      .map(d => [d.field, d.issue].filter(Boolean).join(': '))
+      .filter(s => s.length > 0);
+    if (details.length > 0) {
+      message = `${message} ${details.join(' | ')}`;
+    }
+  } catch {
+    // A proxy's HTML error page (e.g. 413 from nginx) is not worth showing verbatim.
+    if (response.status === 413) message = 'The file is larger than the server accepts.';
+    else if (errorBody && !errorBody.trimStart().startsWith('<')) message = errorBody;
+  }
+  const error = new Error(message) as Error & { status?: number };
+  error.status = response.status;
+  return error;
+}
+
+/** fetch with the bearer token, one transparent refresh-and-retry on 401. */
+async function authorizedFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
   const { url, sameOrigin } = resolveEndpoint(endpoint);
-  const token = sessionStorage.getItem('access_token');
   const headers = new Headers(options.headers);
 
   // The one place the token leaves the bag, so no call site can forget the origin rule.
-  const authorize = (value: string) => {
-    if (sameOrigin) headers.set('Authorization', `Bearer ${value}`);
+  const authorize = (value: string | null) => {
+    if (sameOrigin && value) headers.set('Authorization', `Bearer ${value}`);
   };
 
-  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
+  if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
-
-  if (token) {
-    authorize(token);
-  }
+  authorize(sessionStorage.getItem('access_token'));
 
   const response = await fetch(url, { ...options, headers });
-
-  if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
-    if (isRefreshing) {
-      return new Promise<string>((resolve, reject) => {
-        failedQueue.push({ resolve, reject });
-      }).then(newToken => {
-        authorize(newToken);
-        return fetch(url, { ...options, headers }).then(res => res.json() as Promise<T>);
-      });
-    }
-
-    const newToken = await refreshAccessToken();
-    authorize(newToken);
-    const retryResponse = await fetch(url, { ...options, headers });
-    if (!retryResponse.ok) {
-      sessionStorage.removeItem('access_token');
-      sessionStorage.removeItem('refresh_token');
-      window.location.href = '/login';
-      throw new Error(await retryResponse.text());
-    }
-    return retryResponse.json() as Promise<T>;
+  const isAuthCall = endpoint.includes('/auth/login') || endpoint.includes('/auth/refresh');
+  if (response.status !== 401 || isAuthCall || !sameOrigin) {
+    return response;
   }
 
+  authorize(await refreshAccessToken());
+  const retry = await fetch(url, { ...options, headers });
+  if (retry.status === 401) {
+    clearSessionAndRedirect();
+  }
+  return retry;
+}
+
+export async function apiFetch<T = unknown>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const response = await authorizedFetch(endpoint, options);
   if (!response.ok) {
-    const errorBody = await response.text();
-    let message = response.statusText;
-    try {
-      const parsed = JSON.parse(errorBody) as {
-        detail?: string;
-        message?: string;
-        error?: { message?: string; details?: Array<{ field?: string; issue?: string }> };
-      };
-      message = parsed.error?.message || parsed.detail || parsed.message || message;
-      const details = (parsed.error?.details ?? [])
-        .map(d => [d.field, d.issue].filter(Boolean).join(': '))
-        .filter(s => s.length > 0);
-      if (details.length > 0) {
-        message = `${message} ${details.join(' | ')}`;
-      }
-    } catch {
-      message = errorBody || message;
-    }
-    throw new Error(message);
+    throw await errorFrom(response);
   }
-
-  if (response.status === 204) {
+  if (response.status === 204 || response.headers.get('content-length') === '0') {
     return {} as T;
   }
-
   return response.json() as Promise<T>;
+}
+
+/** Binary downloads (export bundles) with the same auth, refresh and error handling. */
+export async function apiFetchBlob(
+  endpoint: string,
+  options: RequestInit = {},
+): Promise<{ blob: Blob; filename: string | null }> {
+  const response = await authorizedFetch(endpoint, options);
+  if (!response.ok) {
+    throw await errorFrom(response);
+  }
+  const disposition = response.headers.get('content-disposition') || '';
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+  return { blob: await response.blob(), filename: match ? decodeURIComponent(match[1]) : null };
+}
+
+/** Every item of a cursor-paginated collection (`{data, pagination}`), up to `maxItems`. */
+export async function apiFetchAll<T>(endpoint: string, maxItems = 500): Promise<T[]> {
+  const items: T[] = [];
+  let cursor: string | null = null;
+  do {
+    const sep = endpoint.includes('?') ? '&' : '?';
+    const page: { data: T[]; pagination?: { next_cursor: string | null; has_more: boolean } } =
+      await apiFetch(cursor ? `${endpoint}${sep}cursor=${encodeURIComponent(cursor)}` : endpoint);
+    items.push(...page.data);
+    cursor = page.pagination?.has_more ? page.pagination.next_cursor : null;
+  } while (cursor && items.length < maxItems);
+  return items.slice(0, maxItems);
+}
+
+/** `Promise.allSettled(items.map(fn))` with at most `limit` requests in flight, so a
+ * page that fans out per project stays inside the org's rate limit. */
+export async function mapSettled<I, O>(
+  items: I[],
+  limit: number,
+  fn: (item: I) => Promise<O>,
+): Promise<PromiseSettledResult<O>[]> {
+  const results: PromiseSettledResult<O>[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      try {
+        results[index] = { status: 'fulfilled', value: await fn(items[index]) };
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason };
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }

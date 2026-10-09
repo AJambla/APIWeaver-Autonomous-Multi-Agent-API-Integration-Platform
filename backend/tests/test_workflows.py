@@ -416,7 +416,7 @@ async def test_async_workflow_triggers_celery_task(client: AsyncClient, monkeypa
 
 
 async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
-    client: AsyncClient, monkeypatch
+    client: AsyncClient, app, test_settings, session_factory, monkeypatch
 ) -> None:
     """In production, failure to enqueue to Celery must fail loud with 503 rather than silently falling back."""
     project_id, _, headers = await _setup_project(client)
@@ -427,12 +427,10 @@ async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
 
     monkeypatch.setattr(celery_module.app, "send_task", _failing_send_task)
 
-    from app.api.v1 import workflows as workflows_module
-    from app.core import config as config_module
-    orig_settings = config_module.get_settings()
-    prod_settings = orig_settings.model_copy(update={"app_env": "production"})
-    monkeypatch.setattr(config_module, "get_settings", lambda: prod_settings)
-    monkeypatch.setattr(workflows_module, "get_settings", lambda: prod_settings)
+    from app.core.config import get_settings
+
+    prod_settings = test_settings.model_copy(update={"app_env": "production"})
+    app.dependency_overrides[get_settings] = lambda: prod_settings
 
     res = await client.post(
         f"/api/v1/projects/{project_id}/workflows",
@@ -440,7 +438,16 @@ async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
         headers=headers,
     )
     assert res.status_code == 503
-    assert "Celery worker queue is unavailable" in res.json()["error"]["message"]
+    assert "workflow queue is unavailable" in res.json()["error"]["message"]
+
+    # No orphaned QUEUED run is left behind the 503.
+    from sqlalchemy import select
+
+    from app.models.workflow import WorkflowRun
+
+    async with session_factory() as session:
+        statuses = list(await session.scalars(select(WorkflowRun.status)))
+    assert WorkflowStatus.QUEUED not in statuses
 
 
 async def test_trigger_workflow_routes_to_langgraph(client: AsyncClient) -> None:
@@ -487,7 +494,8 @@ async def test_async_workflow_dispatches_to_celery(client: AsyncClient, monkeypa
     assert res.status_code == 202
     assert len(dispatched) == 1
     assert dispatched[0]["name"] == "agent_worker.tasks.run_workflow"
-    assert len(dispatched[0]["args"]) == 2
+    # (run_id, portable state, post-run bookkeeping)
+    assert len(dispatched[0]["args"]) == 3
 
 
 async def test_wait_for_celery_task_immediate_success():
@@ -530,6 +538,7 @@ async def test_wait_for_celery_task_delayed_success():
 async def test_wait_for_celery_task_failure_raises():
     """Verify that a failing task re-raises the underlying exception."""
     import pytest
+
     from app.workflows.langgraph_pipeline import _wait_for_celery_task
 
     class _FailingResult:
@@ -556,6 +565,7 @@ async def test_wait_for_celery_task_failure_raises():
 async def test_wait_for_celery_task_timeout_raises():
     """Verify that a task exceeding the timeout raises TimeoutError."""
     import pytest
+
     from app.workflows.langgraph_pipeline import _wait_for_celery_task
 
     class _NeverReadyResult:
@@ -570,3 +580,38 @@ async def test_wait_for_celery_task_timeout_raises():
 
 
 
+
+
+async def test_upload_dispatch_to_worker_carries_a_storage_key_not_bytes(
+    client: AsyncClient, app, test_settings, monkeypatch
+) -> None:
+    """Broker messages are JSON: the worker reloads the document from object storage."""
+    from agent_worker import celery_app as celery_module
+    from app.core.config import get_settings
+
+    project_id, _, headers = await _setup_project(client)
+    dispatched: list[dict[str, Any]] = []
+
+    def send_task(name, args=None, task_id=None):
+        dispatched.append({"name": name, "args": args, "task_id": task_id})
+
+    monkeypatch.setattr(celery_module.app, "send_task", send_task)
+    app.dependency_overrides[get_settings] = lambda: test_settings.model_copy(
+        update={"require_celery_worker": True}
+    )
+
+    res = await client.post(
+        f"/api/v1/projects/{project_id}/upload",
+        files={"file": ("notes.md", b"# Users API\n\nGET /users lists users.", "text/markdown")},
+        headers=headers,
+    )
+
+    assert res.status_code == 202, res.text
+    assert len(dispatched) == 1
+    _, state, post_run = dispatched[0]["args"]
+    assert "raw_document_bytes" not in state
+    assert state["document_s3_key"]
+    assert post_run is None
+    import json
+
+    json.dumps(state)  # must be broker-serializable

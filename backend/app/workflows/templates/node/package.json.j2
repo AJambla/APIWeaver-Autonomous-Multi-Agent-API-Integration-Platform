@@ -1,7 +1,7 @@
 {
-  "name": "{{ title.lower().replace(' ', '-').replace('_', '-') }}-client",
-  "version": "{{ version | default('0.1.0') }}",
-  "description": "Auto-generated {{ title }} API client for Node.js/TypeScript",
+  "name": {{ (package_name ~ '-client') | lit }},
+  "version": {{ version | lit }},
+  "description": {{ ('Auto-generated ' ~ title ~ ' API client for Node.js/TypeScript') | lit }},
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,9 +18,9 @@
     "lint": "eslint .",
     "prepublishOnly": "npm run build && npm run test"
   },
-  "keywords": ["api", "client", "typescript", "{{ title.lower().replace(' ', '-') }}"],
-  "author": "{{ author_name | default('APIWeaver') }} <{{ author_email | default('support@apiweaver.dev') }}>",
-  "license": "{{ license | default('MIT') }}",
+  "keywords": ["api", "client", "typescript", {{ package_name | lit }}],
+  "author": {{ (author_name ~ ' <' ~ author_email ~ '>') | lit }},
+  "license": {{ license | lit }},
   "dependencies": {
     "zod": "^3.23.0"
   },

@@ -3,14 +3,14 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "{{ title.lower().replace(' ', '-').replace('_', '-') }}-client"
-version = "{{ version | default('0.1.0') }}"
-description = "Auto-generated {{ title }} API client for Python"
+name = {{ (package_name ~ '-client') | lit }}
+version = {{ version | lit }}
+description = {{ ('Auto-generated ' ~ title ~ ' API client for Python') | lit }}
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "{{ license | default('MIT') }}"}
+license = {text = {{ license | lit }}}
 authors = [
-    {name = "{{ author_name | default('APIWeaver') }}", email = "{{ author_email | default('support@apiweaver.dev') }}"}
+    {name = {{ author_name | lit }}, email = {{ author_email | lit }}}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -47,7 +47,7 @@ select = ["E", "F", "I", "UP", "W", "C4", "N", "D", "FURB", "SIM", "T20", "TID",
 ignore = ["D100", "D101", "D102", "D103", "D104", "D107", "S101", "T201", "T203"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["{{ title.lower().replace(' ', '_').replace('-', '_') }}"]
+known-first-party = [{{ module_name | lit }}]
 
 [tool.mypy]
 python_version = "3.10"

@@ -9,18 +9,16 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
-import time
 import uuid
-from typing import Any
 
 import httpx
 import pytest
 import redis.asyncio as aioredis
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
-from app.services.qdrant_service import HttpQdrantClient, VECTOR_DIMENSION
+from app.services.qdrant_service import VECTOR_DIMENSION, HttpQdrantClient
 from app.services.storage_service import AsyncS3ObjectStorage
 from app.services.vault_service import HttpVaultClient
 
@@ -392,8 +390,9 @@ class TestFullStackFastAPIIntegration:
 
     async def test_api_readyz_against_live_postgres_and_redis(self):
         from httpx import ASGITransport, AsyncClient
-        from app.main import create_app
+
         from app.core.deps import get_db, get_redis
+        from app.main import create_app
 
         engine = create_async_engine(LIVE_PG_URL)
         session_factory = async_sessionmaker(engine, expire_on_commit=False)

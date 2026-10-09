@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.v1.github import (
+    OAUTH_STATE_COOKIE,
     OAUTH_STATE_TTL_SECONDS,
     create_github_app_client,
     create_github_oauth_client,
@@ -226,7 +227,10 @@ async def test_the_callback_completes_on_the_browser_redirect_alone(
         session_factory, user.id, state=state, expires_at=datetime.now(UTC) + timedelta(minutes=5)
     )
 
-    response = await client.get(f"/api/v1/github/callback?code=code-under-test&state={state}")
+    response = await client.get(
+        f"/api/v1/github/callback?code=code-under-test&state={state}",
+        cookies={OAUTH_STATE_COOKIE: state},
+    )
 
     assert response.status_code == 200, response.text
     assert response.json() == {
@@ -252,6 +256,93 @@ async def test_the_callback_completes_on_the_browser_redirect_alone(
     assert await fake_vault.read_secret(connection.refresh_token_vault_path) == {
         "token": "ghr-under-test"
     }
+
+
+async def test_connect_binds_the_state_to_the_browser(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    test_settings: Settings,
+    stub_github_clients: tuple[StubOAuthClient, StubAppClient],
+) -> None:
+    """`/connect` sets an HttpOnly cookie carrying the state, scoped to the callback path."""
+    headers, _ = await _member(session_factory, test_settings)
+
+    response = await client.post("/api/v1/github/connect", headers=headers)
+
+    assert response.status_code == 200, response.text
+    set_cookie = response.headers["set-cookie"]
+    assert f"{OAUTH_STATE_COOKIE}={response.json()['state']}" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "Path=/api/v1/github/callback" in set_cookie
+    assert "samesite=lax" in set_cookie.lower()
+
+
+async def test_a_state_presented_by_another_browser_is_refused(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    test_settings: Settings,
+    stub_github_clients: tuple[StubOAuthClient, StubAppClient],
+) -> None:
+    """Login-CSRF: an attacker's state completed in the victim's browser (no cookie, or a
+    different one) must not bind the victim's GitHub token to the attacker's account."""
+    oauth, _ = stub_github_clients
+    _, attacker = await _member(session_factory, test_settings)
+    state = uuid.uuid4().hex
+    await _seed_state(
+        session_factory, attacker.id, state=state, expires_at=datetime.now(UTC) + timedelta(minutes=5)
+    )
+
+    for cookies in ({}, {OAUTH_STATE_COOKIE: uuid.uuid4().hex}):
+        response = await client.get(
+            f"/api/v1/github/callback?code=victim-code&state={state}", cookies=cookies
+        )
+        assert response.status_code == 409, response.text
+        assert "not issued to this browser" in response.json()["error"]["message"]
+
+    assert oauth.exchanged_codes == []
+    async with session_factory() as session:
+        assert await session.scalar(select(GitHubConnection)) is None
+
+
+async def test_each_new_connection_gets_its_own_vault_path(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    test_settings: Settings,
+    stub_github_clients: tuple[StubOAuthClient, StubAppClient],
+    fake_vault: FakeVaultClient,
+) -> None:
+    """Regression: the id default fires at flush, so paths were built from `None` and every
+    user's token landed on `secret/github/connections/None/...`, overwriting the last."""
+    oauth, _ = stub_github_clients
+    paths: list[str] = []
+    for token in ("gho-first-user", "gho-second-user"):
+        oauth_token = token
+
+        async def exchange(code: str, _token: str = oauth_token) -> dict[str, Any]:
+            return {"access_token": _token, "scope": "repo"}
+
+        oauth.exchange_code = exchange  # type: ignore[method-assign]
+        _, user = await _member(session_factory, test_settings)
+        state = uuid.uuid4().hex
+        await _seed_state(
+            session_factory, user.id, state=state, expires_at=datetime.now(UTC) + timedelta(minutes=5)
+        )
+        response = await client.get(
+            f"/api/v1/github/callback?code=c&state={state}", cookies={OAUTH_STATE_COOKIE: state}
+        )
+        assert response.status_code == 200, response.text
+        async with session_factory() as session:
+            connection = await session.scalar(
+                select(GitHubConnection).where(GitHubConnection.user_id == user.id)
+            )
+        assert connection is not None
+        assert "None" not in connection.access_token_vault_path
+        assert str(connection.id) in connection.access_token_vault_path
+        paths.append(connection.access_token_vault_path)
+
+    assert paths[0] != paths[1]
+    assert await fake_vault.read_secret(paths[0]) == {"token": "gho-first-user"}
+    assert await fake_vault.read_secret(paths[1]) == {"token": "gho-second-user"}
 
 
 async def test_an_unknown_state_opens_nothing_and_exchanges_no_code(

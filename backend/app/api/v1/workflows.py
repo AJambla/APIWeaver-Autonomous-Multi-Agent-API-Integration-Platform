@@ -7,13 +7,13 @@ import uuid
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
-from app.core.errors import DependencyUnavailableError, NotFoundError, UnprocessableEntityError
+from app.core.errors import ConflictError, NotFoundError, UnprocessableEntityError
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
 from app.models.enums import ActorType, WorkflowStatus
@@ -35,8 +35,7 @@ from app.schemas.workflow import (
     WorkflowRunResponse,
 )
 from app.services import audit_service
-from app.services.event_publisher import EventPublisher
-from app.workflows.langgraph_pipeline import LangGraphOrchestrator
+from app.workflows.dispatch import dispatch_run
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -56,6 +55,7 @@ async def trigger_workflow(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
 ) -> TriggerWorkflowResponse:
     """Trigger multi-agent orchestration for a project."""
     # Find latest spec if available
@@ -81,7 +81,8 @@ async def trigger_workflow(
     ).all()
     for stale in stale_runs:
         stale.status = WorkflowStatus.CANCELLED
-        stale.error_details = {"reason": "superseded_by_new_trigger"}
+        # Superseded: cancelled by the newer run, finished now.
+        stale.completed_at = stale.completed_at or datetime.datetime.now(datetime.UTC)
 
     run = WorkflowRun(
         project_id=project.id,
@@ -94,14 +95,13 @@ async def trigger_workflow(
     await audit_service.record(
         session,
         action="workflow.triggered",
-        actor_type=ActorType.USER,
+        **audit_service.actor(principal),
         organization_id=project.organization_id,
         resource_type="workflow_run",
         resource_id=str(run.id),
         metadata={"stages": payload.stages, "target_languages": payload.target_languages},
     )
 
-    settings = get_settings()
     initial_state: WorkflowState = {
         "project_id": str(project.id),
         "organization_id": str(project.organization_id),
@@ -115,37 +115,17 @@ async def trigger_workflow(
         "token_budget": getattr(project, "token_budget", None) or settings.default_token_budget,
     }
 
-    engine_session_factory = async_sessionmaker(
-        bind=session.bind, class_=AsyncSession, expire_on_commit=False
-    )
-    event_publisher = EventPublisher(redis_client)
-
-    runner_instance = LangGraphOrchestrator(
-        session_factory=engine_session_factory,
-        event_publisher=event_publisher,
-        execution_mode=payload.execution_mode,
-        settings=settings,
-    )
-
-    # Commit before dispatching background worker so concurrent sessions see all persisted rows
+    # Commit before dispatching so the worker (or background task) sees every row.
     await session.commit()
-
-    if payload.execution_mode == "async":
-        try:
-            from agent_worker.celery_app import app as celery_app
-            celery_app.send_task(
-                "agent_worker.tasks.run_workflow",
-                args=[str(run.id), initial_state],
-                task_id=f"run_workflow:{run.id}",
-            )
-        except Exception as exc:
-            if settings.is_production or settings.require_celery_worker:
-                raise DependencyUnavailableError(
-                    f"Celery worker queue is unavailable for async workflow execution: {exc}"
-                ) from exc
-            background_tasks.add_task(runner_instance.run, run.id, initial_state)
-    else:
-        background_tasks.add_task(runner_instance.run, run.id, initial_state)
+    await dispatch_run(
+        run_id=run.id,
+        state=initial_state,
+        settings=settings,
+        session=session,
+        background_tasks=background_tasks,
+        redis_client=redis_client,
+        requested_mode=payload.execution_mode,
+    )
 
     return TriggerWorkflowResponse(workflow_run_id=run.id, status=WorkflowStatus.QUEUED)
 
@@ -162,7 +142,7 @@ async def list_workflows(
     stmt = (
         select(WorkflowRun)
         .where(WorkflowRun.project_id == project_id)
-        .order_by(WorkflowRun.id.desc())
+        .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
         .limit(limit)
     )
     runs = list((await session.execute(stmt)).scalars().all())
@@ -214,8 +194,8 @@ async def get_workflow_run(
     if run is None:
         raise NotFoundError("Workflow run not found.")
 
-    # Multi-tenant check
-    await load_project_for_principal(session, principal, run.project_id)
+    # Tenant isolation and the project role: org membership alone is not enough.
+    await assert_project_permission(session, principal, Permission.WORKFLOW_READ, run.project_id)
 
     return await _run_to_response(run, session)
 
@@ -228,6 +208,7 @@ async def approve_workflow_gate(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
 ) -> ApproveWorkflowResponse:
     """Approve a human-in-the-loop gate before generated code runs."""
     run = await session.get(WorkflowRun, run_id)
@@ -259,13 +240,23 @@ async def approve_workflow_gate(
         if latest_checkpoint is None:
             raise UnprocessableEntityError("Workflow has no checkpoint to resume from.")
 
-    run.status = WorkflowStatus.RUNNING if payload.approved else WorkflowStatus.FAILED
-    await session.flush()
+    # Claim the gate atomically: two concurrent approvals both saw PAUSED above, and
+    # each started a resume orchestrator. Only the request that flips the row proceeds.
+    new_status = WorkflowStatus.RUNNING if payload.approved else WorkflowStatus.FAILED
+    claimed = await session.execute(
+        update(WorkflowRun)
+        .where(WorkflowRun.id == run.id, WorkflowRun.status == WorkflowStatus.PAUSED_FOR_APPROVAL)
+        .values(status=new_status)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        raise ConflictError("This approval gate was already answered.")
+    run.status = new_status
 
     await audit_service.record(
         session,
         action="workflow.gate_approved" if payload.approved else "workflow.gate_rejected",
-        actor_type=ActorType.USER,
+        **audit_service.actor(principal),
         organization_id=project.organization_id,
         resource_type="workflow_run",
         resource_id=str(run.id),
@@ -280,20 +271,21 @@ async def approve_workflow_gate(
         elif not resume_state.get("target_languages"):
             resume_state["target_languages"] = list(DEFAULT_TARGET_LANGUAGES)
         if (resume_state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(resume_state.get("repair_attempts", [])) >= 3:
+            # The owner reviewed the failing tests and chose to export regardless.
             resume_state["stages"] = ["export"]
+            resume_state["export_override_approved"] = True
         else:
             resume_state["stages"] = ["generate", "test", "export"]
 
         await session.commit()
-
-        engine_session_factory = async_sessionmaker(
-            bind=session.bind, class_=AsyncSession, expire_on_commit=False
+        await dispatch_run(
+            run_id=run.id,
+            state=resume_state,
+            settings=settings,
+            session=session,
+            background_tasks=background_tasks,
+            redis_client=redis_client,
         )
-        orchestrator = LangGraphOrchestrator(
-            session_factory=engine_session_factory,
-            event_publisher=EventPublisher(redis_client),
-        )
-        background_tasks.add_task(orchestrator.run, run.id, resume_state)
     else:
         await session.commit()
 
@@ -377,7 +369,7 @@ async def list_workflow_tool_calls(
     if run is None:
         raise NotFoundError("Workflow run not found.")
 
-    await load_project_for_principal(session, principal, run.project_id)
+    await assert_project_permission(session, principal, Permission.WORKFLOW_READ, run.project_id)
 
     # Fetch tool calls associated with events in this workflow run
     from app.models.workflow import AgentEvent

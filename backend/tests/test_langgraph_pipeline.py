@@ -183,12 +183,13 @@ async def test_langgraph_orchestrator_pauses_for_approval(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancelled_run_costs_and_metrics(session_factory, db) -> None:
     """Cancelled runs must compute estimated_cost_usd and persist UsageMetric."""
+    from sqlalchemy import select
+
     from app.models.metrics import UsageMetric
     from app.models.organization import Organization
     from app.models.project import Project
     from app.models.workflow import WorkflowRun
-    from app.workflows.langgraph_pipeline import WorkflowCancelledError, calculate_token_cost_usd
-    from sqlalchemy import select
+    from app.workflows.langgraph_pipeline import WorkflowCancelledError
 
     org_id = uuid.uuid4()
     proj_id = uuid.uuid4()
@@ -212,11 +213,12 @@ async def test_cancelled_run_costs_and_metrics(session_factory, db) -> None:
         "stages": ["plan"],
     }
 
-    # Simulate cancellation being raised during execution
-    async def _cancelling_app(*args, **kwargs):
+    # Simulate cancellation being raised during execution (after one streamed state)
+    async def _cancelling_stream(state, *args, **kwargs):
+        yield state
         raise WorkflowCancelledError("Cancelled by user")
 
-    orchestrator.graph.ainvoke = _cancelling_app
+    orchestrator.graph.astream = _cancelling_stream
 
     res = await orchestrator.run(run_id, initial_state)
     assert res["status"] == WorkflowStatus.CANCELLED
@@ -322,3 +324,79 @@ async def test_finalize_node_preserves_building_status_on_approval_pause(session
         refreshed_proj = await session.get(Project, proj_id)
         assert refreshed_proj.status == ProjectStatus.BUILDING
 
+
+
+@pytest.mark.asyncio
+async def test_failed_run_records_tokens_spent_before_the_failure(session_factory, db) -> None:
+    """A node that raises used to leave tokens recorded from the *initial* state."""
+    from app.models.organization import Organization
+    from app.models.project import Project
+    from app.models.workflow import WorkflowRun
+
+    org_id, proj_id, run_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with db as session:
+        session.add_all([
+            Organization(id=org_id, name="Fail Org", slug=f"fail-org-{uuid.uuid4().hex[:6]}"),
+            Project(id=proj_id, name="Fail Proj", organization_id=org_id),
+            WorkflowRun(id=run_id, project_id=proj_id, status=WorkflowStatus.QUEUED),
+        ])
+        await session.commit()
+
+    orchestrator = LangGraphOrchestrator(session_factory=session_factory)
+
+    async def _stream(state, *args, **kwargs):
+        yield {**state, "total_tokens_used": 7000, "current_node": "code_agent"}
+        raise RuntimeError("provider exploded")
+
+    orchestrator.graph.astream = _stream
+    res = await orchestrator.run(run_id, {"project_id": str(proj_id), "stages": ["plan"]})
+
+    assert res["status"] == WorkflowStatus.FAILED
+    async with db as session:
+        run = await session.get(WorkflowRun, run_id)
+        assert run.status == WorkflowStatus.FAILED
+        assert run.total_tokens_used == 7000
+        assert run.current_node == "code_agent"
+
+
+@pytest.mark.asyncio
+async def test_a_run_cancelled_while_queued_is_not_resurrected(session_factory, db) -> None:
+    from app.models.organization import Organization
+    from app.models.project import Project
+    from app.models.workflow import WorkflowRun
+
+    org_id, proj_id, run_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with db as session:
+        session.add_all([
+            Organization(id=org_id, name="Q Org", slug=f"q-org-{uuid.uuid4().hex[:6]}"),
+            Project(id=proj_id, name="Q Proj", organization_id=org_id),
+            WorkflowRun(id=run_id, project_id=proj_id, status=WorkflowStatus.CANCELLED),
+        ])
+        await session.commit()
+
+    orchestrator = LangGraphOrchestrator(session_factory=session_factory)
+    started = False
+
+    async def _stream(state, *args, **kwargs):
+        nonlocal started
+        started = True
+        yield state
+
+    orchestrator.graph.astream = _stream
+    res = await orchestrator.run(run_id, {"project_id": str(proj_id), "stages": ["plan"]})
+
+    assert res["status"] == WorkflowStatus.CANCELLED
+    assert started is False
+    async with db as session:
+        assert (await session.get(WorkflowRun, run_id)).status == WorkflowStatus.CANCELLED
+
+
+def test_missing_test_summary_never_routes_to_export() -> None:
+    from app.workflows.langgraph_pipeline import route_after_testing
+
+    crashed = {"stages": ["test", "export"], "status": "failed", "errors": ["sandbox crashed"]}
+    assert route_after_testing(crashed) == "finalize"
+    passed = {"stages": ["test", "export"], "test_run_summary": {"failed": 0, "passed": 3}}
+    assert route_after_testing(passed) == "export_agent"
+    failing = {"stages": ["test", "export"], "test_run_summary": {"failed": 1}, "repair_attempts": []}
+    assert route_after_testing(failing) == "repair_agent"

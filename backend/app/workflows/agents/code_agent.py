@@ -19,11 +19,20 @@ from app.services.qdrant_service import QdrantClient
 from app.services.storage_service import storage_service
 from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.source_safety import (
+    client_class_name,
     safe_endpoint,
     to_base_url,
+    to_class_name,
     to_display_name,
+    to_email,
+    to_env_prefix,
     to_identifier,
+    to_literal,
+    to_module_name,
+    to_package_name,
+    to_package_version,
     to_py_type,
+    to_text,
     to_ts_type,
 )
 from app.workflows.state import WorkflowState
@@ -82,7 +91,7 @@ def _defined_names(file_path: str, content: str) -> set[str]:
     return {
         node.name
         for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
     }
 
 
@@ -144,15 +153,15 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
     try:
         # Merge imports
         existing_import_sigs = {
-            ast.dump(n) for n in tree_orig.body if isinstance(n, (ast.Import, ast.ImportFrom))
+            ast.dump(n) for n in tree_orig.body if isinstance(n, ast.Import | ast.ImportFrom)
         }
         new_imports = [
             n for n in tree_new.body
-            if isinstance(n, (ast.Import, ast.ImportFrom)) and ast.dump(n) not in existing_import_sigs
+            if isinstance(n, ast.Import | ast.ImportFrom) and ast.dump(n) not in existing_import_sigs
         ]
         insert_idx = 0
         for i, node in enumerate(tree_orig.body):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if isinstance(node, ast.Import | ast.ImportFrom):
                 insert_idx = i + 1
         for ni in reversed(new_imports):
             tree_orig.body.insert(insert_idx, ni)
@@ -193,11 +202,15 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
                     target_methods = {
                         m.name: idx
                         for idx, m in enumerate(target_cls.body)
-                        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef)
                     }
                     for member in node.body:
-                        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef):
                             if member.name in target_methods:
+                                existing_m = target_cls.body[target_methods[member.name]]
+                                # Never downgrade an existing async method to a sync method
+                                if isinstance(existing_m, ast.AsyncFunctionDef) and not isinstance(member, ast.AsyncFunctionDef):
+                                    continue
                                 target_cls.body[target_methods[member.name]] = member
                             else:
                                 target_cls.body.append(member)
@@ -205,13 +218,16 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
                     tree_orig.body.append(node)
                     if "Client" in node.name and existing_client_cls is None:
                         existing_client_cls = node
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 orig_funcs = {
                     fn.name: idx
                     for idx, fn in enumerate(tree_orig.body)
-                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef)
                 }
                 if node.name in orig_funcs:
+                    existing_fn = tree_orig.body[orig_funcs[node.name]]
+                    if isinstance(existing_fn, ast.AsyncFunctionDef) and not isinstance(node, ast.AsyncFunctionDef):
+                        continue
                     tree_orig.body[orig_funcs[node.name]] = node
                 else:
                     tree_orig.body.append(node)
@@ -280,6 +296,8 @@ the following endpoint group, following the project's style guide:
 - Python: PEP 8, type hints on all functions, Pydantic v2 models, httpx for
   HTTP, structured custom exceptions per error class, docstrings (Google style).
   Use standard library, httpx, and pydantic ONLY. Do not import external packages like tenacity (implement retries using standard loops / asyncio.sleep).
+  CRITICAL ASYNC REQUIREMENT: All client methods and `_request` MUST be asynchronous (`async def _request(...)` and `async def <method>(self, ...)`). Always use httpx.AsyncClient.
+  CRITICAL HEADERS: Always set default request headers: {{"Content-Type": "application/json", "Accept": "application/json"}}.
   CRITICAL CONSTRUCTOR REQUIREMENT: The main Client class __init__ MUST accept:
   def __init__(self, base_url: str | None = None, api_key: str | None = None, **kwargs: Any) -> None:
   Never omit api_key or **kwargs from __init__.
@@ -288,6 +306,8 @@ the following endpoint group, following the project's style guide:
 - Node.js: TypeScript strict mode, Zod schemas, native fetch, ESM modules.
   Client constructor MUST accept an optional config object: constructor(config?: {{ baseUrl?: string; apiKey?: string; [key: string]: any }})
   CRITICAL CLASS NAMING: Name or export the main client class as `Client` (or `export class Client` / `export {{ <Name>Client as Client }}`).
+  CRITICAL HEADERS: Always set default request headers: {{ "Content-Type": "application/json", "Accept": "application/json" }}.
+  CRITICAL URL RESOLUTION: When constructing endpoint URLs, preserve any subpath on baseUrl (e.g. /v2) by stripping trailing slashes from baseUrl and leading slashes from path before concatenating.
   IMPORTANT IMPORT RULE: When importing sibling TypeScript modules (e.g. types, errors, schemas), use exact `.ts` extensions (e.g. `import {{ ApiError }} from './errors.ts'`, NOT `.js`) so Node.js native TypeScript execution loads them directly without missing modules.
 
 Always implement: retry with exponential backoff for 429/500/502/503,
@@ -445,6 +465,8 @@ async def _render_templates(
     # A spec type name is not a TypeScript or Python type, so templates translate through them.
     env.filters["ts_type"] = to_ts_type
     env.filters["py_type"] = to_py_type
+    # A complete, escaped string literal; valid in Python, TypeScript, JSON and TOML.
+    env.filters["lit"] = to_literal
 
     title = to_display_name(spec.get("title"), fallback="API Client")
     base_url = to_base_url(spec.get("base_url"))
@@ -459,13 +481,27 @@ async def _render_templates(
         ]
     auth_scheme = _get_auth_scheme(spec)
 
-    # Group endpoints by resource for template context
+    # Group endpoints by resource for template context. Each endpoint also gets the stem
+    # of its Request/Response model names, built here so no spec text reaches a class
+    # name position unsanitized (`/api/health-check` used to yield `...Health-CheckResponse`).
     resources: dict[str, list[dict]] = {}
-    for ep in endpoints:
+    used_stems: set[str] = set()
+    for index, ep in enumerate(endpoints):
         # Simple resource extraction from path
         path = ep.get("path", "/")
         parts = [p for p in path.split("/") if p and not p.startswith("{")]
         resource = to_identifier(parts[0], fallback="root") if parts else "root"
+        last_segment = path.rstrip("/").split("/")[-1].strip("{}")
+        stem = (
+            to_class_name(resource, fallback="Root")
+            + ep["method"].upper()
+            + to_class_name(last_segment, fallback="Root")
+        )
+        candidate, n = stem, 2
+        while candidate in used_stems:
+            candidate, n = f"{stem}{n}", n + 1
+        used_stems.add(candidate)
+        endpoints[index] = ep = {**ep, "model_stem": candidate}
         resources.setdefault(resource, []).append(ep)
 
     info = spec.get("info") or {}
@@ -475,21 +511,25 @@ async def _render_templates(
     author_name = contact_info.get("name") if isinstance(contact_info, dict) else "APIWeaver"
     author_email = contact_info.get("email") if isinstance(contact_info, dict) else "support@apiweaver.dev"
 
-    clean_title = re.sub(r'[^a-zA-Z0-9]', '', title)
-    client_class_name = f"{clean_title}Client" if clean_title else "APIClient"
-
+    # Every value below lands in generated source or package metadata, so each is either
+    # allow-listed here or emitted by the templates through the `lit` filter.
+    raw_version = spec.get("version") or info.get("version")
     context = {
         "title": title,
-        "client_class_name": client_class_name,
+        "client_class_name": client_class_name(spec.get("title")),
+        "package_name": to_package_name(title, fallback="api"),
+        "module_name": to_module_name(title, fallback="api"),
+        "env_prefix": to_env_prefix(title),
         "base_url": base_url,
         "endpoints": endpoints,
         "resources": resources,
         "auth_schemes": [auth_scheme],
         "phase": phase,
-        "version": str(spec.get("version") or info.get("version") or "0.1.0"),
-        "license": license_name or "MIT",
-        "author_name": author_name or "APIWeaver",
-        "author_email": author_email or "support@apiweaver.dev",
+        "version": to_package_version(raw_version),
+        "api_version": to_text(raw_version, fallback="0.1.0", limit=40),
+        "license": to_text(license_name, fallback="MIT", limit=60),
+        "author_name": to_text(author_name, fallback="APIWeaver", limit=80),
+        "author_email": to_email(author_email, fallback="support@apiweaver.dev"),
     }
 
     files = {}

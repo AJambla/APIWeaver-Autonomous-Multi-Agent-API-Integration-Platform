@@ -162,8 +162,8 @@ class User(BaseModel):
     @pytest.mark.asyncio
     async def test_create_sandbox_node_sdk(self):
         """Verify _create_sandbox supports node when target_languages includes node."""
-        from app.workflows.agents.test_agent import _create_sandbox
         from app.services.sandbox_service import DockerSandboxExecutor
+        from app.workflows.agents.test_agent import _create_sandbox
 
         state = {
             "project_id": "test-p",
@@ -236,6 +236,18 @@ class TestTestingAPI:
                 select(TestRun).where(TestRun.project_id == uuid.UUID(project_b))
             )).scalars())
             assert foreign == []
+
+    @pytest.mark.asyncio
+    async def test_live_tests_are_refused_unless_the_deployment_enables_them(self, client):
+        """Live tests give generated code network access; off unless opted in."""
+        headers, project = await self._register_with_project(client, "live")
+
+        res = await client.post(
+            f"/api/v1/projects/{project}/test", json={"environment": "live"}, headers=headers
+        )
+
+        assert res.status_code == 422, res.text
+        assert "SANDBOX_LIVE_NETWORK_ENABLED" in res.json()["error"]["message"]
 
     async def _seed_viewer_with_two_projects(self, client, db, tag: str):
         """One org with two projects; the user can only read project A. Returns everything.
