@@ -125,9 +125,22 @@ export class {{ client_class_name }} {
       "Content-Type": "application/json",
       "Accept": "application/json",
     };
+{%- if auth.type == "api_key" and auth.location == "query" %}
+    // The API key travels as a query parameter (see request()).
+{%- elif auth.type == "api_key" %}
+    if (this.apiKey) {
+      headers[{{ auth.name | lit }}] = this.apiKey;
+    }
+{%- elif auth.type == "basic" %}
+    if (this.apiKey) {
+      // Basic auth: the credential is "username:password".
+      headers["Authorization"] = `Basic ${Buffer.from(this.apiKey).toString("base64")}`;
+    }
+{%- else %}
     if (this.apiKey) {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
     }
+{%- endif %}
     return headers;
   }
 
@@ -159,6 +172,11 @@ export class {{ client_class_name }} {
             }
           });
         }
+{%- if auth.type == "api_key" and auth.location == "query" %}
+        if (this.apiKey) {
+          url.searchParams.set({{ auth.name | lit }}, this.apiKey);
+        }
+{%- endif %}
 
         const response = await fetch(url.toString(), {
           method,

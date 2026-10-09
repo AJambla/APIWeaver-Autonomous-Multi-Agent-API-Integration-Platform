@@ -394,3 +394,61 @@ async def test_generated_typescript_compiles(tmp_path, spec_factory):
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _spec_with_security(schemes: dict, requirement: list | None = None) -> dict:
+    return {
+        "title": "Auth API",
+        "base_url": "https://api.example.com",
+        "endpoints": [{"method": "GET", "path": "/users", "operation_id": "listUsers"}],
+        "components": {"securitySchemes": schemes},
+        "security": requirement or [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("schemes", "requirement", "py_snippet", "ts_snippet"),
+    [
+        (
+            {"key": {"type": "apiKey", "in": "header", "name": "X-API-Key"}},
+            [{"key": []}],
+            "headers['X-API-Key'] = self.api_key",
+            "headers['X-API-Key'] = this.apiKey",
+        ),
+        (
+            {"key": {"type": "apiKey", "in": "query", "name": "api_key"}},
+            [{"key": []}],
+            "default_params['api_key'] = self.api_key",
+            "url.searchParams.set('api_key', this.apiKey)",
+        ),
+        ({"basic": {"type": "http", "scheme": "basic"}}, [{"basic": []}], '"Basic " + base64', "Basic ${Buffer"),
+        ({"jwt": {"type": "http", "scheme": "bearer"}}, [{"jwt": []}], 'f"Bearer {self.api_key}"', "`Bearer ${this.apiKey}`"),
+    ],
+)
+async def test_generated_clients_use_the_spec_auth_scheme(schemes, requirement, py_snippet, ts_snippet):
+    """Every SDK used to send `Authorization: Bearer`, whatever the API expected."""
+    import ast
+
+    spec = _spec_with_security(schemes, requirement)
+    python = await _render_templates("python", spec, None, {"endpoints": spec["endpoints"]})
+    node = await _render_templates("node", spec, None, {"endpoints": spec["endpoints"]})
+    client_py = python["client.py"]
+    client_ts = next(v for k, v in node.items() if k.endswith("client.ts"))
+
+    ast.parse(client_py)
+    normalized_py = client_py.replace('"', "'")
+    normalized_ts = client_ts.replace('"', "'")
+    assert py_snippet.replace('"', "'") in normalized_py, client_py
+    assert ts_snippet.replace('"', "'") in normalized_ts, client_ts
+    if schemes != {"jwt": {"type": "http", "scheme": "bearer"}}:
+        assert "Bearer" not in client_py
+
+
+async def test_a_hostile_api_key_name_falls_back_to_bearer():
+    spec = _spec_with_security(
+        {"key": {"type": "apiKey", "in": "header", "name": 'X"); import os; os.system("x'}},
+        [{"key": []}],
+    )
+    python = await _render_templates("python", spec, None, {"endpoints": spec["endpoints"]})
+    assert "os.system" not in python["client.py"]
+    assert "Bearer" in python["client.py"]
