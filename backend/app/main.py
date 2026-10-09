@@ -30,6 +30,7 @@ from app.core.middleware import (
     BodySizeLimitMiddleware,
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
+    UnhandledErrorMiddleware,
 )
 from app.core.ratelimit import RateLimitMiddleware
 from app.core.security import load_keys
@@ -259,6 +260,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(BodySizeLimitMiddleware, max_upload_bytes=settings.max_upload_bytes)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
+    # Inside request-id and CORS, so a 500 still carries X-Request-ID and CORS headers.
+    app.add_middleware(UnhandledErrorMiddleware)
     app.add_middleware(RequestIDMiddleware)
     app.add_middleware(
         CORSMiddleware,
