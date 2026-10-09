@@ -151,6 +151,10 @@ async function authorizedFetch(endpoint: string, options: RequestInit = {}): Pro
   if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
+  if (!headers.has('X-Correlation-ID')) {
+    const traceId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+    headers.set('X-Correlation-ID', traceId);
+  }
   authorize(sessionStorage.getItem('access_token'));
 
   const response = await fetch(url, { ...options, headers });
@@ -193,13 +197,13 @@ export async function apiFetchBlob(
 }
 
 /** Every item of a cursor-paginated collection (`{data, pagination}`), up to `maxItems`. */
-export async function apiFetchAll<T>(endpoint: string, maxItems = 500): Promise<T[]> {
+export async function apiFetchAll<T>(endpoint: string, maxItems = 500, options: RequestInit = {}): Promise<T[]> {
   const items: T[] = [];
   let cursor: string | null = null;
   do {
     const sep = endpoint.includes('?') ? '&' : '?';
     const page: { data: T[]; pagination?: { next_cursor: string | null; has_more: boolean } } =
-      await apiFetch(cursor ? `${endpoint}${sep}cursor=${encodeURIComponent(cursor)}` : endpoint);
+      await apiFetch(cursor ? `${endpoint}${sep}cursor=${encodeURIComponent(cursor)}` : endpoint, options);
     items.push(...page.data);
     cursor = page.pagination?.has_more ? page.pagination.next_cursor : null;
   } while (cursor && items.length < maxItems);
