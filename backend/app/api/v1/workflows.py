@@ -280,7 +280,9 @@ async def approve_workflow_gate(
         elif not resume_state.get("target_languages"):
             resume_state["target_languages"] = list(DEFAULT_TARGET_LANGUAGES)
         if (resume_state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(resume_state.get("repair_attempts", [])) >= 3:
+            # The owner reviewed the failing tests and chose to export regardless.
             resume_state["stages"] = ["export"]
+            resume_state["export_override_approved"] = True
         else:
             resume_state["stages"] = ["generate", "test", "export"]
 

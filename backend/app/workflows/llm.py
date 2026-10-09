@@ -135,6 +135,24 @@ def _as_json_object(result: tuple[Any, int], provider: str) -> tuple[dict[str, A
     return payload, tokens
 
 
+def _uses_openai(settings: Any) -> bool:
+    return bool(settings.openai_api_key) or bool(
+        settings.openai_api_base_url
+        and settings.openai_api_base_url.rstrip("/") != "https://api.openai.com/v1"
+    )
+
+
+def active_llm_model(settings: Any) -> str:
+    """The model `LLMClient` will call, for pricing: same precedence as `generate_json`."""
+    if settings.anthropic_api_key and not settings.openai_api_key:
+        return settings.anthropic_model
+    if _uses_openai(settings):
+        return settings.llm_model
+    if settings.anthropic_api_key:
+        return settings.anthropic_model
+    return settings.llm_model
+
+
 class LLMClient:
     """Invokes configured LLM with prompt formatting and JSON output parsing."""
 
