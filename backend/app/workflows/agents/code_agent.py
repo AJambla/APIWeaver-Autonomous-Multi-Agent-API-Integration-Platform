@@ -19,11 +19,20 @@ from app.services.qdrant_service import QdrantClient
 from app.services.storage_service import storage_service
 from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.source_safety import (
+    client_class_name,
     safe_endpoint,
     to_base_url,
+    to_class_name,
     to_display_name,
+    to_email,
+    to_env_prefix,
     to_identifier,
+    to_literal,
+    to_module_name,
+    to_package_name,
+    to_package_version,
     to_py_type,
+    to_text,
     to_ts_type,
 )
 from app.workflows.state import WorkflowState
@@ -456,6 +465,8 @@ async def _render_templates(
     # A spec type name is not a TypeScript or Python type, so templates translate through them.
     env.filters["ts_type"] = to_ts_type
     env.filters["py_type"] = to_py_type
+    # A complete, escaped string literal; valid in Python, TypeScript, JSON and TOML.
+    env.filters["lit"] = to_literal
 
     title = to_display_name(spec.get("title"), fallback="API Client")
     base_url = to_base_url(spec.get("base_url"))
@@ -470,13 +481,27 @@ async def _render_templates(
         ]
     auth_scheme = _get_auth_scheme(spec)
 
-    # Group endpoints by resource for template context
+    # Group endpoints by resource for template context. Each endpoint also gets the stem
+    # of its Request/Response model names, built here so no spec text reaches a class
+    # name position unsanitized (`/api/health-check` used to yield `...Health-CheckResponse`).
     resources: dict[str, list[dict]] = {}
-    for ep in endpoints:
+    used_stems: set[str] = set()
+    for index, ep in enumerate(endpoints):
         # Simple resource extraction from path
         path = ep.get("path", "/")
         parts = [p for p in path.split("/") if p and not p.startswith("{")]
         resource = to_identifier(parts[0], fallback="root") if parts else "root"
+        last_segment = path.rstrip("/").split("/")[-1].strip("{}")
+        stem = (
+            to_class_name(resource, fallback="Root")
+            + ep["method"].upper()
+            + to_class_name(last_segment, fallback="Root")
+        )
+        candidate, n = stem, 2
+        while candidate in used_stems:
+            candidate, n = f"{stem}{n}", n + 1
+        used_stems.add(candidate)
+        endpoints[index] = ep = {**ep, "model_stem": candidate}
         resources.setdefault(resource, []).append(ep)
 
     info = spec.get("info") or {}
@@ -486,21 +511,25 @@ async def _render_templates(
     author_name = contact_info.get("name") if isinstance(contact_info, dict) else "APIWeaver"
     author_email = contact_info.get("email") if isinstance(contact_info, dict) else "support@apiweaver.dev"
 
-    clean_title = re.sub(r'[^a-zA-Z0-9]', '', title)
-    client_class_name = f"{clean_title}Client" if clean_title else "APIClient"
-
+    # Every value below lands in generated source or package metadata, so each is either
+    # allow-listed here or emitted by the templates through the `lit` filter.
+    raw_version = spec.get("version") or info.get("version")
     context = {
         "title": title,
-        "client_class_name": client_class_name,
+        "client_class_name": client_class_name(spec.get("title")),
+        "package_name": to_package_name(title, fallback="api"),
+        "module_name": to_module_name(title, fallback="api"),
+        "env_prefix": to_env_prefix(title),
         "base_url": base_url,
         "endpoints": endpoints,
         "resources": resources,
         "auth_schemes": [auth_scheme],
         "phase": phase,
-        "version": str(spec.get("version") or info.get("version") or "0.1.0"),
-        "license": license_name or "MIT",
-        "author_name": author_name or "APIWeaver",
-        "author_email": author_email or "support@apiweaver.dev",
+        "version": to_package_version(raw_version),
+        "api_version": to_text(raw_version, fallback="0.1.0", limit=40),
+        "license": to_text(license_name, fallback="MIT", limit=60),
+        "author_name": to_text(author_name, fallback="APIWeaver", limit=80),
+        "author_email": to_email(author_email, fallback="support@apiweaver.dev"),
     }
 
     files = {}

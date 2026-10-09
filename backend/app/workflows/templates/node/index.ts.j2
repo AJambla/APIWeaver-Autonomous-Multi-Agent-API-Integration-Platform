@@ -15,10 +15,10 @@ export {
   ValidationError,
   RateLimitError,
   ServerError,
-  {{ client_class_name | default(title.replace(' ', '').replace('-', '').replace('_', '') + 'Client') }},
+  {{ client_class_name }},
   Client,
 } from "./client.ts";
 
 export * from "./types.ts";
 
-export const version = "{{ version | default('0.1.0') }}";
+export const version = {{ version | lit }};
