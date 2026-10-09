@@ -16,10 +16,6 @@ terraform {
   }
 }
 
-provider "aws" {
-  region = var.region
-}
-
 locals {
   cluster_name = var.cluster_name
 }
@@ -181,7 +177,7 @@ resource "aws_eks_cluster" "main" {
     public_access_cidrs = var.public_access_cidrs
   }
 
-  enabled_cluster_log_types = ["api", "audit", "app", "controllerManager"]
+  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
   tags = {
     Name        = local.cluster_name
@@ -210,14 +206,10 @@ data "aws_iam_policy_document" "s3_access" {
       "s3:DeleteObject",
       "s3:ListBucket"
     ]
-    resources = [
-      var.s3_buckets.uploads,
-      "${var.s3_buckets.uploads}/*",
-      var.s3_buckets.artifacts,
-      "${var.s3_buckets.artifacts}/*",
-      var.s3_buckets.backups,
-      "${var.s3_buckets.backups}/*"
-    ]
+    # The inputs are bucket *names*; IAM needs ARNs, or the policy is rejected at apply.
+    resources = flatten([
+      for bucket in values(var.s3_buckets) : ["arn:aws:s3:::${bucket}", "arn:aws:s3:::${bucket}/*"]
+    ])
   }
 }
 

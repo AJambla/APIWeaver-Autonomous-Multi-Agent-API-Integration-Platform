@@ -390,3 +390,39 @@ class TestExportAPI:
         mcp_rec = next((r for r in records if r["export_type"] == "mcp"), None)
         assert mcp_rec is not None
         assert mcp_rec["status"] == "completed"
+
+@pytest.mark.asyncio
+async def test_an_export_run_records_one_row_per_type(
+    client: AsyncClient, auth_headers: dict[str, str], session_factory, monkeypatch
+):
+    """POST /export pre-creates its rows; the export node used to insert a second set."""
+    from sqlalchemy import func, select
+
+    from app.models.export import Export
+
+    async def fake_run(self, state, **_kwargs):
+        return {
+            "exports": [
+                {"type": t, "status": "completed", "s3_key": f"exports/x/{t}.zip"}
+                for t in state.get("export_types") or []
+            ],
+            "status": "completed",
+        }
+
+    monkeypatch.setattr("app.workflows.langgraph_pipeline.ExportAgent.run", fake_run)
+    project_id = await TestExportAPI()._setup_project(client, auth_headers)
+
+    res = await client.post(
+        f"/api/v1/projects/{project_id}/export",
+        headers=auth_headers,
+        json={"export_types": ["mcp", "docker"]},
+    )
+    assert res.status_code == 202, res.text
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Export.export_type, func.count()).group_by(Export.export_type)
+            )
+        ).all()
+    assert dict(rows) == {"mcp": 1, "docker": 1}

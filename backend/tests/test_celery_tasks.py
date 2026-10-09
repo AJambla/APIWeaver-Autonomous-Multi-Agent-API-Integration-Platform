@@ -1,77 +1,20 @@
-"""Tests for Celery task queue integration."""
+"""The worker registers exactly the tasks the API dispatches."""
 
 from __future__ import annotations
 
-import pytest
+from app.workflows.dispatch import RUN_WORKFLOW_TASK
 
 
-class TestCeleryTasks:
-    """Tests for agent-worker Celery tasks."""
+def test_the_worker_registers_the_dispatched_tasks() -> None:
+    from agent_worker.celery_app import app
 
-    def test_celery_app_imports(self):
-        """Celery app can be imported and has expected tasks registered."""
-        try:
-            from agent_worker.celery_app import app
-            assert "agent_worker.tasks.run_document_agent" in app.tasks
-            assert "agent_worker.tasks.run_planner_agent" in app.tasks
-            assert "agent_worker.tasks.run_code_agent" in app.tasks
-            assert "agent_worker.tasks.run_testing_agent" in app.tasks
-            assert "agent_worker.tasks.run_export_agent" in app.tasks
-            assert "agent_worker.tasks.run_workflow" in app.tasks
-        except ImportError:
-            pytest.skip("agent_worker package not available in test environment")
+    assert RUN_WORKFLOW_TASK in app.tasks
+    assert "agent_worker.tasks.dead_letter" in app.tasks
 
-    @pytest.mark.asyncio
-    async def test_document_task_registered(self):
-        """Document agent task is registered."""
-        try:
-            from agent_worker.tasks.document_tasks import run_document_agent
-            assert run_document_agent is not None
-        except ImportError:
-            pytest.skip("agent_worker package not available in test environment")
 
-    @pytest.mark.asyncio
-    async def test_codegen_task_registered(self):
-        """Code generation agent task is registered."""
-        try:
-            from agent_worker.tasks.codegen_tasks import run_code_agent_task
-            assert run_code_agent_task is not None
-        except ImportError:
-            pytest.skip("agent_worker package not available in test environment")
+def test_per_stage_tasks_are_gone() -> None:
+    """They were registered but nothing ever sent them (the orchestrator runs every stage)."""
+    from agent_worker.celery_app import app
 
-    @pytest.mark.asyncio
-    async def test_planner_task_registered(self):
-        """Planner agent task is registered."""
-        try:
-            from agent_worker.tasks.planner_tasks import run_planner_agent_task
-
-            assert run_planner_agent_task is not None
-        except ImportError:
-            pytest.skip("agent_worker package not available in test environment")
-
-    @pytest.mark.asyncio
-    async def test_testing_task_registered(self):
-        """Testing agent task is registered."""
-        try:
-            from agent_worker.tasks.testing_tasks import run_testing_agent
-            assert run_testing_agent is not None
-        except ImportError:
-            pytest.skip("agent_worker package not available in test environment")
-
-    @pytest.mark.asyncio
-    async def test_export_task_registered(self):
-        """Export agent task is registered."""
-        try:
-            from agent_worker.tasks.export_tasks import run_export_agent
-            assert run_export_agent is not None
-        except ImportError:
-            pytest.skip("agent_worker package not available in test environment")
-
-    @pytest.mark.asyncio
-    async def test_workflow_task_registered(self):
-        """Workflow task is registered."""
-        try:
-            from agent_worker.tasks.workflow_tasks import run_workflow
-            assert run_workflow is not None
-        except ImportError:
-            pytest.skip("agent_worker package not available in test environment")
+    for stale in ("run_document_agent", "run_planner_agent", "run_code_agent", "run_testing_agent", "run_export_agent"):
+        assert f"agent_worker.tasks.{stale}" not in app.tasks

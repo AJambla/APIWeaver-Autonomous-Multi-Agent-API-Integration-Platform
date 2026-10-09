@@ -15,18 +15,31 @@ function clearSessionAndRedirect(): void {
   window.location.href = '/login';
 }
 
+/** Thrown when the server rejected the refresh token: the session is really over. */
+export class SessionExpiredError extends Error {
+  constructor() {
+    super('Your session has expired. Please sign in again.');
+    this.name = 'SessionExpiredError';
+  }
+}
+
 async function rotateTokens(): Promise<string> {
   const refreshToken = sessionStorage.getItem('refresh_token');
   if (!refreshToken) {
-    throw new Error('Your session has expired. Please sign in again.');
+    throw new SessionExpiredError();
   }
+  // A network error propagates as-is (not a SessionExpiredError): the session survives it.
   const refreshResponse = await fetch(`${API_PREFIX}/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refresh_token: refreshToken }),
   });
+  if ([400, 401, 403].includes(refreshResponse.status)) {
+    throw new SessionExpiredError();
+  }
   if (!refreshResponse.ok) {
-    throw new Error('Your session has expired. Please sign in again.');
+    // 429/5xx: the server could not answer, which says nothing about the token.
+    throw new Error('The server could not refresh your session. Please retry.');
   }
   const data = (await refreshResponse.json()) as { access_token: string; refresh_token: string };
   sessionStorage.setItem('access_token', data.access_token);
@@ -35,8 +48,9 @@ async function rotateTokens(): Promise<string> {
 }
 
 /** Rotate the refresh token into a fresh pair. Concurrent callers share one rotation;
- * where the Web Locks API exists it also serializes rotations across tabs. On failure
- * the session is cleared and the browser is sent to /login. */
+ * where the Web Locks API exists it also serializes rotations across tabs. Only a
+ * rejected refresh token ends the session; a network blip or a 5xx used to log the user
+ * out as well. */
 export function refreshAccessToken(): Promise<string> {
   if (refreshInFlight) return refreshInFlight;
   const tokenBefore = sessionStorage.getItem('access_token');
@@ -49,13 +63,27 @@ export function refreshAccessToken(): Promise<string> {
   const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
   refreshInFlight = (locks ? locks.request('apiweaver-token-refresh', run) : run())
     .catch((error: unknown) => {
-      clearSessionAndRedirect();
+      if (error instanceof SessionExpiredError) clearSessionAndRedirect();
       throw error;
     })
     .finally(() => {
       refreshInFlight = null;
     });
   return refreshInFlight;
+}
+
+/** True when the path part of `endpoint` has a `.` or `..` segment, encoded or not. */
+export function hasDotSegment(endpoint: string): boolean {
+  const path = endpoint.split(/[?#]/, 1)[0];
+  return path.split('/').some((segment) => {
+    let decoded = segment;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      // A malformed escape is not a dot segment; the server will reject it.
+    }
+    return decoded === '.' || decoded === '..';
+  });
 }
 
 /** The request `endpoint` resolves to, and whether this origin owns it.
@@ -66,6 +94,10 @@ export function refreshAccessToken(): Promise<string> {
  * `http-fault/list` and false of a protocol-relative `//host/path`.
  */
 export function resolveEndpoint(endpoint: string): { url: string; sameOrigin: boolean } {
+  if (hasDotSegment(endpoint)) {
+    // `new URL` would resolve `..` and send the bearer token to wherever it led.
+    throw new Error('Refusing a request path with "." or ".." segments.');
+  }
   const candidate =
     endpoint.startsWith('http') || endpoint.startsWith(`${API_PREFIX}/`)
       ? endpoint

@@ -46,7 +46,6 @@ class Settings(BaseSettings):
 
     # --- App -------------------------------------------------------------------
     app_env: AppEnv = "development"
-    app_debug: bool = False
     log_level: str = "INFO"
     cors_allowed_origins: str = "http://localhost:3000"
 
@@ -60,6 +59,10 @@ class Settings(BaseSettings):
 
     # --- Redis (required) ------------------------------------------------------
     redis_url: str
+    # Bounded so a blackholed Redis fails fast: the rate limiter fails open and the JWT
+    # denylist check fails closed (503) instead of every request hanging on a dead socket.
+    redis_connect_timeout_seconds: float = 1.0
+    redis_socket_timeout_seconds: float = 2.0
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
     redis_stream_workflow_maxlen: int = 1000
@@ -88,6 +91,10 @@ class Settings(BaseSettings):
     rate_limit_free_rpm: int = 120
     rate_limit_pro_rpm: int = 600
     rate_limit_enterprise_rpm: int = 3000
+    # Ceiling for an organization's self-service rate-limit override. Org owners set the
+    # override themselves, so without a cap one tenant could configure itself out of the
+    # cluster-protection limiter entirely.
+    rate_limit_override_max_rpm: int = 10_000
 
     # --- LLM providers (conditional) ------------------------------------------
     openai_api_key: str | None = None
@@ -97,6 +104,9 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     anthropic_model: str = "claude-3-5-sonnet-20241022"
     embedding_model: str = "text-embedding-3-small"
+    # Must match both the model's output and the Qdrant collection's vector size. It was
+    # hardcoded to 1536, so any other embedding model made every upsert fail - silently.
+    embedding_dimensions: int = Field(default=1536, ge=1, le=16384)
     llm_max_retry_delay_seconds: float = 8.0
     llm_max_retry_after_seconds: float = 10.0
     llm_temperature: float = 0.1
@@ -144,7 +154,6 @@ class Settings(BaseSettings):
     github_app_client_id: str | None = None
     github_app_client_secret_vault_path: str | None = None
     github_oauth_redirect_uri: str | None = None
-    github_webhook_secret: str | None = None
     github_api_base_url: str = "https://api.github.com"
     github_oauth_authorize_url: str = "https://github.com/login/oauth/authorize"
     github_oauth_token_url: str = "https://github.com/login/oauth/access_token"
@@ -166,8 +175,9 @@ class Settings(BaseSettings):
     sandbox_max_memory: str = "1Gi"
     sandbox_timeout_seconds: int = 300
     sandbox_pids_limit: int = 64
-    # Hermetic by default: sandbox-mode tests answer the generated client from a mock and
-    # need no network. Turning this on gives every sandbox container network access.
+    # Deprecated and ignored: it used to give *hermetic* runs network access, skipping the
+    # live-mode target vetting. Only `environment="live"` runs get a network now. Kept so a
+    # deployment that still sets it gets a startup warning instead of silent behaviour change.
     sandbox_network_enabled: bool = False
     # `environment="live"` tests call the real target API and therefore need network.
     # Off unless the deployment opts in; targets are still vetted against private,
@@ -189,6 +199,15 @@ class Settings(BaseSettings):
     # /metrics at all without it (audit M4).
     metrics_token: str | None = None
 
+    @field_validator("metrics_token", mode="before")
+    @classmethod
+    def _blank_metrics_token_is_unset(cls, value: Any) -> Any:
+        # `METRICS_TOKEN=` (empty) used to count as "set": /metrics was mounted and
+        # compare_digest("", "") let a request with no header through.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     # --- Uploads (Security.md §10) --------------------------------------------
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, description="50MB default")
     # Spec import by URL is fetched server-side; private/loopback targets are refused
@@ -208,7 +227,6 @@ class Settings(BaseSettings):
     # --- Workflow execution (Task 7.5) ----------------------------------------
     # Enable parallel agent execution within a workflow run. Default off for
     # incremental rollout; turn on after smoke testing.
-    enable_parallel_agents: bool = False
     # In production, require Celery workers for async workflows rather than
     # silently running on API process BackgroundTasks (fail-loud queueing).
     require_celery_worker: bool = False
@@ -219,6 +237,13 @@ class Settings(BaseSettings):
     # shorter Celery defaults; a full pipeline (LLM codegen + sandbox tests + repairs)
     # routinely needs more than five minutes.
     workflow_task_time_limit_seconds: int = 3600
+    # Run leases (workflows/reaper.py). An executing run refreshes heartbeat_at every
+    # interval; one silent for longer than the lease lost its worker. A queued run nobody
+    # claimed within the queue timeout is failed rather than left "queued" forever.
+    workflow_heartbeat_interval_seconds: int = 30
+    workflow_lease_seconds: int = 300
+    workflow_queue_timeout_seconds: int = 7200
+    workflow_reaper_interval_seconds: int = 60
     # Workflow progress percentage mapping by node name
     workflow_node_progress_map: dict[str, int] = Field(
         default_factory=lambda: dict(DEFAULT_WORKFLOW_NODE_PROGRESS)
@@ -323,6 +348,18 @@ def validate_startup_environment(settings: Settings) -> None:
     if not settings.redis_url or not settings.redis_url.strip():
         raise ValueError("REDIS_URL must be set and non-empty.")
 
+    if settings.sandbox_network_enabled:
+        from app.core.logging import get_logger
+
+        get_logger(__name__).warning(
+            "deprecated_setting_ignored",
+            setting="SANDBOX_NETWORK_ENABLED",
+            detail=(
+                "Hermetic sandbox runs never get network access. Use "
+                "SANDBOX_LIVE_NETWORK_ENABLED with environment='live' to test a real API."
+            ),
+        )
+
     def _resolve_path(path: Path) -> Path:
         if path.is_file():
             return path
@@ -356,3 +393,40 @@ def validate_startup_environment(settings: Settings) -> None:
                 "Production mode strictly requires at least one configured LLM provider key "
                 "(OPENAI_API_KEY or ANTHROPIC_API_KEY)."
             )
+        problems = production_config_problems(settings)
+        if problems:
+            raise ValueError(
+                "Refusing to start in production with an unsafe configuration:\n- "
+                + "\n- ".join(problems)
+            )
+
+
+# Values that ship in .env.example / docker-compose for local use only.
+_PLACEHOLDER_SECRETS = frozenset({"prod_scrape_token_local_test", "minioadmin", "root", "dev"})
+
+
+def production_config_problems(settings: Settings) -> list[str]:
+    """Every development default that must not reach production, reported together.
+
+    Only the LLM key used to be checked. CORS `*` with credentials, the example metrics
+    token, a dev-mode Vault root token and MinIO's default keys all started silently.
+    """
+    problems: list[str] = []
+    for origin in settings.cors_origins:
+        if origin == "*":
+            problems.append(
+                "CORS_ALLOWED_ORIGINS contains '*': with credentials allowed the API would "
+                "answer any site with the caller's session."
+            )
+        elif not origin.startswith("https://"):
+            problems.append(f"CORS origin {origin!r} is not https.")
+    token = settings.metrics_token
+    if token is not None and (len(token) < 24 or token in _PLACEHOLDER_SECRETS):
+        problems.append("METRICS_TOKEN is a placeholder or shorter than 24 characters.")
+    if not settings.vault_token or settings.vault_token in _PLACEHOLDER_SECRETS:
+        problems.append("VAULT_TOKEN is unset or a development root token.")
+    if not settings.vault_addr.startswith("https://"):
+        problems.append("VAULT_ADDR is not https; secrets would cross the network in clear.")
+    if settings.aws_access_key_id in _PLACEHOLDER_SECRETS:
+        problems.append("AWS_ACCESS_KEY_ID is the MinIO default credential.")
+    return problems

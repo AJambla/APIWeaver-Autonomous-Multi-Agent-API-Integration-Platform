@@ -226,7 +226,8 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
                 params[name] = p["enum"][0]
                 continue
 
-            p_schema = p.get("schema") if isinstance(p.get("schema"), dict) else {}
+            raw_schema = p.get("schema")
+            p_schema: dict[str, Any] = raw_schema if isinstance(raw_schema, dict) else {}
             if "example" in p_schema:
                 params[name] = p_schema["example"]
                 continue
@@ -531,7 +532,10 @@ async def _create_sandbox(
     live = state.get("environment") == "live"
     if live and not getattr(settings, "sandbox_live_network_enabled", False):
         raise RuntimeError("Live testing is disabled (SANDBOX_LIVE_NETWORK_ENABLED=false).")
-    network_enabled = live or bool(getattr(settings, "sandbox_network_enabled", False))
+    # Only live runs get a network. A hermetic run is answered by the mock transport, and
+    # giving it network would run LLM-generated code against `base_url` with none of the
+    # live-mode vetting below.
+    network_enabled = live
     if live:
         # Live mode hands generated code the network; refuse targets on private,
         # loopback or metadata addresses before any container starts.
@@ -618,6 +622,27 @@ async def _load_executors(
     return MultiLanguageSandboxExecutor(executors)
 
 
+def _failed_update(error: str, *, total_tokens: int | None = None) -> dict[str, Any]:
+    """State update for a test stage that could not run.
+
+    `test_run_summary` and `test_suite` are explicitly cleared. Graph state channels keep
+    their last value, so omitting them left the *previous* run's summary in place: after
+    a repair, a sandbox outage was then routed back into the repair loop on stale
+    failures and finally reported as "repairs exhausted" instead of FAILED.
+    """
+    update: dict[str, Any] = {
+        "current_node": "test_agent",
+        "progress_percent": 50,
+        "status": "failed",
+        "errors": [error],
+        "test_run_summary": None,
+        "test_suite": [],
+    }
+    if total_tokens is not None:
+        update["total_tokens_used"] = total_tokens
+    return update
+
+
 async def run_test_agent(
     state: WorkflowState,
     llm_client: LLMClient | None = None,
@@ -659,21 +684,13 @@ async def run_test_agent(
 
     if not spec or not spec.get("endpoints"):
         await _record_failure("Cannot run tests without a normalized API spec containing endpoints.")
-        return {
-            "current_node": "test_agent",
-            "progress_percent": 50,
-            "status": "failed",
-            "errors": ["Cannot run tests without a normalized API spec containing endpoints."],
-        }
+        return _failed_update(
+            "Cannot run tests without a normalized API spec containing endpoints."
+        )
 
     if not generated_files:
         await _record_failure("No generated files to test.")
-        return {
-            "current_node": "test_agent",
-            "progress_percent": 50,
-            "status": "failed",
-            "errors": ["No generated files to test."],
-        }
+        return _failed_update("No generated files to test.")
 
     sandbox = None
     test_start_time = time.perf_counter()
@@ -716,7 +733,7 @@ async def run_test_agent(
         )
 
         # Run tests for each endpoint across all configured language executors
-        test_results = []
+        test_results: list[dict[str, Any]] = []
         all_passed = True
 
         language_executors: dict[str, Any]
@@ -899,13 +916,7 @@ async def run_test_agent(
     except Exception as exc:
         logger.error("test_agent_unhandled_failure", error=str(exc), traceback=traceback.format_exc())
         await _record_failure(f"Test agent failure: {exc}")
-        return {
-            "current_node": "test_agent",
-            "progress_percent": 50,
-            "status": "failed",
-            "errors": [f"Test agent execution failed: {exc}"],
-            "total_tokens_used": total_tokens,
-        }
+        return _failed_update(f"Test agent execution failed: {exc}", total_tokens=total_tokens)
     finally:
         if sandbox is not None:
             try:

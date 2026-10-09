@@ -6,6 +6,7 @@ project CRUD, with every error rendered in the `API.md §5` envelope.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import health
+from app.api.v1.events import SSE_BLOCK_MS
 from app.api.v1.router import api_router
 from app.core.config import Settings, get_settings, validate_startup_environment
 from app.core.errors import APIError, ErrorCode, build_error_body
@@ -26,9 +28,11 @@ from app.core.metrics import registry as metrics_registry
 from app.core.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
 from app.core.ratelimit import RateLimitMiddleware
 from app.core.security import load_keys
-from app.core.telemetry import instrument_app
-from app.db.session import dispose_engine, get_engine
+from app.core.telemetry import instrument_backends, instrument_http
+from app.db.partitions import run_partition_maintenance_forever
+from app.db.session import dispose_engine, get_engine, get_sessionmaker
 from app.services.storage_service import create_object_storage
+from app.workflows.reaper import run_reaper_forever
 
 logger = get_logger(__name__)
 
@@ -63,17 +67,37 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         encoding="utf-8",
         decode_responses=True,
         health_check_interval=30,
+        socket_connect_timeout=settings.redis_connect_timeout_seconds,
+        socket_timeout=settings.redis_socket_timeout_seconds,
+    )
+    # SSE parks in a blocking XREAD for SSE_BLOCK_MS; on the shared client's short socket
+    # timeout every idle stream would error out, so streams get their own connection pool.
+    app.state.redis_stream = aioredis.from_url(
+        settings.redis_url,
+        encoding="utf-8",
+        decode_responses=True,
+        health_check_interval=30,
+        socket_connect_timeout=settings.redis_connect_timeout_seconds,
+        socket_timeout=SSE_BLOCK_MS / 1000 + settings.redis_socket_timeout_seconds,
     )
     app.state.object_storage = create_object_storage(settings)
     engine = get_engine(settings)
 
-    instrument_app(app, engine)
+    instrument_backends(engine)
+
+    # Fails runs whose executor died or that nobody claimed (workflows/reaper.py).
+    reaper = asyncio.create_task(run_reaper_forever(get_sessionmaker(settings), settings))
+    # Rolls agent_events/usage_metrics partitions forward (db/partitions.py).
+    partitions = asyncio.create_task(run_partition_maintenance_forever(engine))
 
     logger.info("application_started", app_env=settings.app_env)
     try:
         yield
     finally:
+        reaper.cancel()
+        partitions.cancel()
         await app.state.redis.aclose()
+        await app.state.redis_stream.aclose()
         await dispose_engine()
         logger.info("application_stopped")
 
@@ -206,6 +230,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    # Before any request: the middleware stack is built on the first call (see telemetry).
+    instrument_http(app)
 
     # Middleware is applied bottom-up, so the request-id middleware is added last to run
     # first — the rate limiter's error body needs a request_id already assigned.

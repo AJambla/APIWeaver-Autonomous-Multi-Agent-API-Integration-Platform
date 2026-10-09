@@ -6,7 +6,7 @@ import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, Query, Request, status
-from sqlalchemy import Select, func, select, tuple_
+from sqlalchemy import Select, func, literal, select, tuple_
 from sqlalchemy import false as sa_false
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -172,7 +172,7 @@ async def list_projects(
             # separately would either skip rows sharing a timestamp or need an OR that
             # the planner handles worse.
             stmt = stmt.where(
-                tuple_(Project.created_at, Project.id) < tuple_(last_created, last_id)
+                tuple_(Project.created_at, Project.id) < tuple_(literal(last_created), literal(last_id))
             )
         except (KeyError, TypeError, ValueError):
             pass  # Malformed cursor: start from the beginning rather than 400.

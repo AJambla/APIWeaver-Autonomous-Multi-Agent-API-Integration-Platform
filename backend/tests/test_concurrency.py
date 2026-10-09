@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -49,6 +50,7 @@ async def test_concurrent_redemptions_of_one_refresh_token_mint_one_successor(
     assert statuses.count(401) >= 3, statuses
 
 
+@pytest.mark.concurrent_db
 async def test_parallel_wrong_passwords_still_lock_the_account(client: AsyncClient) -> None:
     account = await _register(client)
 
@@ -114,3 +116,60 @@ async def test_an_approval_gate_can_be_answered_once(
     statuses = sorted(r.status_code for r in responses)
     assert statuses.count(200) == 1, statuses
     assert dispatched == [run.id]
+
+
+@pytest.mark.parametrize(
+    ("requested", "resumed"),
+    [
+        # An explicit request is honoured: no surprise tests or export packagers.
+        (["plan", "generate"], ["generate"]),
+        (["doc", "plan", "generate", "test"], ["generate", "test"]),
+        # The upload auto-plan asks for nothing past "plan": approving means "build it".
+        (["plan"], ["generate", "test", "export"]),
+    ],
+)
+async def test_approval_resumes_with_the_requested_post_plan_stages(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    test_settings: Settings,
+    monkeypatch,
+    requested: list[str],
+    resumed: list[str],
+) -> None:
+    from app.api.v1 import workflows as workflows_module
+
+    states: list[dict] = []
+
+    async def fake_dispatch(**kwargs):
+        states.append(kwargs["state"])
+
+    monkeypatch.setattr(workflows_module, "dispatch_run", fake_dispatch)
+
+    async with session_factory() as session:
+        owner = await make_user(session, email=f"stages-{uuid.uuid4().hex[:8]}@example.com")
+        org = await make_org(session, name=f"Stages {uuid.uuid4().hex[:6]}")
+        await add_org_member(session, org=org, user=owner, role=OrgRole.OWNER)
+        project = await make_project(session, org=org)
+        run = WorkflowRun(project_id=project.id, status=WorkflowStatus.PAUSED_FOR_APPROVAL)
+        session.add(run)
+        await session.flush()
+        session.add(
+            WorkflowCheckpoint(
+                workflow_run_id=run.id,
+                node_name="approval_gate",
+                state_snapshot={"project_id": str(project.id), "stages": requested},
+            )
+        )
+        await session.commit()
+    token = create_access_token(
+        user_id=owner.id, org_id=org.id, role=OrgRole.OWNER, settings=test_settings
+    )
+
+    res = await client.post(
+        f"/api/v1/workflows/{run.id}/approve",
+        json={"approved": True},
+        headers={"Authorization": f"Bearer {token.token}"},
+    )
+
+    assert res.status_code == 200, res.text
+    assert states[0]["stages"] == resumed

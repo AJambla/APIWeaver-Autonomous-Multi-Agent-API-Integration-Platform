@@ -43,13 +43,18 @@ export const AgentsPage: React.FC = () => {
   const { organizationId } = useAuth();
   const [summaries, setSummaries] = useState<ProjectSummary[]>([]);
   const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
+  // 'unknown' while loading or when /health/llm failed: neither means a key is missing.
+  const [llmState, setLlmState] = useState<'loading' | 'loaded' | 'unknown'>('loading');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
     apiFetch<LlmStatus>('/health/llm')
-      .then(setLlmStatus)
-      .catch(() => {});
+      .then(status => {
+        setLlmStatus(status);
+        setLlmState('loaded');
+      })
+      .catch(() => setLlmState('unknown'));
   }, []);
 
   useEffect(() => {
@@ -86,12 +91,16 @@ export const AgentsPage: React.FC = () => {
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-xl border border-white/10 bg-white/[0.02] p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
-            <Sparkles className="h-4.5 w-4.5" />
+            <Sparkles className="h-[18px] w-[18px]" />
           </div>
           <div>
             <div className="text-sm font-medium text-white flex items-center gap-2">
               <span>LLM Engine</span>
-              {llmStatus?.is_configured ? (
+              {llmState !== 'loaded' ? (
+                <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-medium text-neutral-400 border border-white/10">
+                  {llmState === 'loading' ? 'Checking…' : 'Status unavailable'}
+                </span>
+              ) : llmStatus?.is_configured ? (
                 <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400 border border-emerald-500/20">
                   Ready
                 </span>
@@ -102,7 +111,7 @@ export const AgentsPage: React.FC = () => {
               )}
             </div>
             <div className="text-xs text-neutral-400">
-              Active model: <span className="font-mono text-neutral-300">{llmStatus?.model || 'loading…'}</span>
+              Active model: <span className="font-mono text-neutral-300">{llmStatus?.model || (llmState === 'loading' ? 'loading…' : '—')}</span>
             </div>
           </div>
         </div>
@@ -119,7 +128,7 @@ export const AgentsPage: React.FC = () => {
             <React.Fragment key={stage.name}>
               <div className={`${cardCls} flex-1 p-5 hover:bg-white/[0.05]`}>
                 <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/10 text-violet-400">
-                  <Icon className="h-4.5 w-4.5" />
+                  <Icon className="h-[18px] w-[18px]" />
                 </div>
                 <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-neutral-600">
                   Stage {i + 1}

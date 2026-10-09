@@ -12,9 +12,11 @@ import secrets
 import unicodedata
 import uuid
 from dataclasses import dataclass
+from typing import Any, cast
 
 import redis.asyncio as aioredis
 from sqlalchemy import func, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,13 +24,14 @@ from app.core.config import Settings
 from app.core.deps import denylist_jti
 from app.core.errors import ConflictError, ErrorCode, UnauthenticatedError
 from app.core.logging import get_logger
+from app.core.metrics import auth_failure_total, auth_success_total
 from app.core.security import (
     create_access_token,
     generate_opaque_token,
     hash_opaque_token,
-    hash_password,
+    hash_password_async,
     password_needs_rehash,
-    verify_password,
+    verify_password_async,
 )
 from app.models.audit import AuditAction
 from app.models.enums import ActorType, OrgRole
@@ -161,7 +164,7 @@ async def register(
     organization = Organization(name=organization_name, slug=slug)
     user = User(
         email=normalized_email,
-        password_hash=hash_password(password),
+        password_hash=await hash_password_async(password),
         full_name=full_name,
     )
     session.add_all([organization, user])
@@ -222,7 +225,7 @@ async def login(
     if user is None:
         # Hash anyway so a nonexistent account takes the same time as a wrong password;
         # otherwise response timing enumerates valid emails.
-        hash_password(password)
+        await verify_password_async(password, None)
         await audit_service.record(
             session,
             action=AuditAction.USER_LOGIN_FAILED,
@@ -233,11 +236,12 @@ async def login(
             metadata={"reason": "unknown_email"},
         )
         await _commit_before_raising(session)
+        auth_failure_total.labels(reason="unknown_email").inc()
         raise UnauthenticatedError(
             "Email or password is incorrect.", code=ErrorCode.INVALID_CREDENTIALS
         )
 
-    password_ok = verify_password(password, user.password_hash)
+    password_ok = await verify_password_async(password, user.password_hash)
     now = _utc_now()
 
     if user.locked_until is not None and user.locked_until > now:
@@ -256,6 +260,7 @@ async def login(
             metadata={"reason": "account_locked", "locked_until": user.locked_until.isoformat()},
         )
         await _commit_before_raising(session)
+        auth_failure_total.labels(reason="account_locked").inc()
         raise UnauthenticatedError(
             "Email or password is incorrect.", code=ErrorCode.INVALID_CREDENTIALS
         )
@@ -296,6 +301,7 @@ async def login(
             },
         )
         await _commit_before_raising(session)
+        auth_failure_total.labels(reason="account_locked" if locking else "bad_password").inc()
         raise UnauthenticatedError(
             "Email or password is incorrect.", code=ErrorCode.INVALID_CREDENTIALS
         )
@@ -306,7 +312,7 @@ async def login(
 
     # Transparently upgrade the stored hash when the work factor has been raised.
     if user.password_hash and password_needs_rehash(user.password_hash):
-        user.password_hash = hash_password(password)
+        user.password_hash = await hash_password_async(password)
 
     membership = await _primary_membership(session, user.id)
     org_id, org_role = membership if membership else (None, None)
@@ -331,6 +337,7 @@ async def login(
         user_agent=context.user_agent,
     )
     logger.info("login_succeeded", user_id=str(user.id))
+    auth_success_total.inc()
     return user, tokens
 
 
@@ -410,7 +417,7 @@ async def refresh(
     # Claim the token atomically. Checking `used_at` above and then assigning it let two
     # concurrent redemptions of one token both succeed (and both mint successors),
     # defeating reuse detection; the conditional update lets exactly one win.
-    claimed = await session.execute(
+    claimed = cast(CursorResult[Any], await session.execute(
         update(RefreshToken)
         .where(
             RefreshToken.id == stored.id,
@@ -419,7 +426,7 @@ async def refresh(
         )
         .values(used_at=_utc_now())
         .execution_options(synchronize_session=False)
-    )
+    ))
     if claimed.rowcount != 1:
         await _revoke_family(session, stored.family_id)
         await audit_service.record(

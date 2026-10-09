@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from app.core.config import Settings
+from app.core.metrics import s3_download_bytes_total, s3_upload_bytes_total
 
 
 class ObjectStorage(Protocol):
@@ -100,6 +101,7 @@ class AsyncS3ObjectStorage:
         extra = {"ContentType": content_type} if content_type else {}
         async with await self._get_client() as client:
             await client.put_object(Bucket=target_bucket, Key=key, Body=content, **extra)
+        s3_upload_bytes_total.inc(len(content))
 
     async def delete(self, *, key: str, bucket: str | None = None) -> None:
         key = validate_storage_key(key)
@@ -120,6 +122,7 @@ class AsyncS3ObjectStorage:
         result = await self.get(key=key, bucket=bucket)
         if result is None:
             raise FileNotFoundError(f"Object not found: {key}")
+        s3_download_bytes_total.inc(len(result))
         return result
 
 

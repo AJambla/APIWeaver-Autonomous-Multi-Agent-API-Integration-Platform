@@ -29,10 +29,9 @@ import tarfile
 import tempfile
 import time
 import traceback
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 from urllib.parse import urlsplit
 
 from app.core.config import Settings
@@ -40,29 +39,8 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-
-@dataclass(frozen=True, slots=True)
-class SandboxResult:
-    exit_code: int
-    stdout: str
-    stderr: str
-    duration_ms: int
-    artifacts: dict[str, Any] = field(default_factory=dict)
-
-
-class SandboxClient(Protocol):
-    async def prepare(self, *, project_id: uuid.UUID, language: str, files: dict[str, str]) -> None: ...
-
-    async def run_test(
-        self,
-        *,
-        project_id: uuid.UUID,
-        test_file: str,
-        test_code: str,
-        env_vars: dict[str, str] | None = None,
-    ) -> SandboxResult: ...
-
-    async def cleanup(self, *, project_id: uuid.UUID) -> None: ...
+# What a hermetic (mock-answered, no-network) run sees in place of the target credential.
+HERMETIC_PLACEHOLDER_API_KEY = "apiweaver-hermetic-placeholder"
 
 
 # Marker the sandbox runner prints before its nonce and single-line JSON result.
@@ -186,15 +164,38 @@ def endpoint_path_regex(path: str) -> str:
 
 
 def _is_public_address(address: str) -> bool:
-    ip = ipaddress.ip_address(address)
-    return not (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    """Globally routable unicast only.
+
+    `is_global` also excludes ranges the old private/loopback/link-local list missed,
+    such as 100.64.0.0/10 (carrier-grade NAT, home of some cloud metadata services). An
+    IPv4-mapped IPv6 address (::ffff:10.0.0.1) is judged by the IPv4 address it carries.
+    """
+    ip = ipaddress.ip_address(address.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+async def resolve_public_address(hostname: str, port: int) -> str:
+    """Resolve `hostname` once and return an address to connect to, all of them vetted.
+
+    Callers must connect to the returned address rather than the name: resolving the
+    name again at connect time is exactly what a DNS-rebinding server exploits (public
+    answer for the check, 169.254.169.254 for the connection).
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"cannot resolve {hostname!r}: {exc}") from exc
+    addresses = [str(info[4][0]) for info in infos]
+    blocked = sorted({a for a in addresses if not _is_public_address(a)})
+    if blocked or not addresses:
+        raise ValueError(
+            f"{hostname!r} resolves to non-public address(es) {blocked}; "
+            "set SANDBOX_ALLOW_PRIVATE_TARGETS=true only for trusted local development"
+        )
+    return addresses[0]
 
 
 async def assert_public_target(url: str | None, *, allow_private: bool = False) -> None:
@@ -209,17 +210,8 @@ async def assert_public_target(url: str | None, *, allow_private: bool = False) 
         raise ValueError(f"live testing needs an absolute http(s) base URL, got {url!r}")
     if allow_private:
         return
-    loop = asyncio.get_running_loop()
-    try:
-        infos = await loop.getaddrinfo(parts.hostname, parts.port or 443, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise ValueError(f"cannot resolve live test target {parts.hostname!r}: {exc}") from exc
-    blocked = sorted({info[4][0] for info in infos if not _is_public_address(info[4][0])})
-    if blocked:
-        raise ValueError(
-            f"live test target {parts.hostname!r} resolves to non-public address(es) {blocked}; "
-            "set SANDBOX_ALLOW_PRIVATE_TARGETS=true only for trusted local development"
-        )
+    default_port = 443 if parts.scheme == "https" else 80
+    await resolve_public_address(parts.hostname, parts.port or default_port)
 
 
 def reap_orphaned_sandboxes(docker_client: Any, *, max_age_seconds: int) -> int:
@@ -278,15 +270,12 @@ class DockerSandboxExecutor:
         settings: Settings,
         *,
         docker_client: Any | None = None,
-        network_enabled: bool | None = None,
+        network_enabled: bool = False,
     ) -> None:
         self._settings = settings
         self._docker_client = docker_client
-        self._network_enabled = (
-            network_enabled
-            if network_enabled is not None
-            else getattr(settings, "sandbox_network_enabled", False)
-        )
+        # Hermetic unless the caller is running a vetted live test.
+        self._network_enabled = network_enabled
         self._workspace: Path | None = None
         self._client_module: str | None = None
         self._client_file: str | None = None
@@ -441,6 +430,7 @@ class DockerSandboxExecutor:
                     detach=True,
                     **common,
                 )
+            assert container is not None  # both branches above create it
 
             try:
                 wait_result = await asyncio.wait_for(
@@ -495,72 +485,6 @@ class DockerSandboxExecutor:
                 break
         target.write_text(content, encoding="utf-8")
         target.chmod(0o644)
-
-    async def prepare(
-        self,
-        *,
-        project_id: Any,
-        language: str,
-        files: dict[str, str],
-    ) -> None:
-        """Satisfies the SandboxClient protocol."""
-        await self.load(project_id=project_id, files=files, language=language)
-
-    async def run_test(
-        self,
-        *,
-        project_id: Any,
-        test_file: str,
-        test_code: str,
-        env_vars: dict[str, str] | None = None,
-    ) -> SandboxResult:
-        """Execute a standalone test file inside a quota-enforced Docker container."""
-        started = time.perf_counter()
-        if self._workspace is None:
-            self._workspace = await asyncio.to_thread(self._new_workspace, project_id)
-
-        target = _safe_workspace_target(self._workspace, test_file)
-        if target is None:
-            return SandboxResult(
-                exit_code=1,
-                stdout="",
-                stderr=f"Unsafe test file path rejected: {test_file}",
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
-        if test_file.endswith((".ts", ".tsx")):
-            test_code = _rewrite_ts_imports(test_code)
-        await asyncio.to_thread(self._write_file, target, test_code)
-
-        if test_file.endswith((".ts", ".js", ".mjs")):
-            image = self._settings.sandbox_node_image
-            command = ["node", "--experimental-strip-types", f"/sandbox/{test_file}"]
-        else:
-            image = self._settings.sandbox_image
-            command = ["python", "-P", f"/sandbox/{test_file}"]
-
-        environment = {"PYTHONDONTWRITEBYTECODE": "1", **(env_vars or {})}
-        try:
-            outcome = await self._run_container(image=image, command=command, environment=environment)
-        except Exception as exc:
-            return SandboxResult(
-                exit_code=1,
-                stdout="",
-                stderr=str(exc),
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
-        if outcome.timed_out:
-            return SandboxResult(
-                exit_code=1,
-                stdout="",
-                stderr=f"sandbox_timeout: exceeded {self._settings.sandbox_timeout_seconds}s",
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
-        return SandboxResult(
-            exit_code=outcome.exit_code,
-            stdout=outcome.output if outcome.exit_code == 0 else "",
-            stderr=outcome.output if outcome.exit_code != 0 else "",
-            duration_ms=int((time.perf_counter() - started) * 1000),
-        )
 
     def _stage(self, project_id: Any, files: dict[str, str]) -> Path:
         workspace = self._new_workspace(project_id)
@@ -785,8 +709,13 @@ class DockerSandboxExecutor:
             }
             if self._api_key:
                 # Runtime secret injection (Security.md §7): the credential travels
-                # in the container environment, never inside a file.
-                environment["APIWEAVER_API_KEY"] = self._api_key
+                # in the container environment, never inside a file. Only a live run
+                # can use it; a hermetic run gets a placeholder so clients that require
+                # a key still construct, without handing the real secret to generated
+                # code whose output (stack traces) is stored and fed back to the LLM.
+                environment["APIWEAVER_API_KEY"] = (
+                    self._api_key if self._network_enabled else HERMETIC_PLACEHOLDER_API_KEY
+                )
 
             if self._language == "node":
                 image = self._settings.sandbox_node_image
@@ -825,13 +754,3 @@ class DockerSandboxExecutor:
         if self._workspace is not None:
             workspace, self._workspace = self._workspace, None
             await asyncio.to_thread(shutil.rmtree, workspace, True)
-
-
-def create_sandbox_client(settings: Settings) -> SandboxClient:
-    """Instantiate a production-level Docker sandbox executor."""
-    if settings.sandbox_backend != "docker":
-        raise RuntimeError(
-            f"SANDBOX_BACKEND={settings.sandbox_backend} cannot be used in {settings.app_env} mode. "
-            "Docker sandbox executor is strictly required."
-        )
-    return DockerSandboxExecutor(settings)

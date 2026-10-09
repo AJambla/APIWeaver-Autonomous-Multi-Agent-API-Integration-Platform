@@ -61,6 +61,9 @@ class WorkflowState(TypedDict, total=False):
     docker_image_name: str | None
     # Set by `/approve` when an owner exports despite exhausted repairs.
     export_override_approved: bool | None
+    # Set by `POST /export`, which creates one Export row per type up front and finalizes
+    # them after the run (dispatch.apply_post_run); the export node must not add its own.
+    export_rows_managed: bool | None
 
     # Pipeline tracking
     current_node: str
@@ -69,4 +72,3 @@ class WorkflowState(TypedDict, total=False):
     errors: Annotated[list[str], add_errors]
     total_tokens_used: int
     token_budget: int | None
-    execution_mode: str | None

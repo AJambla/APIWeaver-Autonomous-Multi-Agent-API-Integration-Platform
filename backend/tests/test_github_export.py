@@ -161,3 +161,52 @@ class TestGitHubExport:
             assert "README.md" in pushed
             assert result["metadata"]["files_pushed"] == 2
             mock_storage.upload.assert_awaited_once()
+
+
+def test_multi_language_sdks_get_their_own_directories():
+    """Both templates emit README.md; pushed side by side into the root they collided."""
+    from app.workflows.agents.export_agent import github_tree_files
+
+    files = github_tree_files(
+        [
+            ({"file_path": "README.md", "language": "python"}, "py readme"),
+            ({"file_path": "client.py", "language": "python"}, "py"),
+            ({"file_path": "README.md", "language": "node"}, "node readme"),
+            ({"file_path": "src/client.ts", "language": "node"}, "ts"),
+        ],
+        "acme-sdk",
+    )
+
+    paths = [f["path"] for f in files]
+    assert len(paths) == len(set(paths))
+    assert {"python/README.md", "python/client.py", "node/README.md", "node/src/client.ts"} <= set(paths)
+    readme = next(f["content"] for f in files if f["path"] == "README.md")
+    assert "`node/`" in readme and "`python/`" in readme
+
+
+def test_a_single_sdk_stays_at_the_root_and_keeps_its_own_readme():
+    from app.workflows.agents.export_agent import github_tree_files
+
+    files = github_tree_files(
+        [
+            ({"file_path": "README.md", "language": "python"}, "real readme"),
+            ({"file_path": "client.py", "language": "python"}, "py"),
+        ],
+        "acme-sdk",
+    )
+    assert {f["path"]: f["content"] for f in files} == {"README.md": "real readme", "client.py": "py"}
+
+
+def test_unsafe_llm_chosen_paths_are_not_committed():
+    from app.workflows.agents.export_agent import github_tree_files
+
+    files = github_tree_files(
+        [
+            ({"file_path": "/etc/passwd", "language": "python"}, "x"),
+            ({"file_path": "../escape.py", "language": "python"}, "x"),
+            ({"file_path": "pkg/./x.py", "language": "python"}, "x"),
+            ({"file_path": "client.py", "language": "python"}, "ok"),
+        ],
+        "acme-sdk",
+    )
+    assert sorted(f["path"] for f in files) == ["README.md", "client.py"]

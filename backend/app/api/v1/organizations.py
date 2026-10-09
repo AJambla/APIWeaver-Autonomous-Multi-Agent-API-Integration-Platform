@@ -8,8 +8,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.deps import get_db
-from app.core.errors import ForbiddenError, NotFoundError
+from app.core.errors import ForbiddenError, NotFoundError, UnprocessableEntityError
 from app.core.ratelimit import TIER_REQUESTS_PER_MINUTE
 from app.models.enums import PlanTier
 from app.models.organization import Organization
@@ -52,6 +53,11 @@ async def set_rate_limit_override(
     org = await _load_org(session, org_id)
     if org.plan_tier != PlanTier.ENTERPRISE:
         raise ForbiddenError("Rate limit overrides are only available for Enterprise tier")
+    ceiling = get_settings().rate_limit_override_max_rpm
+    if payload.limit > ceiling:
+        raise UnprocessableEntityError(
+            f"Rate limit overrides are capped at {ceiling} requests per minute."
+        )
 
     org.rate_limit_override = payload.limit
     await session.flush()

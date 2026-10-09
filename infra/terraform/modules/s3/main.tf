@@ -8,10 +8,6 @@ terraform {
   }
 }
 
-provider "aws" {
-  region = var.region
-}
-
 locals {
   name_prefix = "${var.environment}-apiweaver"
 }
@@ -59,7 +55,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "uploads" {
   bucket = aws_s3_bucket.uploads.id
 
   rule {
-    id     = "uploads-lifecycle"
+    id = "uploads-lifecycle"
+    filter {}
     status = "Enabled"
 
     transition {
@@ -122,7 +119,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
   bucket = aws_s3_bucket.artifacts.id
 
   rule {
-    id     = "artifacts-lifecycle"
+    id = "artifacts-lifecycle"
+    filter {}
     status = "Enabled"
 
     transition {
@@ -185,7 +183,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
   bucket = aws_s3_bucket.backups.id
 
   rule {
-    id     = "backups-lifecycle"
+    id = "backups-lifecycle"
+    filter {}
     status = "Enabled"
 
     transition {

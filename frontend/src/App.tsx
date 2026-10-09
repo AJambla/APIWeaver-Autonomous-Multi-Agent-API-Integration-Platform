@@ -1,5 +1,6 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { RouteErrorBoundary } from './components/ErrorBoundary';
 import { AuthProvider, useAuth } from './lib/auth-context';
 import { LandingPage } from './pages/LandingPage';
 import { LoginPage } from './pages/LoginPage';
@@ -16,7 +17,8 @@ import { ProjectWorkspace } from './pages/ProjectWorkspace';
 import { DashboardLayout } from './components/DashboardLayout';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user, loading } = useAuth();
+  const { user, loading, connectionError, retrySession } = useAuth();
+  const location = useLocation();
   if (loading) {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center">
@@ -24,13 +26,29 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
       </div>
     );
   }
-  return user ? <>{children}</> : <Navigate to="/login" replace />;
+  if (!user && connectionError) {
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-neutral-300">{connectionError}</p>
+        <button
+          type="button"
+          onClick={retrySession}
+          className="rounded-md bg-white px-4 py-2 text-sm font-medium text-black hover:bg-neutral-200"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+  // Remember where the user was going so login can send them back there.
+  return user ? <>{children}</> : <Navigate to="/login" replace state={{ from: location }} />;
 };
 
 export const App: React.FC = () => {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <RouteErrorBoundary>
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
@@ -62,6 +80,7 @@ export const App: React.FC = () => {
           />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </RouteErrorBoundary>
       </BrowserRouter>
     </AuthProvider>
   );

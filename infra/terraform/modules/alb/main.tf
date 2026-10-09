@@ -8,10 +8,6 @@ terraform {
   }
 }
 
-provider "aws" {
-  region = var.region
-}
-
 locals {
   name_prefix = "${var.environment}-apiweaver"
 }
@@ -33,10 +29,10 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "api" {
-  name     = "${local.name_prefix}-api-tg"
-  port     = 8000
-  protocol = "HTTP"
-  vpc_id   = var.vpc_id
+  name        = "${local.name_prefix}-api-tg"
+  port        = 8000
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
   target_type = "ip"
 
   health_check {
@@ -56,10 +52,10 @@ resource "aws_lb_target_group" "api" {
 }
 
 resource "aws_lb_target_group" "web" {
-  name     = "${local.name_prefix}-web-tg"
-  port     = 3000
-  protocol = "HTTP"
-  vpc_id   = var.vpc_id
+  name        = "${local.name_prefix}-web-tg"
+  port        = 8080
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
   target_type = "ip"
 
   health_check {
@@ -112,19 +108,24 @@ resource "aws_lb_listener" "https" {
     target_group_arn = aws_lb_target_group.web.arn
   }
 
-  dynamic "rule" {
-    for_each = var.api_path_patterns
-    content {
-      action {
-        type             = "forward"
-        target_group_arn = aws_lb_target_group.api.arn
-      }
-      condition {
-        path_pattern {
-          values = [rule.value]
-        }
-      }
-      priority = rule.key + 1
+}
+
+# One rule per API path pattern: a listener has no inline `rule` block, so as written the
+# API was never routed and every request reached the web target group.
+resource "aws_lb_listener_rule" "api" {
+  for_each = { for index, pattern in var.api_path_patterns : tostring(index) => pattern }
+
+  listener_arn = aws_lb_listener.https.arn
+  priority     = tonumber(each.key) + 1
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+
+  condition {
+    path_pattern {
+      values = [each.value]
     }
   }
 }

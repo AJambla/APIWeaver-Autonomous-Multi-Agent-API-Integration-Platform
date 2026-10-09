@@ -17,6 +17,7 @@ import pytest
 from app.core.config import Settings
 from app.services.sandbox_service import (
     _RESULT_PREFIX,
+    HERMETIC_PLACEHOLDER_API_KEY,
     RUNNER_SOURCE,
     DockerSandboxExecutor,
     _cpu_to_nano_cpus,
@@ -181,7 +182,7 @@ async def test_execute_test_enforces_quotas_and_parses_result():
 async def test_execute_test_injects_credential_via_env():
     container = FakeContainer(exit_code=0, output="")
     client = FakeDockerClient(container)
-    executor = DockerSandboxExecutor(_make_settings(), docker_client=client)
+    executor = DockerSandboxExecutor(_make_settings(), docker_client=client, network_enabled=True)
     await executor.load(
         project_id="proj-1",
         files={"client.py": "x = 1\n"},
@@ -495,30 +496,6 @@ async def test_load_skips_path_traversal(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_docker_executor_prepare_and_run_test():
-    container = FakeContainer(exit_code=0, output="test passed")
-    client = FakeDockerClient(container)
-    settings = _make_settings()
-    executor = DockerSandboxExecutor(settings, docker_client=client)
-
-    await executor.prepare(
-        project_id="proj-1",
-        language="python",
-        files={"client.py": "class Client: pass"},
-    )
-    assert (executor._workspace / "client.py").exists()
-
-    res = await executor.run_test(
-        project_id="proj-1",
-        test_file="test_client.py",
-        test_code="def test_ok(): pass",
-    )
-    assert res.exit_code == 0
-    assert res.stdout == "test passed"
-    await executor.cleanup()
-
-
-@pytest.mark.asyncio
 async def test_execute_node_test_selects_node_image_and_runner():
     """Verify that staged Node.js/TS files select node:22-alpine and runner.mjs."""
     sentinel = _RESULT_PREFIX + "{NONCE}:" + json.dumps(
@@ -591,23 +568,6 @@ def test_docker_sandbox_custom_docker_host(monkeypatch):
 
     assert client == "custom_client_instance"
     assert captured_hosts == ["tcp://docker-dind:2375"]
-
-
-@pytest.mark.asyncio
-async def test_docker_executor_run_test_reports_failure_on_exception():
-    """Verify run_test returns non-zero exit code when docker execution encounters an exception."""
-    container = FakeContainer(exit_code=1, output="Traceback: SyntaxError")
-    client = FakeDockerClient(container)
-    settings = _make_settings()
-    executor = DockerSandboxExecutor(settings, docker_client=client)
-
-    res = await executor.run_test(
-        project_id="proj-1",
-        test_file="test_invalid.py",
-        test_code="def invalid syntax :::: ",
-    )
-    assert res.exit_code == 1
-    await executor.cleanup()
 
 
 def test_deterministic_fixtures_use_spec_examples_and_enums():
@@ -775,3 +735,29 @@ async def test_live_executor_sends_no_mock_and_uses_configured_egress():
     assert kwargs["environment"]["HTTPS_PROXY"] == "http://proxy:3128"
     payload = json.loads((executor._workspace / "payload.json").read_text(encoding="utf-8"))
     assert payload["mock"] is None
+
+
+@pytest.mark.asyncio
+async def test_hermetic_run_never_receives_the_real_credential():
+    """A mock-answered run cannot use the key; generated code must not see it either."""
+    container = FakeContainer(exit_code=0, output="")
+    client = FakeDockerClient(container)
+    executor = DockerSandboxExecutor(_make_settings(), docker_client=client)
+    await executor.load(
+        project_id="proj-1",
+        files={"client.py": "x = 1\n"},
+        base_url="https://api.target.example",
+        api_key="sk-live-secret",
+    )
+
+    await executor.execute_test({"method": "GET", "path": "/users"}, {})
+
+    kwargs = client.run_kwargs
+    assert kwargs["network_disabled"] is True
+    assert kwargs["environment"]["APIWEAVER_API_KEY"] == HERMETIC_PLACEHOLDER_API_KEY
+    assert "sk-live-secret" not in json.dumps(kwargs["environment"])
+
+
+def test_the_deprecated_network_flag_does_not_network_an_executor():
+    settings = _make_settings(sandbox_network_enabled=True)
+    assert DockerSandboxExecutor(settings).network_enabled is False

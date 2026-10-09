@@ -204,18 +204,17 @@ async def test_cancelled_run_costs_and_metrics(session_factory, db) -> None:
 
     orchestrator = LangGraphOrchestrator(session_factory=session_factory)
 
-    # State with tokens used before cancellation
     initial_state: WorkflowState = {
         "project_id": str(proj_id),
         "organization_id": str(org_id),
         "workflow_run_id": str(run_id),
-        "total_tokens_used": 5000,
+        "total_tokens_used": 0,
         "stages": ["plan"],
     }
 
-    # Simulate cancellation being raised during execution (after one streamed state)
+    # A node spends 5000 tokens, then the run is cancelled before the next one.
     async def _cancelling_stream(state, *args, **kwargs):
-        yield state
+        yield {**state, "total_tokens_used": 5000}
         raise WorkflowCancelledError("Cancelled by user")
 
     orchestrator.graph.astream = _cancelling_stream
@@ -400,3 +399,25 @@ def test_missing_test_summary_never_routes_to_export() -> None:
     assert route_after_testing(passed) == "export_agent"
     failing = {"stages": ["test", "export"], "test_run_summary": {"failed": 1}, "repair_attempts": []}
     assert route_after_testing(failing) == "repair_agent"
+
+
+async def test_a_test_stage_that_cannot_run_does_not_reuse_the_previous_summary():
+    """After a repair, a sandbox/test failure used to be routed on the stale summary."""
+    from app.workflows.agents.test_agent import run_test_agent
+
+    state = {
+        "project_id": "p",
+        "workflow_run_id": "",
+        "stages": ["generate", "test", "export"],
+        "normalized_spec": {"endpoints": [{"method": "GET", "path": "/users"}]},
+        "generated_files": [],  # e.g. the repair left nothing testable
+        "test_run_summary": {"total": 1, "passed": 0, "failed": 1},
+        "repair_attempts": [{"attempt": 1}],
+    }
+
+    update = await run_test_agent(state, session_factory=None)
+
+    assert update["status"] == "failed"
+    assert update["test_run_summary"] is None
+    assert update["test_suite"] == []
+    assert route_after_testing({**state, **update}) == "finalize"

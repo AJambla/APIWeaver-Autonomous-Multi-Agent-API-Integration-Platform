@@ -14,12 +14,6 @@ variable "domain" {
   type        = string
 }
 
-variable "allowed_ips" {
-  description = "List of allowed IP addresses for bastion/admin access"
-  type        = list(string)
-  default     = []
-}
-
 # Deliberately required: `aws_eks_cluster` documents that public access with no CIDR list means
 # 0.0.0.0/0, so the way to make "forgot to set it" safe is to refuse to plan at all. Supply your
 # admin networks (host routes, e.g. "203.0.113.7/32") in a tfvars file. To drop the public
@@ -80,4 +74,20 @@ variable "create_waf" {
 variable "certificate_arn" {
   description = "ARN of the SSL certificate for ALB and CloudFront"
   type        = string
+}
+
+variable "cloudfront_certificate_arn" {
+  description = "ACM certificate for the CloudFront distribution. CloudFront only accepts certificates issued in us-east-1."
+  type        = string
+}
+
+variable "elasticache_auth_token" {
+  description = "Redis AUTH token (16-128 printable characters). Supply it from a secret store, e.g. TF_VAR_elasticache_auth_token; it is stored in state."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.elasticache_auth_token) >= 16 && length(var.elasticache_auth_token) <= 128
+    error_message = "elasticache_auth_token must be 16-128 characters."
+  }
 }

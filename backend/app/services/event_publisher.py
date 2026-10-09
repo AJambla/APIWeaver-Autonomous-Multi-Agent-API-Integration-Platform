@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 import redis.asyncio as aioredis
+from redis.typing import EncodableT, FieldT
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -34,7 +35,7 @@ class EventPublisher:
         payload: dict[str, Any],
     ) -> None:
         """Write an event to both the run and project Redis Streams."""
-        message = {
+        message: dict[FieldT, EncodableT] = {
             "event_type": event_type,
             "run_id": run_id,
             "payload": json.dumps(payload, default=str),
@@ -48,12 +49,12 @@ class EventPublisher:
             workflow_ttl = self._settings.redis_stream_workflow_ttl_seconds
             project_ttl = self._settings.redis_stream_project_ttl_seconds
 
-            tasks = [self._redis.xadd(workflow_stream, message, maxlen=workflow_maxlen, approximate=True)]
+            # Awaited one at a time. Both coroutines used to be created up front, so when the
+            # first XADD raised, the second was never awaited (a "coroutine was never
+            # awaited" warning and a silently dropped project-stream event).
+            await self._redis.xadd(workflow_stream, message, maxlen=workflow_maxlen, approximate=True)
             if project_stream:
-                tasks.append(self._redis.xadd(project_stream, message, maxlen=project_maxlen, approximate=True))
-            await tasks[0]
-            if len(tasks) > 1:
-                await tasks[1]
+                await self._redis.xadd(project_stream, message, maxlen=project_maxlen, approximate=True)
             await self._redis.expire(workflow_stream, workflow_ttl)
             if project_stream:
                 await self._redis.expire(project_stream, project_ttl)

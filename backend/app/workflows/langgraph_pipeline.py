@@ -11,18 +11,29 @@ import datetime
 import json
 import time
 import uuid
+from collections.abc import Mapping
 from decimal import Decimal
-from typing import Any, Literal, cast
+from typing import Any, cast
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
 from app.core.config import DEFAULT_MODEL_PRICING_PER_TOKEN, Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES, DEFAULT_WORKFLOW_STAGES
-from app.core.logging import get_logger
-from app.core.metrics import pipeline_error_total
+from app.core.logging import get_logger, workflow_run_id_ctx
+from app.core.metrics import (
+    agent_step_duration_seconds,
+    llm_tokens_spent_total,
+    pipeline_error_total,
+    repair_attempts_total,
+    workflow_duration_seconds,
+    workflow_runs_total,
+)
 from app.models.enums import ProjectStatus, WorkflowStatus
 from app.models.metrics import UsageMetric
 from app.models.project import Project
@@ -74,10 +85,19 @@ class WorkflowCancelledError(Exception):
     pass
 
 
+def token_budget(state: Mapping[str, Any], settings: Settings | None = None) -> int:
+    """The run's budget: its own, else the configured default."""
+    cfg = settings or get_settings()
+    return int(
+        state.get("token_budget")
+        or getattr(cfg, "default_token_budget", None)
+        or DEFAULT_TOKEN_BUDGET
+    )
+
+
 def check_budget(state: WorkflowState, settings: Settings | None = None) -> None:
     """Check whether token budget has been exceeded."""
-    cfg = settings or get_settings()
-    budget = state.get("token_budget") or getattr(cfg, "default_token_budget", DEFAULT_TOKEN_BUDGET)
+    budget = token_budget(state, settings)
     used = state.get("total_tokens_used", 0)
     if used >= budget:
         raise RuntimeError(f"token_budget_exceeded: {used}/{budget}")
@@ -181,52 +201,20 @@ def route_after_testing(state: WorkflowState) -> str:
     return "approval_gate"
 
 
-async def _wait_for_celery_task(
-    result: Any,
-    timeout: float = 300.0,
-    initial_poll_interval: float = 0.2,
-    max_poll_interval: float = 1.0,
-) -> Any:
-    """Asynchronously poll for Celery task completion without blocking an executor thread.
+def _timed(agent_type: str, node: Any) -> Any:
+    """Record each node's duration in apiweaver_agent_step_duration_seconds."""
 
-    `asyncio.to_thread(result.get, timeout=300)` blocks an OS worker thread in Python's
-    default ThreadPoolExecutor for up to 5 minutes, leading to thread pool exhaustion
-    under concurrent execution. This async helper polls `result.ready()` with cooperative
-    `asyncio.sleep` intervals, yielding execution back to the event loop.
-    """
-    if hasattr(result, "ready"):
-        start_time = time.monotonic()
-        deadline = start_time + timeout
-        poll_interval = initial_poll_interval
+    async def wrapper(state: WorkflowState) -> dict[str, Any]:
+        started = time.monotonic()
+        try:
+            result: dict[str, Any] = await node(state)
+            return result
+        finally:
+            agent_step_duration_seconds.labels(agent_type=agent_type).observe(
+                time.monotonic() - started
+            )
 
-        while time.monotonic() < deadline:
-            if result.ready():
-                if hasattr(result, "successful") and not result.successful():
-                    if hasattr(result, "failed") and result.failed():
-                        task_err = getattr(result, "result", None)
-                        if isinstance(task_err, BaseException):
-                            raise task_err
-                        raise RuntimeError(
-                            f"Celery task {getattr(result, 'id', 'unknown')} failed: {task_err}"
-                        )
-                if hasattr(result, "result") and result.result is not None:
-                    return result.result
-                if hasattr(result, "get"):
-                    return result.get(timeout=0.1)
-                return getattr(result, "result", None)
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            await asyncio.sleep(min(poll_interval, remaining))
-            poll_interval = min(poll_interval * 1.5, max_poll_interval)
-
-        task_id = getattr(result, "id", "unknown")
-        raise TimeoutError(f"Celery task {task_id} timed out after {timeout}s")
-
-    if hasattr(result, "get"):
-        return await asyncio.to_thread(result.get, timeout=timeout)
-    return result
+    return wrapper
 
 
 # --- Graph Factory ------------------------------------------------------------------
@@ -312,7 +300,7 @@ def create_apiweaver_graph(
             },
         )
 
-    async def _save_checkpoint(state: WorkflowState, node_name: str) -> None:
+    async def _save_checkpoint(state: Mapping[str, Any], node_name: str) -> None:
         """Persist intermediate state snapshot checkpoint to PostgreSQL."""
         if session_factory is None or not state.get("workflow_run_id"):
             return
@@ -485,6 +473,7 @@ def create_apiweaver_graph(
         run_id = state.get("workflow_run_id", "")
         spec = dict(state.get("normalized_spec") or {})
         endpoints = spec.get("endpoints", [])
+        hydrated_spec: dict[str, Any] | None = None
         if not endpoints and session_factory and state.get("project_id"):
             try:
                 async with session_factory() as session:
@@ -495,10 +484,14 @@ def create_apiweaver_graph(
                         .limit(1)
                     )
                     if api_spec_record:
+                        # Eager-load: `ep.parameters` below would otherwise lazy-load
+                        # inside async code and raise MissingGreenlet, which the except
+                        # turned into a warning, so hydration never actually happened.
                         endpoint_records = (
                             await session.scalars(
                                 select(Endpoint)
                                 .where(Endpoint.api_spec_id == api_spec_record.id)
+                                .options(selectinload(Endpoint.parameters))
                             )
                         ).all()
                         raw_data = api_spec_record.raw_normalized or {}
@@ -535,7 +528,7 @@ def create_apiweaver_graph(
                             "base_url": api_spec_record.base_url or raw_data.get("base_url", ""),
                             "endpoints": hydrated_endpoints if hydrated_endpoints else raw_data.get("endpoints", []),
                         }
-                        state["normalized_spec"] = spec
+                        hydrated_spec = spec
                         endpoints = spec.get("endpoints", [])
             except Exception as e:
                 logger.warning("planner_spec_hydration_failed", error=str(e))
@@ -547,9 +540,18 @@ def create_apiweaver_graph(
         )
         await _emit_thought(state, "planner_agent", f"Analyzing {len(endpoints)} endpoints for topological DAG ordering & dependency clustering...", action="graph_clustering")
 
+        # Mutating `state` inside a node is not a state update: the planner saw the
+        # hydrated spec, but every later node (codegen, tests, export) got the
+        # endpoint-less one. Pass it explicitly and return it below.
+        planner_state = (
+            cast(WorkflowState, {**state, "normalized_spec": hydrated_spec})
+            if hydrated_spec is not None
+            else state
+        )
+
         tokens_before = state.get("total_tokens_used", 0)
         try:
-            planner_updates = await run_planner_agent(state)
+            planner_updates = await run_planner_agent(planner_state)
         except Exception as exc:
             terminal_logger.log_failure("planner_agent", run_id, exc)
             await _emit_thought(state, "planner_agent", f"Planning failed: {exc}", level="error", action="plan_failed")
@@ -582,6 +584,8 @@ def create_apiweaver_graph(
             "progress_percent": 30,
             "current_node": "planner_agent",
         }
+        if hydrated_spec is not None:
+            updates["normalized_spec"] = hydrated_spec
 
         # Persist dependency graph if session_factory is available
         edges_written = 0
@@ -594,7 +598,7 @@ def create_apiweaver_graph(
                         execution_plan=planner_updates.get("execution_plan")
                         or state.get("execution_plan")
                         or {},
-                        normalized_spec=state.get("normalized_spec") or {},
+                        normalized_spec=planner_state.get("normalized_spec") or {},
                     )
                     await session.commit()
             except Exception as e:
@@ -668,7 +672,7 @@ def create_apiweaver_graph(
         check_budget(state)
         await _set_project_status(state, ProjectStatus.BUILDING)
         run_id = state.get("workflow_run_id", "")
-        plan = state.get("execution_plan", {})
+        plan = state.get("execution_plan") or {}
         phases = plan.get("phases", [])
         target_langs = state.get("target_languages") or list(DEFAULT_TARGET_LANGUAGES)
         terminal_logger.log_start(
@@ -682,8 +686,8 @@ def create_apiweaver_graph(
         generated_files = list(state.get("generated_files", []))
         files_before = list(generated_files)
         total_tokens = tokens_before
-        budget = state.get("token_budget") or DEFAULT_TOKEN_BUDGET
-        execution_mode = state.get("execution_mode", "sync")
+        # Same rule as check_budget: this used to ignore DEFAULT_TOKEN_BUDGET from settings.
+        budget = token_budget(state)
 
         try:
             for phase in phases:
@@ -692,20 +696,22 @@ def create_apiweaver_graph(
 
                 phase_num = phase.get("phase_number")
                 await _emit_thought(state, "code_agent", f"Phase {phase_num}/{len(phases)}: Synthesizing {target_langs} client and models for '{phase.get('group_name', 'endpoints')}'...", action="codegen_phase", step=phase_num, total_steps=len(phases))
-                if execution_mode == "async":
-                    from agent_worker.celery_app import app as celery_app
-                    result = celery_app.send_task(
-                        "agent_worker.tasks.run_code_agent",
-                        args=[str(run_id), {**state, "generated_files": generated_files, "total_tokens_used": total_tokens}, phase_num],
-                        task_id=f"run_code_agent:{run_id}:phase_{phase_num}",
-                    )
-                    phase_result = await _wait_for_celery_task(result, timeout=300)
-                else:
-                    from app.workflows.agents import code_agent as code_agent_module
-                    phase_result = await code_agent_module.run_code_agent(
-                        {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
-                        phase_number=phase_num,
-                        qdrant_client=qdrant_client,
+                from app.workflows.agents import code_agent as code_agent_module
+
+                phase_result = await code_agent_module.run_code_agent(
+                    {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
+                    phase_number=phase_num,
+                    qdrant_client=qdrant_client,
+                )
+
+                if phase_result.get("status") == "failed":
+                    # run_code_agent reports its own failures ("Phase N not found", "no
+                    # spec") as a status, not an exception. Reading only generated_files
+                    # here reported success, and the run then failed later in testing
+                    # with "No generated files to test" and the real cause lost.
+                    reasons = "; ".join(str(e) for e in phase_result.get("errors") or [])
+                    raise RuntimeError(
+                        f"Code generation phase {phase_num} failed: {reasons or 'unknown error'}"
                     )
 
                 for nf in phase_result.get("generated_files", []):
@@ -730,23 +736,35 @@ def create_apiweaver_graph(
             # Consistency pass
             if total_tokens < budget:
                 await _emit_thought(state, "code_agent", "Running multi-file consistency, typing, and import alignment pass...", action="codegen_consistency")
-                if execution_mode == "async":
-                    from agent_worker.celery_app import app as celery_app
-                    result = celery_app.send_task(
-                        "agent_worker.tasks.run_code_agent",
-                        args=[str(run_id), {**state, "generated_files": generated_files, "total_tokens_used": total_tokens}, None],
-                        task_id=f"run_code_agent:{run_id}:consistency",
-                    )
-                    consistency_result = await _wait_for_celery_task(result, timeout=300)
-                else:
-                    from app.workflows.agents import code_agent as code_agent_module
+                from app.workflows.agents import code_agent as code_agent_module
+
+                # Optional polish over files every phase already produced: a
+                # truncated reply, bad JSON or an open LLM circuit here must not fail
+                # a run whose generation succeeded. Keep the phase output instead.
+                try:
                     consistency_result = await code_agent_module.run_code_agent(
                         {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
                         phase_number=None,
                         qdrant_client=qdrant_client,
                     )
+                except WorkflowCancelledError:
+                    raise
+                except Exception as consistency_exc:
+                    logger.warning(
+                        "consistency_pass_failed", run_id=run_id, error=str(consistency_exc)
+                    )
+                    await _emit_thought(
+                        state,
+                        "code_agent",
+                        f"Consistency pass skipped ({consistency_exc}); keeping the phase output.",
+                        level="warn",
+                        action="codegen_consistency_skipped",
+                    )
+                    consistency_result = {}
 
-                if consistency_result.get("generated_files"):
+                if consistency_result.get("status") != "failed" and consistency_result.get(
+                    "generated_files"
+                ):
                     generated_files = consistency_result["generated_files"]
                 total_tokens = consistency_result.get("total_tokens_used", total_tokens)
                 if total_tokens >= budget:
@@ -825,9 +843,12 @@ def create_apiweaver_graph(
                         session.add(existing_run)
                         await session.flush()
 
-                    existing_entries = set((await session.execute(
-                        select(GeneratedFile.language, GeneratedFile.file_path).where(GeneratedFile.code_generation_run_id == existing_run.id)
-                    )).all())
+                    existing_entries: set[tuple[Any, Any]] = {
+                        tuple(row)
+                        for row in (await session.execute(
+                            select(GeneratedFile.language, GeneratedFile.file_path).where(GeneratedFile.code_generation_run_id == existing_run.id)
+                        )).all()
+                    }
 
                     for gf in generated_files:
                         fp = gf.get("file_path", "")
@@ -1102,6 +1123,7 @@ def create_apiweaver_graph(
                 "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
                 "outcome": "applied",
             })
+            repair_attempts_total.labels(agent_type="repair_agent", success="true").inc()
         except Exception as exc:
             terminal_logger.log_failure("repair_agent", run_id, exc)
             await _emit_thought(
@@ -1122,6 +1144,7 @@ def create_apiweaver_graph(
                 "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
                 "outcome": "failed",
             })
+            repair_attempts_total.labels(agent_type="repair_agent", success="false").inc()
 
         tokens_after = total_tokens
 
@@ -1234,7 +1257,9 @@ def create_apiweaver_graph(
         )
         await _save_checkpoint({**state, **updates}, "export_agent")
 
-        if session_factory and state.get("project_id"):
+        # POST /export already created (and will finalize) one row per type; inserting
+        # here as well recorded every export twice.
+        if session_factory and state.get("project_id") and not state.get("export_rows_managed"):
             try:
                 async with session_factory() as session:
                     from app.models.export import Export
@@ -1354,14 +1379,14 @@ def create_apiweaver_graph(
         return updates
 
     # --- Wire Nodes into Builder ---
-    builder.add_node("doc_agent", doc_agent_node)
-    builder.add_node("planner_agent", planner_agent_node)
-    builder.add_node("approval_gate", approval_gate_node)
-    builder.add_node("code_agent", code_agent_node)
-    builder.add_node("test_agent", test_agent_node)
-    builder.add_node("repair_agent", repair_agent_node)
-    builder.add_node("export_agent", export_agent_node)
-    builder.add_node("finalize", finalize_node)
+    builder.add_node("doc_agent", _timed("doc_agent", doc_agent_node))
+    builder.add_node("planner_agent", _timed("planner_agent", planner_agent_node))
+    builder.add_node("approval_gate", _timed("approval_gate", approval_gate_node))
+    builder.add_node("code_agent", _timed("code_agent", code_agent_node))
+    builder.add_node("test_agent", _timed("test_agent", test_agent_node))
+    builder.add_node("repair_agent", _timed("repair_agent", repair_agent_node))
+    builder.add_node("export_agent", _timed("export_agent", export_agent_node))
+    builder.add_node("finalize", _timed("finalize", finalize_node))
 
     # --- Wire Edges ---
     builder.add_conditional_edges(
@@ -1427,7 +1452,6 @@ class LangGraphOrchestrator:
         event_publisher: EventPublisher | None = None,
         qdrant_client: QdrantClient | None = None,
         checkpointer: Any | None = None,
-        execution_mode: Literal["sync", "async"] = "sync",
         settings: Settings | None = None,
     ) -> None:
         self.settings = settings or get_settings()
@@ -1444,7 +1468,6 @@ class LangGraphOrchestrator:
         # Cross-step durable recovery and human-in-the-loop pause/resume are persisted
         # across all workers via PostgreSQL WorkflowCheckpoint snapshots.
         self.checkpointer = checkpointer or MemorySaver()
-        self.execution_mode = execution_mode
 
         self._builder = create_apiweaver_graph(
             session_factory=self.session_factory,
@@ -1478,36 +1501,102 @@ class LangGraphOrchestrator:
             pipeline_error_total.labels(subsystem="event_record", error_type=type(exc).__name__).inc()
             logger.error("langgraph_event_record_failed", error=str(exc), exc_info=True)
 
+    async def _record_usage(
+        self,
+        session: AsyncSession,
+        run_obj: WorkflowRun,
+        state: Mapping[str, Any],
+        tokens_spent: int,
+    ) -> None:
+        """Bill the tokens spent by *this* execution as a UsageMetric.
+
+        Billing the cumulative `total_tokens_used` charged pre-pause spend again every
+        time an approved plan resumed. The run row still carries the cumulative total.
+        """
+        if tokens_spent <= 0:
+            return
+        try:
+            org_id = state.get("organization_id")
+            if not org_id:
+                project_row = await session.get(Project, run_obj.project_id)
+                org_id = project_row.organization_id if project_row else None
+            if org_id:
+                llm_tokens_spent_total.labels(org_id=str(org_id)).inc(tokens_spent)
+                session.add(
+                    UsageMetric(
+                        organization_id=uuid.UUID(str(org_id)),
+                        metric_name="token_cost_usd",
+                        value=calculate_token_cost_usd(
+                            tokens_spent, active_llm_model(self.settings), settings=self.settings
+                        ),
+                    )
+                )
+        except Exception as metric_err:
+            logger.warning("failed_to_record_usage_metric", error=str(metric_err))
+
     async def run(
         self,
         workflow_run_id: uuid.UUID,
         initial_state: WorkflowState,
     ) -> WorkflowState:
-        """Executes the workflow graph for the specified run."""
+        """Executes the workflow graph for the specified run.
+
+        Binds `workflow_run_id` for the duration, so every log line the agents emit is
+        attributable to its run (the context variable was declared but never set).
+        """
+        token = workflow_run_id_ctx.set(str(workflow_run_id))
+        started = time.monotonic()
+        try:
+            result = await self._run(workflow_run_id, initial_state)
+            status = str(result.get("status") or "unknown")
+            workflow_runs_total.labels(status=status).inc()
+            workflow_duration_seconds.labels(status=status).observe(time.monotonic() - started)
+            return result
+        finally:
+            workflow_run_id_ctx.reset(token)
+
+    async def _run(
+        self,
+        workflow_run_id: uuid.UUID,
+        initial_state: WorkflowState,
+    ) -> WorkflowState:
         run_id_str = str(workflow_run_id)
         current: dict[str, Any] = dict(initial_state)
         current["workflow_run_id"] = run_id_str
         current["status"] = WorkflowStatus.RUNNING
-        current["execution_mode"] = self.execution_mode
         current.setdefault("total_tokens_used", 0)
+        # A resumed run (plan approval) starts from a checkpoint whose total already
+        # includes the pre-pause spend, which was billed when that execution paused.
+        tokens_at_start = int(current.get("total_tokens_used") or 0)
 
-        # Move the run to RUNNING only if nobody finished or cancelled it while it was
-        # queued: an unconditional write here used to resurrect cancelled runs.
+        # Claim the run: QUEUED -> RUNNING, stamping the lease. Only a queued run (or a
+        # RUNNING row from before leases existed, which carries no heartbeat) is claimable.
+        # Claiming any non-terminal run let a redelivered Celery message (acks_late +
+        # reject_on_worker_lost) restart a run another worker was executing, or one whose
+        # worker had died, from START: every LLM call paid for twice, duplicate exports.
+        # A refused claim acks the message, so a poison message cannot loop either.
         if self.session_factory:
             async with self.session_factory() as session:
-                claimed = await session.execute(
+                now = datetime.datetime.now(datetime.UTC)
+                claimed = cast(CursorResult[Any], await session.execute(
                     update(WorkflowRun)
                     .where(
                         WorkflowRun.id == workflow_run_id,
-                        WorkflowRun.status.not_in(_TERMINAL_STATUSES),
+                        or_(
+                            WorkflowRun.status == WorkflowStatus.QUEUED,
+                            and_(
+                                WorkflowRun.status == WorkflowStatus.RUNNING,
+                                WorkflowRun.heartbeat_at.is_(None),
+                            ),
+                        ),
                     )
                     .values(
                         status=WorkflowStatus.RUNNING,
-                        started_at=func.coalesce(
-                            WorkflowRun.started_at, datetime.datetime.now(datetime.UTC)
-                        ),
+                        heartbeat_at=now,
+                        started_at=func.coalesce(WorkflowRun.started_at, now),
                     )
-                )
+                    .execution_options(synchronize_session=False)
+                ))
                 await session.commit()
                 if claimed.rowcount == 0:
                     existing = await session.get(WorkflowRun, workflow_run_id)
@@ -1526,7 +1615,6 @@ class LangGraphOrchestrator:
             event_type="workflow_started",
             payload={
                 "stages": current.get("stages", ["plan"]),
-                "execution_mode": self.execution_mode,
             },
         )
 
@@ -1537,12 +1625,17 @@ class LangGraphOrchestrator:
                 stages=current.get("stages", ["plan"]),
             )
 
-        config = {"configurable": {"thread_id": run_id_str}}
+        config: RunnableConfig = {"configurable": {"thread_id": run_id_str}}
 
         # The latest full state seen while streaming. If a node raises (or the run is
         # cancelled), tokens spent by earlier nodes are still recorded from here instead
         # of from the initial state, which used to log ~0 tokens after real spend.
         latest: dict[str, Any] = current
+        heartbeat = (
+            asyncio.create_task(self._keep_lease(workflow_run_id))
+            if self.session_factory
+            else None
+        )
         try:
             async for snapshot in self.graph.astream(current, config=config, stream_mode="values"):
                 if isinstance(snapshot, dict):
@@ -1582,23 +1675,9 @@ class LangGraphOrchestrator:
                             )
                             run_obj.estimated_cost_usd = cost_usd
 
-                            if total_tokens > 0:
-                                try:
-                                    org_id = result_state.get("organization_id")
-                                    if not org_id:
-                                        project_row = await session.get(
-                                            Project, run_obj.project_id
-                                        )
-                                        org_id = project_row.organization_id if project_row else None
-                                    if org_id:
-                                        metric = UsageMetric(
-                                            organization_id=uuid.UUID(str(org_id)),
-                                            metric_name="token_cost_usd",
-                                            value=cost_usd,
-                                        )
-                                        session.add(metric)
-                                except Exception as metric_err:
-                                    logger.warning("failed_to_record_usage_metric", error=str(metric_err))
+                            await self._record_usage(
+                                session, run_obj, result_state, total_tokens - tokens_at_start
+                            )
 
                             if final_status == WorkflowStatus.COMPLETED and result_state.get("generated_files"):
                                 try:
@@ -1618,7 +1697,7 @@ class LangGraphOrchestrator:
                                         )
                                     ) or 0
                                     new_ver_num = curr_max_v + 1
-                                    diff_ref_key = f"artifacts/{run_obj.project_id}/v{new_ver_num}/manifest.json"
+                                    diff_ref_key: str | None = f"artifacts/{run_obj.project_id}/v{new_ver_num}/manifest.json"
                                     manifest_data = {
                                         "version_number": new_ver_num,
                                         "workflow_run_id": str(workflow_run_id),
@@ -1675,21 +1754,9 @@ class LangGraphOrchestrator:
                         run_obj.total_tokens_used = total_tokens
                         run_obj.estimated_cost_usd = cost_usd
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
-                        if total_tokens > 0:
-                            try:
-                                org_id = current.get("organization_id")
-                                if not org_id:
-                                    project_row = await session.get(Project, run_obj.project_id)
-                                    org_id = project_row.organization_id if project_row else None
-                                if org_id:
-                                    metric = UsageMetric(
-                                        organization_id=uuid.UUID(str(org_id)),
-                                        metric_name="token_cost_usd",
-                                        value=cost_usd,
-                                    )
-                                    session.add(metric)
-                            except Exception as metric_err:
-                                logger.warning("failed_to_record_usage_metric", error=str(metric_err))
+                        await self._record_usage(
+                            session, run_obj, current, total_tokens - tokens_at_start
+                        )
                         await session.commit()
             await self._record_event(
                 workflow_run_id,
@@ -1727,21 +1794,9 @@ class LangGraphOrchestrator:
                         run_obj.current_node = current.get("current_node") or "failed"
                         run_obj.progress_percent = current.get("progress_percent") or 75
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
-                        if total_tokens > 0:
-                            try:
-                                org_id = current.get("organization_id")
-                                if not org_id:
-                                    project_row = await session.get(Project, run_obj.project_id)
-                                    org_id = project_row.organization_id if project_row else None
-                                if org_id:
-                                    metric = UsageMetric(
-                                        organization_id=uuid.UUID(str(org_id)),
-                                        metric_name="token_cost_usd",
-                                        value=cost_usd,
-                                    )
-                                    session.add(metric)
-                            except Exception as metric_err:
-                                logger.warning("failed_to_record_usage_metric", error=str(metric_err))
+                        await self._record_usage(
+                            session, run_obj, current, total_tokens - tokens_at_start
+                        )
                     try:
                         project = await session.get(
                             Project, uuid.UUID(str(current.get("project_id")))
@@ -1769,6 +1824,30 @@ class LangGraphOrchestrator:
                 )
 
             return cast(WorkflowState, current)
+        finally:
+            if heartbeat is not None:
+                heartbeat.cancel()
 
+    async def _keep_lease(self, workflow_run_id: uuid.UUID) -> None:
+        """Refresh heartbeat_at while the graph runs; a single node can take many minutes."""
+        interval = max(1, self.settings.workflow_heartbeat_interval_seconds)
+        assert self.session_factory is not None
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                async with self.session_factory() as session:
+                    await session.execute(
+                        update(WorkflowRun)
+                        .where(
+                            WorkflowRun.id == workflow_run_id,
+                            WorkflowRun.status == WorkflowStatus.RUNNING,
+                        )
+                        .values(heartbeat_at=datetime.datetime.now(datetime.UTC))
+                        .execution_options(synchronize_session=False)
+                    )
+                    await session.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - a missed beat is not fatal
+                logger.warning("workflow_heartbeat_failed", error=str(exc))
 
-Orchestrator = LangGraphOrchestrator

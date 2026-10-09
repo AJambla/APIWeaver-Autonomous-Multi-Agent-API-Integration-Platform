@@ -9,7 +9,6 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.services.ingestion_service import sanitize_filename
-from app.services.sandbox_service import create_sandbox_client
 from app.services.storage_service import validate_storage_key
 from app.services.vault_service import validate_vault_path
 from tests.fakes import FakeVaultClient, InMemoryObjectStorage
@@ -36,27 +35,6 @@ class TestSandboxIsolationSecurity:
     def test_production_refuses_mock_sandbox(self, test_settings: Settings) -> None:
         with pytest.raises(ValidationError, match="SANDBOX_BACKEND=mock"):
             _make_settings(test_settings, app_env="production", sandbox_backend="mock")
-
-    def test_create_sandbox_client_raises_in_production_if_not_docker(
-        self, test_settings: Settings
-    ) -> None:
-        settings = _make_settings(test_settings, app_env="production", sandbox_backend="docker")
-        object.__setattr__(settings, "sandbox_backend", "mock")
-        with pytest.raises(RuntimeError, match="cannot be used in production mode"):
-            create_sandbox_client(settings)
-
-    def test_create_sandbox_client_raises_in_staging_if_not_docker(
-        self, test_settings: Settings
-    ) -> None:
-        settings = _make_settings(test_settings, app_env="staging", sandbox_backend="docker")
-        object.__setattr__(settings, "sandbox_backend", "mock")
-        with pytest.raises(RuntimeError, match="cannot be used in staging mode"):
-            create_sandbox_client(settings)
-
-
-
-class TestStorageKeyValidation:
-    """Ensure storage operations reject path traversal."""
 
     def test_storage_key_rejects_traversal(self) -> None:
         with pytest.raises(ValueError, match="Invalid or unsafe storage key"):
@@ -201,7 +179,7 @@ class TestStartupEnvironmentValidation:
 
         prod = test_settings.model_copy(
             update={
-                "app_env": "production",
+                **SAFE_PRODUCTION,
                 "openai_api_key": "sk-proj-test12345",
             }
         )
@@ -214,9 +192,130 @@ class TestStartupEnvironmentValidation:
 
         prod = test_settings.model_copy(
             update={
-                "app_env": "production",
+                **SAFE_PRODUCTION,
                 "anthropic_api_key": "sk-ant-test12345",
             }
         )
         validate_startup_environment(prod)
 
+
+
+
+SAFE_PRODUCTION = {
+    "app_env": "production",
+    "cors_allowed_origins": "https://app.apiweaver.example",
+    "vault_addr": "https://vault.internal:8200",
+    "vault_token": "hvs.CAESIJ-not-a-dev-token",
+    "metrics_token": "m" * 32,
+    "aws_access_key_id": None,
+}
+
+
+@pytest.mark.parametrize(
+    ("override", "fragment"),
+    [
+        ({"cors_allowed_origins": "*"}, "contains '*'"),
+        ({"cors_allowed_origins": "http://app.example"}, "is not https"),
+        ({"metrics_token": "prod_scrape_token_local_test"}, "METRICS_TOKEN"),
+        ({"vault_token": "root"}, "VAULT_TOKEN"),
+        ({"vault_token": None}, "VAULT_TOKEN"),
+        ({"vault_addr": "http://vault:8200"}, "VAULT_ADDR"),
+        ({"aws_access_key_id": "minioadmin"}, "MinIO default"),
+    ],
+)
+def test_production_refuses_development_defaults(test_settings: Settings, override, fragment) -> None:
+    from app.core.config import validate_startup_environment
+
+    settings = test_settings.model_copy(
+        update={**SAFE_PRODUCTION, "openai_api_key": "sk-x", **override}
+    )
+    with pytest.raises(ValueError, match="unsafe configuration") as raised:
+        validate_startup_environment(settings)
+    assert fragment in str(raised.value)
+
+
+def test_a_blank_metrics_token_counts_as_unset(test_settings: Settings) -> None:
+    """An empty token mounted /metrics behind compare_digest("", "")."""
+    settings = Settings(**{**test_settings.model_dump(), "metrics_token": "  "})
+    assert settings.metrics_token is None
+
+
+async def test_password_hashing_does_not_block_the_event_loop() -> None:
+    """Argon2 takes ~200 ms; run inline it froze every other request on the worker."""
+    import asyncio
+    import time
+
+    from app.core.security import hash_password_async, verify_password_async
+
+    ticks = 0
+    stop = False
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not stop:
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    task = asyncio.create_task(ticker())
+    started = time.perf_counter()
+    hashed = await hash_password_async("correct horse battery")
+    assert await verify_password_async("correct horse battery", hashed)
+    elapsed = time.perf_counter() - started
+    stop = True
+    await task
+
+    # The loop kept running for most of the hashing time instead of stalling.
+    assert ticks >= max(3, int(elapsed / 0.005 * 0.3)), (ticks, elapsed)
+
+
+def test_log_redaction_removes_every_character_of_a_real_api_key() -> None:
+    """Keys are token_urlsafe output; '-' and '_' used to end the redaction early."""
+    from app.api.v1.api_keys import _generate_key
+    from app.core.logging import REDACTED, _redact_value
+
+    for _ in range(500):
+        key, _hash = _generate_key()
+        redacted = _redact_value(f"rejected key={key} for org")
+        assert redacted == f"rejected key={REDACTED} for org", redacted
+
+
+async def test_an_unreachable_denylist_fails_closed_with_503(
+    client, fake_redis, monkeypatch
+) -> None:
+    """If revocation cannot be checked the token is refused, as a 503 rather than a 500."""
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+
+    from tests.test_documents import _project_headers
+
+    _, headers = await _project_headers(client)
+
+    async def unreachable(*_args, **_kwargs):
+        raise RedisTimeoutError("Timeout reading from socket")
+
+    monkeypatch.setattr(fake_redis, "exists", unreachable)
+    res = await client.get("/api/v1/projects", headers=headers)
+
+    assert res.status_code == 503, res.text
+    assert "Timeout reading" not in res.text
+
+
+def test_token_counts_are_logged_but_credentials_are_not() -> None:
+    from app.core.logging import REDACTED, _redact_value
+
+    event = {
+        "tokens_used": 1200,
+        "total_tokens": 3400,
+        "speed_tokens_per_second": 950.5,
+        "tokens_before": 10,
+        "access_token": "eyJabc",
+        "refresh_tokens": ["r1"],
+        "token": "t",
+        "api_token": "x",
+    }
+    redacted = _redact_value(event)
+    assert redacted["tokens_used"] == 1200
+    assert redacted["total_tokens"] == 3400
+    assert redacted["speed_tokens_per_second"] == 950.5
+    assert redacted["tokens_before"] == 10
+    for secret_key in ("access_token", "refresh_tokens", "token", "api_token"):
+        assert redacted[secret_key] == REDACTED, secret_key

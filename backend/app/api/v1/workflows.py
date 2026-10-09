@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from typing import Any, cast
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -39,6 +41,9 @@ from app.workflows.dispatch import dispatch_run
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
+
+# Stages that run after the human approval gate, in pipeline order.
+_POST_PLAN_STAGES = ("generate", "test", "export")
 
 router = APIRouter(tags=["workflows"])
 
@@ -106,8 +111,8 @@ async def trigger_workflow(
         "project_id": str(project.id),
         "organization_id": str(project.organization_id),
         "workflow_run_id": str(run.id),
-        "stages": payload.stages,
-        "target_languages": payload.target_languages,
+        "stages": [str(stage) for stage in payload.stages],
+        "target_languages": [str(lang) for lang in payload.target_languages],
         "normalized_spec": spec.raw_normalized if spec else None,
         "generated_files": [],
         "test_suite": [],
@@ -170,7 +175,7 @@ async def _run_to_response(run: WorkflowRun, session: AsyncSession) -> WorkflowR
         progress = int(latest_checkpoint.state_snapshot.get("progress_percent", 0))
     else:
         settings = get_settings()
-        progress = settings.workflow_node_progress_map.get(current_node, run.progress_percent or 0)
+        progress = settings.workflow_node_progress_map.get(current_node or "", run.progress_percent or 0)
 
     return WorkflowRunResponse(
         id=run.id,
@@ -242,13 +247,15 @@ async def approve_workflow_gate(
 
     # Claim the gate atomically: two concurrent approvals both saw PAUSED above, and
     # each started a resume orchestrator. Only the request that flips the row proceeds.
-    new_status = WorkflowStatus.RUNNING if payload.approved else WorkflowStatus.FAILED
-    claimed = await session.execute(
+    # Approval re-queues the run; the executor's claim moves it to RUNNING. The fresh
+    # heartbeat restarts the queue-timeout clock (created_at may be days old by now).
+    new_status = WorkflowStatus.QUEUED if payload.approved else WorkflowStatus.FAILED
+    claimed = cast(CursorResult[Any], await session.execute(
         update(WorkflowRun)
         .where(WorkflowRun.id == run.id, WorkflowRun.status == WorkflowStatus.PAUSED_FOR_APPROVAL)
-        .values(status=new_status)
+        .values(status=new_status, heartbeat_at=datetime.datetime.now(datetime.UTC))
         .execution_options(synchronize_session=False)
-    )
+    ))
     if claimed.rowcount != 1:
         raise ConflictError("This approval gate was already answered.")
     run.status = new_status
@@ -264,6 +271,7 @@ async def approve_workflow_gate(
     )
 
     if payload.approved:
+        assert latest_checkpoint is not None  # loaded above whenever approved is true
         resume_state = dict(latest_checkpoint.state_snapshot)
         resume_state["plan_approved"] = True
         if payload.target_languages:
@@ -275,12 +283,19 @@ async def approve_workflow_gate(
             resume_state["stages"] = ["export"]
             resume_state["export_override_approved"] = True
         else:
-            resume_state["stages"] = ["generate", "test", "export"]
+            # Resume with the stages the caller asked for after planning. Overwriting
+            # them made a ["plan", "generate"] run also test and run every export
+            # packager. A run that requested nothing past "plan" (the upload auto-plan)
+            # means "approve and build", so it gets the full post-plan pipeline.
+            requested = [
+                s for s in (resume_state.get("stages") or []) if s in _POST_PLAN_STAGES
+            ]
+            resume_state["stages"] = requested or list(_POST_PLAN_STAGES)
 
         await session.commit()
         await dispatch_run(
             run_id=run.id,
-            state=resume_state,
+            state=cast(WorkflowState, resume_state),
             settings=settings,
             session=session,
             background_tasks=background_tasks,

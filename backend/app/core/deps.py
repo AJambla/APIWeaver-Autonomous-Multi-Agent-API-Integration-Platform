@@ -15,11 +15,12 @@ from typing import Annotated
 
 import redis.asyncio as aioredis
 from fastapi import Depends, Header, Request
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.errors import ErrorCode, UnauthenticatedError
+from app.core.errors import DependencyUnavailableError, ErrorCode, UnauthenticatedError
 from app.core.logging import get_logger
 from app.core.security import JWTError, decode_access_token, hash_opaque_token
 from app.db.session import get_session
@@ -45,6 +46,14 @@ def get_redis(request: Request) -> aioredis.Redis:
     return redis_client
 
 
+def get_stream_redis(request: Request) -> aioredis.Redis:
+    """The Redis client for long blocking reads (SSE), with a socket timeout above the block."""
+    stream_client: aioredis.Redis = getattr(request.app.state, "redis_stream", None) or get_redis(
+        request
+    )
+    return stream_client
+
+
 def get_object_storage(request: Request) -> ObjectStorage:
     """The S3/MinIO client created at application startup."""
     storage: ObjectStorage = request.app.state.object_storage
@@ -56,7 +65,14 @@ RedisDep = Annotated[aioredis.Redis, Depends(get_redis)]
 
 
 async def is_jti_denylisted(redis_client: aioredis.Redis, jti: str) -> bool:
-    return await redis_client.exists(f"{JTI_DENYLIST_PREFIX}{jti}") == 1
+    """Fails closed: if revocation cannot be checked, the token is not accepted (503)."""
+    try:
+        return await redis_client.exists(f"{JTI_DENYLIST_PREFIX}{jti}") == 1
+    except (RedisError, OSError) as exc:
+        logger.error("jti_denylist_unavailable", error=str(exc))
+        raise DependencyUnavailableError(
+            "Authentication is temporarily unavailable. Please retry shortly."
+        ) from exc
 
 
 async def denylist_jti(redis_client: aioredis.Redis, jti: str, ttl_seconds: int) -> None:

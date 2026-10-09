@@ -112,7 +112,7 @@ async def test_transient_500_retried_then_succeeds(monkeypatch):
     client = LLMClient(_make_settings(llm_max_retries=2))
 
     parsed, tokens = await client.generate_json(
-        system_prompt="s", user_prompt="u", fallback_json={"fallback": True}
+        system_prompt="s", user_prompt="u"
     )
 
     assert parsed == {"ok": True}
@@ -242,7 +242,7 @@ async def test_embedding_retry_then_success(monkeypatch):
     ]
     calls = _install_fake_httpx(monkeypatch, responses)
     sleeps = _capture_sleep(monkeypatch)
-    client = LLMClient(_make_settings(llm_max_retries=2))
+    client = LLMClient(_make_settings(llm_max_retries=2, embedding_dimensions=2))
 
     embedding = await client.generate_embedding("hello")
 
@@ -347,6 +347,7 @@ async def test_openai_compatible_custom_embedding_endpoint(monkeypatch):
             openai_api_key=None,
             embedding_base_url="http://localhost:11434/v1",
             embedding_model="nomic-embed-text",
+            embedding_dimensions=3,
         )
     )
 

@@ -2,47 +2,32 @@ groups:
   - name: apiweaver_alerts
     interval: 30s
     rules:
+      # prometheus-fastapi-instrumentator labels requests by `handler` and groups status
+      # codes ("5xx"); the previous `status=~"5.."` / `by (route)` matched nothing.
       - alert: HighErrorRate
         expr: |
-          sum(rate(http_requests_total{status=~"5.."}[5m])) by (route)
+          sum(rate(http_requests_total{status="5xx"}[5m])) by (handler)
           /
-          sum(rate(http_requests_total[5m])) by (route)
+          sum(rate(http_requests_total[5m])) by (handler)
           > 0.05
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "High error rate on {{ $labels.route }}"
-          description: "Error rate is {{ $value | humanizePercentage }} on route {{ $labels.route }} for 5 minutes."
+          summary: "High error rate on {{ $labels.handler }}"
+          description: "Error rate is {{ $value | humanizePercentage }} on {{ $labels.handler }} for 5 minutes."
 
+      # Needs kube-state-metrics. `increase`, not `rate`: rate() is per second, so the old
+      # `rate(...) > 3` required three restarts every second.
       - alert: PodCrashLooping
         expr: |
-          rate(kube_pod_container_status_restarts_total[10m]) > 3
+          increase(kube_pod_container_status_restarts_total[10m]) > 3
         for: 10m
         labels:
           severity: critical
         annotations:
           summary: "Pod {{ $labels.pod }} is crash-looping"
-          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted {{ $value }} times in 10 minutes."
-
-      - alert: CeleryQueueDepthHigh
-        expr: apiweaver_celery_queue_depth > 100
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Celery queue depth is {{ $value }}"
-          description: "Agent worker queue depth has been above 100 for 10 minutes."
-
-      - alert: RDSStorageHigh
-        expr: |
-          aws_rds_database_free_storage / aws_rds_database_allocated_storage * 100 < 20
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "RDS storage usage is above 80%"
-          description: "RDS instance {{ $labels.DBInstanceIdentifier }} has less than 20% free storage."
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} restarted {{ $value }} times in 10 minutes."
 
       - alert: FailedWorkflowRateHigh
         expr: |
@@ -55,4 +40,23 @@ groups:
           severity: warning
         annotations:
           summary: "High workflow failure rate"
-          description: "{{ $value | humanizePercentage }} of workflows failed in the last 30 minutes."
+          description: "{{ $value | humanizePercentage }} of workflow executions failed in the last 30 minutes."
+
+      # Runs whose executor died are failed by the lease reaper (workflows/reaper.py).
+      - alert: WorkflowExecutorsLost
+        expr: increase(apiweaver_pipeline_error_total{subsystem="workflow_reaper"}[30m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Workflow runs lost their worker"
+          description: "{{ $value }} run(s) were failed by the reaper in the last 30 minutes (worker crash, OOM or a deploy kill)."
+
+      - alert: RagIndexingFailing
+        expr: increase(apiweaver_pipeline_error_total{subsystem="rag_upsert"}[30m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Document embeddings are not being indexed"
+          description: "Qdrant upserts failed; code generation is running without retrieval context."

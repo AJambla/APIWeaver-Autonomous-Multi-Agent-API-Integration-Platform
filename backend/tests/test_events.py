@@ -179,3 +179,76 @@ async def _setup_project(client: AsyncClient) -> tuple[str, str, dict[str, str]]
     )
     assert proj.status_code == 201
     return proj.json()["id"], org_id, headers
+
+
+class _EmptyStream:
+    """xread that never has anything new (an expired or fully-read stream)."""
+
+    def __init__(self) -> None:
+        self.reads: list[dict] = []
+
+    async def xread(self, streams, block=None, count=None):
+        self.reads.append(dict(streams))
+        return []
+
+
+async def _collect(gen, limit: int = 5) -> list[str]:
+    out = []
+    async for chunk in gen:
+        out.append(chunk)
+        if len(out) >= limit:
+            break
+    return out
+
+
+@pytest.mark.asyncio
+async def test_a_finished_run_with_nothing_to_replay_ends_with_a_terminal_event():
+    """An expired stream for a finished run used to heartbeat forever."""
+    from app.api.v1.events import _stream_redis_events
+
+    chunks = await _collect(
+        _stream_redis_events(_EmptyStream(), "workflow_events:x", "0-0", block_ms=1, finished_status="failed")
+    )
+    assert len(chunks) == 1
+    assert chunks[0].startswith("event: workflow.failed\n")
+    assert '"status": "failed"' in chunks[0]
+
+
+@pytest.mark.asyncio
+async def test_a_live_run_heartbeats_and_streams_close_at_their_lifetime():
+    from app.api.v1.events import _stream_redis_events
+
+    live = await _collect(_stream_redis_events(_EmptyStream(), "k", "0-0", block_ms=1), limit=2)
+    assert live == [": heartbeat\n\n", ": heartbeat\n\n"]
+
+    expired = await _collect(_stream_redis_events(_EmptyStream(), "k", "0-0", block_ms=1, max_seconds=-1))
+    assert expired == []
+
+
+@pytest.mark.asyncio
+async def test_sse_rejects_a_malformed_last_event_id_and_uses_the_canonical_stream_key(
+    client, monkeypatch
+):
+    from app.api.v1 import events as events_module
+
+    keys: list[str] = []
+
+    async def capture(redis_client, stream_key, last_id, *args, **kwargs):
+        keys.append(stream_key)
+        yield ": heartbeat\n\n"
+
+    monkeypatch.setattr(events_module, "_stream_redis_events", capture)
+    project_id, _, headers = await _setup_project(client)
+    run = await client.post(
+        f"/api/v1/projects/{project_id}/workflows",
+        json={"stages": ["plan"], "target_languages": ["python"]},
+        headers=headers,
+    )
+    run_id = run.json()["workflow_run_id"]
+
+    bad = await client.get(f"/api/v1/workflows/{run_id}/sse?last_event_id=bogus", headers=headers)
+    assert bad.status_code in (400, 422), bad.text
+
+    ok = await client.get(f"/api/v1/workflows/{run_id.upper()}/sse", headers=headers)
+    assert ok.status_code == 200, ok.text
+    assert keys == [f"workflow_events:{run_id}"]

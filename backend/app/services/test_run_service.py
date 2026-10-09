@@ -11,7 +11,7 @@ import datetime
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.logging import get_logger
@@ -99,12 +99,12 @@ async def _write_results(
 ) -> None:
     previous_result_ids = select(TestResult.id).where(TestResult.test_run_id == test_run.id)
     await session.execute(
-        RepairAttempt.__table__.delete().where(
+        delete(RepairAttempt).where(
             RepairAttempt.test_result_id.in_(previous_result_ids)
         )
     )
     await session.execute(
-        TestResult.__table__.delete().where(TestResult.test_run_id == test_run.id)
+        delete(TestResult).where(TestResult.test_run_id == test_run.id)
     )
     if not test_suite:
         return

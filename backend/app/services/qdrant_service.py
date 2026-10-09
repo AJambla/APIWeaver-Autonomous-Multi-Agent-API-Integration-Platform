@@ -20,7 +20,10 @@ from app.core.metrics import pipeline_error_total
 logger = get_logger(__name__)
 
 DEFAULT_COLLECTION = "apiweaver_docs"
-VECTOR_DIMENSION = 1536  # Default embedding size for OpenAI text-embedding-3-small or similar
+
+
+class CollectionDimensionMismatchError(RuntimeError):
+    """An existing collection's vector size differs from EMBEDDING_DIMENSIONS."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +70,7 @@ class HttpQdrantClient:
     def __init__(self, settings: Settings) -> None:
         self.base_url = settings.qdrant_url.rstrip("/")
         self.timeout = getattr(settings, "qdrant_timeout_seconds", 10.0)
+        self.dimensions = settings.embedding_dimensions
 
     async def ensure_collection(self, collection_name: str = DEFAULT_COLLECTION) -> None:
         url = f"{self.base_url}/collections/{collection_name}"
@@ -74,11 +78,22 @@ class HttpQdrantClient:
             try:
                 res = await client.get(url)
                 if res.status_code == 200:
+                    vectors = (
+                        ((res.json().get("result") or {}).get("config") or {}).get("params") or {}
+                    ).get("vectors") or {}
+                    size = vectors.get("size") if isinstance(vectors, dict) else None
+                    if size is not None and size != self.dimensions:
+                        raise CollectionDimensionMismatchError(
+                            f"Qdrant collection '{collection_name}' stores {size}-dimensional "
+                            f"vectors but EMBEDDING_DIMENSIONS is {self.dimensions}."
+                        )
                     return
-                # Create collection if it doesn't exist
+                if res.status_code != 404:
+                    # A 401/503 is not "missing": creating over it would mask the outage.
+                    res.raise_for_status()
                 payload = {
                     "vectors": {
-                        "size": VECTOR_DIMENSION,
+                        "size": self.dimensions,
                         "distance": "Cosine",
                     }
                 }
@@ -105,11 +120,13 @@ class HttpQdrantClient:
             points.append({
                 "id": point_id,
                 "vector": chunk["vector"],
+                # Tenant keys last: chunk metadata must never overwrite project_id, the
+                # key every search filters on.
                 "payload": {
+                    **chunk.get("metadata", {}),
                     "project_id": str(project_id),
                     "document_id": str(document_id),
                     "text": chunk["text"],
-                    **chunk.get("metadata", {}),
                 },
             })
 

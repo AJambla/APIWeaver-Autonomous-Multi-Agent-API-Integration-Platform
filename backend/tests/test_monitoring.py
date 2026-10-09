@@ -103,7 +103,8 @@ async def test_get_project_metrics(client: AsyncClient, db) -> None:
     assert data["successful_exports"] == 2
     assert data["test_pass_rate"] == 0.8  # 24 passed / 30 total
     assert data["avg_time_to_integration_minutes"] is not None
-    assert data["monthly_token_spend_usd"] is not None
+    # This project's five runs at $0.05, not the organization's usage_metrics total.
+    assert data["monthly_token_spend_usd"] == 0.25
 
 
 async def test_get_org_metrics(client: AsyncClient, db) -> None:
@@ -162,3 +163,35 @@ async def test_get_org_metrics(client: AsyncClient, db) -> None:
     assert data["avg_test_pass_rate"] == 5/6  # 10 passed / 12 total
     assert data["monthly_token_spend_usd"] == 1.5
     assert data["tier_limit_workflow_triggers_hour"] == 100  # Pro tier
+
+async def test_project_metrics_do_not_expose_other_projects_spend(client: AsyncClient, db) -> None:
+    """A project viewer must not see org-wide spend (that needs ORG_VIEW_BILLING)."""
+    project_id, org_id, headers = await _setup_org_with_data(client)
+    other = await client.post(
+        "/api/v1/projects",
+        json={"name": "Other Project", "organization_id": org_id},
+        headers=headers,
+    )
+    other_id = other.json()["id"]
+
+    async with db as session:
+        session.add(
+            WorkflowRun(
+                project_id=uuid.UUID(other_id),
+                status=WorkflowStatus.COMPLETED,
+                estimated_cost_usd=Decimal("42.00"),
+            )
+        )
+        session.add(
+            UsageMetric(
+                organization_id=uuid.UUID(org_id),
+                metric_name="token_cost_usd",
+                value=Decimal("42.00"),
+                recorded_at=datetime.datetime.now(datetime.UTC),
+            )
+        )
+        await session.commit()
+
+    res = await client.get(f"/api/v1/projects/{project_id}/metrics", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["monthly_token_spend_usd"] == 0.0
