@@ -6,6 +6,7 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -751,3 +752,35 @@ async def test_upload_dispatch_to_worker_carries_a_storage_key_not_bytes(
     import json
 
     json.dumps(state)  # must be broker-serializable
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"stages": ["tests"]},  # typo: used to route straight to finalize and "complete"
+        {"stages": []},
+        {"target_languages": ["go"]},  # no templates or sandbox: silently skipped before
+        {"stages": ["plan"], "target_languages": []},
+    ],
+)
+async def test_unknown_stages_and_languages_are_rejected(client: AsyncClient, body) -> None:
+    project_id, _, headers = await _setup_project(client)
+    res = await client.post(f"/api/v1/projects/{project_id}/workflows", json=body, headers=headers)
+    assert res.status_code in (400, 422), res.text
+
+
+def test_export_request_rejects_unsafe_git_and_docker_values() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.export import ExportRequest
+
+    for bad in (
+        {"github_branch": "main/../../x"},
+        {"github_branch": "-delete"},
+        {"github_repo_name": "a/b"},
+        {"docker_image_name": "Bad Image;rm -rf"},
+        {"target_languages": ["ruby"]},
+    ):
+        with pytest.raises(ValidationError):
+            ExportRequest(**bad)
+    assert ExportRequest(github_branch="release/v1.2", docker_image_name="acme/sdk:1.0")
