@@ -204,18 +204,17 @@ async def test_cancelled_run_costs_and_metrics(session_factory, db) -> None:
 
     orchestrator = LangGraphOrchestrator(session_factory=session_factory)
 
-    # State with tokens used before cancellation
     initial_state: WorkflowState = {
         "project_id": str(proj_id),
         "organization_id": str(org_id),
         "workflow_run_id": str(run_id),
-        "total_tokens_used": 5000,
+        "total_tokens_used": 0,
         "stages": ["plan"],
     }
 
-    # Simulate cancellation being raised during execution (after one streamed state)
+    # A node spends 5000 tokens, then the run is cancelled before the next one.
     async def _cancelling_stream(state, *args, **kwargs):
-        yield state
+        yield {**state, "total_tokens_used": 5000}
         raise WorkflowCancelledError("Cancelled by user")
 
     orchestrator.graph.astream = _cancelling_stream
