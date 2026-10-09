@@ -201,7 +201,7 @@ class TestStartupEnvironmentValidation:
 
         prod = test_settings.model_copy(
             update={
-                "app_env": "production",
+                **SAFE_PRODUCTION,
                 "openai_api_key": "sk-proj-test12345",
             }
         )
@@ -214,12 +214,52 @@ class TestStartupEnvironmentValidation:
 
         prod = test_settings.model_copy(
             update={
-                "app_env": "production",
+                **SAFE_PRODUCTION,
                 "anthropic_api_key": "sk-ant-test12345",
             }
         )
         validate_startup_environment(prod)
 
+
+
+
+SAFE_PRODUCTION = {
+    "app_env": "production",
+    "cors_allowed_origins": "https://app.apiweaver.example",
+    "vault_addr": "https://vault.internal:8200",
+    "vault_token": "hvs.CAESIJ-not-a-dev-token",
+    "metrics_token": "m" * 32,
+    "aws_access_key_id": None,
+}
+
+
+@pytest.mark.parametrize(
+    ("override", "fragment"),
+    [
+        ({"cors_allowed_origins": "*"}, "contains '*'"),
+        ({"cors_allowed_origins": "http://app.example"}, "is not https"),
+        ({"metrics_token": "prod_scrape_token_local_test"}, "METRICS_TOKEN"),
+        ({"vault_token": "root"}, "VAULT_TOKEN"),
+        ({"vault_token": None}, "VAULT_TOKEN"),
+        ({"vault_addr": "http://vault:8200"}, "VAULT_ADDR"),
+        ({"aws_access_key_id": "minioadmin"}, "MinIO default"),
+    ],
+)
+def test_production_refuses_development_defaults(test_settings: Settings, override, fragment) -> None:
+    from app.core.config import validate_startup_environment
+
+    settings = test_settings.model_copy(
+        update={**SAFE_PRODUCTION, "openai_api_key": "sk-x", **override}
+    )
+    with pytest.raises(ValueError, match="unsafe configuration") as raised:
+        validate_startup_environment(settings)
+    assert fragment in str(raised.value)
+
+
+def test_a_blank_metrics_token_counts_as_unset(test_settings: Settings) -> None:
+    """An empty token mounted /metrics behind compare_digest("", "")."""
+    settings = Settings(**{**test_settings.model_dump(), "metrics_token": "  "})
+    assert settings.metrics_token is None
 
 
 async def test_password_hashing_does_not_block_the_event_loop() -> None:
