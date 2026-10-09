@@ -238,15 +238,15 @@ async def _upsert_to_qdrant(
             )
             chunks = chunks[:cap]
 
-        vectors = []
-        for chunk in chunks:
-            vector = await client.generate_embedding(chunk)
-            vectors.append(vector)
+        vectors = await client.generate_embeddings(chunks)
+        org_id = state.get("organization_id")
+        org_uuid = uuid.UUID(org_id) if org_id else None
 
         await qdrant_client.upsert_chunks(
             project_id=uuid.UUID(proj_id),
             document_id=uuid.UUID(doc_id),
             chunks=[{"text": c, "vector": v} for c, v in zip(chunks, vectors, strict=False)],
+            organization_id=org_uuid,
         )
         logger.info("qdrant_upsert_complete", project_id=proj_id, document_id=doc_id, chunks=len(chunks))
     except Exception as exc:
