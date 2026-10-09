@@ -1,32 +1,57 @@
 """Custom Prometheus metrics for APIWeaver.
 
 Defines application-level metrics that are not covered by `prometheus-fastapi-instrumentator`
-(default request latency/status by route).
+(request count/latency by `handler`, `method` and grouped `status`, e.g. "5xx").
+
+The pipeline runs in the Celery worker in production, so the worker serves these too:
+with PROMETHEUS_MULTIPROC_DIR set, every prefork child writes its samples to that
+directory and the worker's parent process exposes the aggregate on WORKER_METRICS_PORT
+(see agent_worker/celery_app.py). Metrics recorded in the worker were invisible before.
 
 Metrics:
-- `apiweaver_active_workflow_runs` — current number of in-flight workflow runs
-- `apiweaver_celery_queue_depth` — Celery task queue depth
+- `apiweaver_workflow_runs_total{status}` / `apiweaver_workflow_duration_seconds{status}`
+- `apiweaver_agent_step_duration_seconds{agent_type}` — per graph node
+- `apiweaver_repair_attempts_total{agent_type,success}`
+- `apiweaver_llm_tokens_spent_total{org_id}`
 - `apiweaver_s3_upload_bytes_total` / `apiweaver_s3_download_bytes_total`
-- `apiweaver_llm_tokens_spent_total` — LLM token consumption per org
-- `apiweaver_auth_success_total` / `apiweaver_auth_failure_total`
+- `apiweaver_auth_success_total` / `apiweaver_auth_failure_total{reason}`
+- `apiweaver_pipeline_error_total{subsystem,error_type}`
 """
 
 from __future__ import annotations
 
-from prometheus_client import Counter, Gauge
+from prometheus_client import Counter, Histogram
 from prometheus_client.registry import CollectorRegistry
 
 registry = CollectorRegistry()
 
-active_workflow_runs = Gauge(
-    "apiweaver_active_workflow_runs",
-    "Number of workflow runs currently in progress",
+workflow_runs_total = Counter(
+    "apiweaver_workflow_runs_total",
+    "Workflow executions finished, by final status",
+    ["status"],
     registry=registry,
 )
 
-celery_queue_depth = Gauge(
-    "apiweaver_celery_queue_depth",
-    "Number of tasks pending in the Celery queue",
+workflow_duration_seconds = Histogram(
+    "apiweaver_workflow_duration_seconds",
+    "Wall-clock duration of one workflow execution",
+    ["status"],
+    buckets=(10, 30, 60, 120, 300, 600, 1200, 1800, 3600),
+    registry=registry,
+)
+
+agent_step_duration_seconds = Histogram(
+    "apiweaver_agent_step_duration_seconds",
+    "Duration of one pipeline node (agent) execution",
+    ["agent_type"],
+    buckets=(0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600),
+    registry=registry,
+)
+
+repair_attempts_total = Counter(
+    "apiweaver_repair_attempts_total",
+    "Self-healing repair attempts, by outcome",
+    ["agent_type", "success"],
     registry=registry,
 )
 

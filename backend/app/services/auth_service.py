@@ -24,6 +24,7 @@ from app.core.config import Settings
 from app.core.deps import denylist_jti
 from app.core.errors import ConflictError, ErrorCode, UnauthenticatedError
 from app.core.logging import get_logger
+from app.core.metrics import auth_failure_total, auth_success_total
 from app.core.security import (
     create_access_token,
     generate_opaque_token,
@@ -235,6 +236,7 @@ async def login(
             metadata={"reason": "unknown_email"},
         )
         await _commit_before_raising(session)
+        auth_failure_total.labels(reason="unknown_email").inc()
         raise UnauthenticatedError(
             "Email or password is incorrect.", code=ErrorCode.INVALID_CREDENTIALS
         )
@@ -258,6 +260,7 @@ async def login(
             metadata={"reason": "account_locked", "locked_until": user.locked_until.isoformat()},
         )
         await _commit_before_raising(session)
+        auth_failure_total.labels(reason="account_locked").inc()
         raise UnauthenticatedError(
             "Email or password is incorrect.", code=ErrorCode.INVALID_CREDENTIALS
         )
@@ -298,6 +301,7 @@ async def login(
             },
         )
         await _commit_before_raising(session)
+        auth_failure_total.labels(reason="account_locked" if locking else "bad_password").inc()
         raise UnauthenticatedError(
             "Email or password is incorrect.", code=ErrorCode.INVALID_CREDENTIALS
         )
@@ -333,6 +337,7 @@ async def login(
         user_agent=context.user_agent,
     )
     logger.info("login_succeeded", user_id=str(user.id))
+    auth_success_total.inc()
     return user, tokens
 
 

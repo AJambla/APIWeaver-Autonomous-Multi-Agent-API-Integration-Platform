@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import time
 import uuid
 from collections.abc import Mapping
 from decimal import Decimal
@@ -25,7 +26,14 @@ from sqlalchemy.orm import selectinload
 from app.core.config import DEFAULT_MODEL_PRICING_PER_TOKEN, Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES, DEFAULT_WORKFLOW_STAGES
 from app.core.logging import get_logger, workflow_run_id_ctx
-from app.core.metrics import pipeline_error_total
+from app.core.metrics import (
+    agent_step_duration_seconds,
+    llm_tokens_spent_total,
+    pipeline_error_total,
+    repair_attempts_total,
+    workflow_duration_seconds,
+    workflow_runs_total,
+)
 from app.models.enums import ProjectStatus, WorkflowStatus
 from app.models.metrics import UsageMetric
 from app.models.project import Project
@@ -191,6 +199,22 @@ def route_after_testing(state: WorkflowState) -> str:
 
     # Exhausted repair attempts: escalate to human approval gate
     return "approval_gate"
+
+
+def _timed(agent_type: str, node: Any) -> Any:
+    """Record each node's duration in apiweaver_agent_step_duration_seconds."""
+
+    async def wrapper(state: WorkflowState) -> dict[str, Any]:
+        started = time.monotonic()
+        try:
+            result: dict[str, Any] = await node(state)
+            return result
+        finally:
+            agent_step_duration_seconds.labels(agent_type=agent_type).observe(
+                time.monotonic() - started
+            )
+
+    return wrapper
 
 
 # --- Graph Factory ------------------------------------------------------------------
@@ -1099,6 +1123,7 @@ def create_apiweaver_graph(
                 "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
                 "outcome": "applied",
             })
+            repair_attempts_total.labels(agent_type="repair_agent", success="true").inc()
         except Exception as exc:
             terminal_logger.log_failure("repair_agent", run_id, exc)
             await _emit_thought(
@@ -1119,6 +1144,7 @@ def create_apiweaver_graph(
                 "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
                 "outcome": "failed",
             })
+            repair_attempts_total.labels(agent_type="repair_agent", success="false").inc()
 
         tokens_after = total_tokens
 
@@ -1353,14 +1379,14 @@ def create_apiweaver_graph(
         return updates
 
     # --- Wire Nodes into Builder ---
-    builder.add_node("doc_agent", doc_agent_node)
-    builder.add_node("planner_agent", planner_agent_node)
-    builder.add_node("approval_gate", approval_gate_node)
-    builder.add_node("code_agent", code_agent_node)
-    builder.add_node("test_agent", test_agent_node)
-    builder.add_node("repair_agent", repair_agent_node)
-    builder.add_node("export_agent", export_agent_node)
-    builder.add_node("finalize", finalize_node)
+    builder.add_node("doc_agent", _timed("doc_agent", doc_agent_node))
+    builder.add_node("planner_agent", _timed("planner_agent", planner_agent_node))
+    builder.add_node("approval_gate", _timed("approval_gate", approval_gate_node))
+    builder.add_node("code_agent", _timed("code_agent", code_agent_node))
+    builder.add_node("test_agent", _timed("test_agent", test_agent_node))
+    builder.add_node("repair_agent", _timed("repair_agent", repair_agent_node))
+    builder.add_node("export_agent", _timed("export_agent", export_agent_node))
+    builder.add_node("finalize", _timed("finalize", finalize_node))
 
     # --- Wire Edges ---
     builder.add_conditional_edges(
@@ -1495,6 +1521,7 @@ class LangGraphOrchestrator:
                 project_row = await session.get(Project, run_obj.project_id)
                 org_id = project_row.organization_id if project_row else None
             if org_id:
+                llm_tokens_spent_total.labels(org_id=str(org_id)).inc(tokens_spent)
                 session.add(
                     UsageMetric(
                         organization_id=uuid.UUID(str(org_id)),
@@ -1518,8 +1545,13 @@ class LangGraphOrchestrator:
         attributable to its run (the context variable was declared but never set).
         """
         token = workflow_run_id_ctx.set(str(workflow_run_id))
+        started = time.monotonic()
         try:
-            return await self._run(workflow_run_id, initial_state)
+            result = await self._run(workflow_run_id, initial_state)
+            status = str(result.get("status") or "unknown")
+            workflow_runs_total.labels(status=status).inc()
+            workflow_duration_seconds.labels(status=status).observe(time.monotonic() - started)
+            return result
         finally:
             workflow_run_id_ctx.reset(token)
 

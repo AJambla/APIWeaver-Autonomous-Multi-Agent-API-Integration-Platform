@@ -13,8 +13,8 @@
         "type": "timeseries",
         "targets": [
           {
-            "expr": "sum(rate(http_requests_total[5m])) by (route)",
-            "legendFormat": "{{route}}"
+            "expr": "sum(rate(http_requests_total[5m])) by (handler)",
+            "legendFormat": "{{handler}}"
           }
         ],
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
@@ -25,8 +25,8 @@
         "type": "timeseries",
         "targets": [
           {
-            "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) by (route) / sum(rate(http_requests_total[5m])) by (route) * 100",
-            "legendFormat": "{{route}}"
+            "expr": "sum(rate(http_requests_total{status=\"5xx\"}[5m])) by (handler) / sum(rate(http_requests_total[5m])) by (handler) * 100",
+            "legendFormat": "{{handler}}"
           }
         ],
         "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
@@ -37,16 +37,16 @@
         "type": "timeseries",
         "targets": [
           {
-            "expr": "histogram_quantile(0.5, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route))",
-            "legendFormat": "p50 {{route}}"
+            "expr": "histogram_quantile(0.5, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, handler))",
+            "legendFormat": "p50 {{handler}}"
           },
           {
-            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route))",
-            "legendFormat": "p95 {{route}}"
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, handler))",
+            "legendFormat": "p95 {{handler}}"
           },
           {
-            "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route))",
-            "legendFormat": "p99 {{route}}"
+            "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, handler))",
+            "legendFormat": "p99 {{handler}}"
           }
         ],
         "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 }
