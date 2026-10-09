@@ -39,12 +39,14 @@ from app.workflows.agents.planner_agent import run_planner_agent
 from app.workflows.agents.test_agent import run_test_agent
 from app.workflows.event_recorder import record_agent_event
 from app.workflows.langgraph_logger import LangGraphAgentLogger
+from app.workflows.llm import active_llm_model
 from app.workflows.state import WorkflowState
 
 logger = get_logger(__name__)
 terminal_logger = LangGraphAgentLogger()
 
 DEFAULT_TOKEN_BUDGET = 1_000_000
+_TERMINAL_STATUSES = (WorkflowStatus.CANCELLED, WorkflowStatus.COMPLETED, WorkflowStatus.FAILED)
 DEFAULT_TOKEN_PRICE = 0.000003
 MODEL_PRICING_PER_TOKEN: dict[str, float] = DEFAULT_MODEL_PRICING_PER_TOKEN
 
@@ -156,10 +158,15 @@ def route_after_code(state: WorkflowState) -> str:
 def route_after_testing(state: WorkflowState) -> str:
     """Evaluate test results: export if passed, loop to repair if failing, or terminate."""
     stages = state.get("stages", DEFAULT_WORKFLOW_STAGES)
-    test_summary = state.get("test_run_summary") or {}
+    test_summary = state.get("test_run_summary")
+    # The test agent returns no summary when it could not run (no spec, no files, sandbox
+    # crash). That is not "zero failures": untested code must never reach export (or a
+    # GitHub push), so finish and let finalize record the failure.
+    if not isinstance(test_summary, dict) or "failed" not in test_summary:
+        return "finalize"
     failed_count = test_summary.get("failed", 0)
 
-    # If all tests passed (or no test failure recorded)
+    # All recorded tests passed
     if failed_count == 0:
         if "export" in stages:
             return "export_agent"
@@ -1008,13 +1015,20 @@ def create_apiweaver_graph(
                 break
 
         if not target_file_path:
-            for f in repaired_files:
+            # Prefer a client file in the failing test's language: a Node failure must
+            # not send the repair to the Python client.
+            failing_language = primary_failure.get("language")
+            candidates = [
+                f for f in repaired_files
+                if not failing_language or f.get("language") in (None, failing_language)
+            ] or repaired_files
+            for f in candidates:
                 fp = f.get("file_path", "")
                 if "client" in fp.lower():
                     target_file_path = fp
                     break
             else:
-                target_file_path = repaired_files[0].get("file_path", "client.py") if repaired_files else "client.py"
+                target_file_path = candidates[0].get("file_path", "client.py") if candidates else "client.py"
         failure_diagnosis = {
             "failed_tests_count": len(failed_tests),
             "method": primary_failure.get("method", "GET"),
@@ -1058,9 +1072,18 @@ def create_apiweaver_graph(
                 qdrant_client=qdrant_client,
             )
 
+            total_tokens = repair_result.get("total_tokens_used", total_tokens)
+            # run_code_agent reports problems (no spec, target not found) as an error
+            # dict rather than raising; that is a failed attempt, not an applied fix.
+            if repair_result.get("status") == "failed" or (
+                repair_result.get("errors") and not repair_result.get("generated_files")
+            ):
+                raise RuntimeError(
+                    "; ".join(str(e) for e in repair_result.get("errors") or [])
+                    or "repair produced no changes"
+                )
             if repair_result.get("generated_files"):
                 repaired_files = repair_result["generated_files"]
-            total_tokens = repair_result.get("total_tokens_used", total_tokens)
 
             diff_summary = "Targeted repair applied"
             for rf in repaired_files:
@@ -1243,12 +1266,17 @@ def create_apiweaver_graph(
         run_id = state.get("workflow_run_id", "")
         current_status = state.get("status")
 
+        export_override = bool(state.get("export_override_approved")) and bool(state.get("exports"))
         if current_status == WorkflowStatus.PAUSED_FOR_APPROVAL:
             final_status = WorkflowStatus.PAUSED_FOR_APPROVAL
+        elif export_override and not state.get("errors"):
+            # A project owner reviewed the failing tests and approved exporting anyway.
+            final_status = WorkflowStatus.COMPLETED
         elif (state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(state.get("repair_attempts", [])) >= 3:
             final_status = WorkflowStatus.FAILED
-            state.setdefault("errors", []).append(
-                f"Self-healing repair loop exhausted (3/3 attempts failed). {(state.get('test_run_summary') or {}).get('failed')} test(s) failed."
+            exhausted_error = (
+                "Self-healing repair loop exhausted (3/3 attempts failed). "
+                f"{(state.get('test_run_summary') or {}).get('failed')} test(s) failed."
             )
         elif (
             state.get("execution_plan")
@@ -1300,6 +1328,9 @@ def create_apiweaver_graph(
             "progress_percent": 100 if final_status == WorkflowStatus.COMPLETED else int(state.get("progress_percent") or (30 if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else 0)),
             "current_node": "completed",
         }
+        if "exhausted_error" in locals():
+            # Through the `errors` reducer, not by mutating the state in place.
+            updates["errors"] = [exhausted_error]
 
         if event_publisher and run_id:
             await event_publisher.publish_workflow_completed(
@@ -1460,14 +1491,34 @@ class LangGraphOrchestrator:
         current["execution_mode"] = self.execution_mode
         current.setdefault("total_tokens_used", 0)
 
-        # Update DB run status to RUNNING
+        # Move the run to RUNNING only if nobody finished or cancelled it while it was
+        # queued: an unconditional write here used to resurrect cancelled runs.
         if self.session_factory:
             async with self.session_factory() as session:
-                run_obj = await session.get(WorkflowRun, workflow_run_id)
-                if run_obj:
-                    run_obj.status = WorkflowStatus.RUNNING
-                    run_obj.started_at = datetime.datetime.now(datetime.UTC)
-                    await session.commit()
+                claimed = await session.execute(
+                    update(WorkflowRun)
+                    .where(
+                        WorkflowRun.id == workflow_run_id,
+                        WorkflowRun.status.not_in(_TERMINAL_STATUSES),
+                    )
+                    .values(
+                        status=WorkflowStatus.RUNNING,
+                        started_at=func.coalesce(
+                            WorkflowRun.started_at, datetime.datetime.now(datetime.UTC)
+                        ),
+                    )
+                )
+                await session.commit()
+                if claimed.rowcount == 0:
+                    existing = await session.get(WorkflowRun, workflow_run_id)
+                    if existing is not None:
+                        logger.info(
+                            "langgraph_run_not_started",
+                            run_id=run_id_str,
+                            status=str(existing.status),
+                        )
+                        current["status"] = existing.status
+                        return cast(WorkflowState, current)
 
         await self._record_event(
             workflow_run_id,
@@ -1488,10 +1539,15 @@ class LangGraphOrchestrator:
 
         config = {"configurable": {"thread_id": run_id_str}}
 
+        # The latest full state seen while streaming. If a node raises (or the run is
+        # cancelled), tokens spent by earlier nodes are still recorded from here instead
+        # of from the initial state, which used to log ~0 tokens after real spend.
+        latest: dict[str, Any] = current
         try:
-            # Stream or invoke LangGraph
-            final_output = await self.graph.ainvoke(current, config=config)
-            result_state = cast(WorkflowState, final_output)
+            async for snapshot in self.graph.astream(current, config=config, stream_mode="values"):
+                if isinstance(snapshot, dict):
+                    latest = snapshot
+            result_state = cast(WorkflowState, latest)
 
             final_status = result_state.get("status", WorkflowStatus.COMPLETED)
 
@@ -1522,7 +1578,7 @@ class LangGraphOrchestrator:
                             )
 
                             cost_usd = calculate_token_cost_usd(
-                                total_tokens, self.settings.llm_model, settings=self.settings
+                                total_tokens, active_llm_model(self.settings), settings=self.settings
                             )
                             run_obj.estimated_cost_usd = cost_usd
 
@@ -1605,10 +1661,10 @@ class LangGraphOrchestrator:
                 0,
                 details="Workflow execution cancelled by user; pipeline stopped.",
             )
-            current["status"] = WorkflowStatus.CANCELLED
+            current = {**latest, "status": WorkflowStatus.CANCELLED}
             total_tokens = current.get("total_tokens_used", 0)
             cost_usd = calculate_token_cost_usd(
-                total_tokens, self.settings.llm_model, settings=self.settings
+                total_tokens, active_llm_model(self.settings), settings=self.settings
             )
             if self.session_factory:
                 async with self.session_factory() as session:
@@ -1645,16 +1701,25 @@ class LangGraphOrchestrator:
 
         except Exception as exc:
             logger.error("langgraph_execution_failed", run_id=run_id_str, error=str(exc))
-            current["status"] = WorkflowStatus.FAILED
-            current.setdefault("errors", []).append(str(exc))
+            current = {
+                **latest,
+                "status": WorkflowStatus.FAILED,
+                "errors": [*(latest.get("errors") or []), str(exc)],
+            }
             total_tokens = current.get("total_tokens_used", 0)
             cost_usd = calculate_token_cost_usd(
-                total_tokens, self.settings.llm_model, settings=self.settings
+                total_tokens, active_llm_model(self.settings), settings=self.settings
             )
 
             if self.session_factory:
                 async with self.session_factory() as session:
                     run_obj = await session.get(WorkflowRun, workflow_run_id)
+                    if run_obj and run_obj.status == WorkflowStatus.CANCELLED:
+                        # Cancelled mid-node: keep the user's decision, record the spend.
+                        run_obj.total_tokens_used = total_tokens
+                        run_obj.estimated_cost_usd = cost_usd
+                        run_obj = None
+                        current["status"] = WorkflowStatus.CANCELLED
                     if run_obj:
                         run_obj.status = WorkflowStatus.FAILED
                         run_obj.total_tokens_used = total_tokens

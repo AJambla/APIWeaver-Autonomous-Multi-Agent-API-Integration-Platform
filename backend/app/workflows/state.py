@@ -57,6 +57,8 @@ class WorkflowState(TypedDict, total=False):
     github_branch: str | None
     github_commit_message: str | None
     docker_image_name: str | None
+    # Set by `/approve` when an owner exports despite exhausted repairs.
+    export_override_approved: bool | None
 
     # Pipeline tracking
     current_node: str
