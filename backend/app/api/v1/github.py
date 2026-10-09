@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import hmac
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Cookie, Depends, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings, get_settings
 from app.core.deps import get_current_principal, get_db
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError
+from app.core.logging import get_logger
 from app.models.github import GitHubConnection, GitHubOAuthState
 from app.rbac.enforce import require_own_org_permission
 from app.rbac.policy import Permission, Principal
@@ -25,7 +29,6 @@ from app.services.github_service import (
     create_github_app_client,
     create_github_oauth_client,
 )
-from app.core.logging import get_logger
 from app.services.vault_service import VaultClient, create_vault_client
 
 logger = get_logger(__name__)
@@ -44,12 +47,37 @@ public_router = APIRouter(prefix="/github", tags=["github"])
 # read a `github_oauth_state_ttl_seconds` setting that exists in no `Settings` class.
 OAUTH_STATE_TTL_SECONDS = 600
 
+# The `state` alone only proves *someone* started a flow, not that the browser completing
+# it is the one that started it. Unbound, an attacker could start a flow, hand the victim
+# the authorize URL, and have the victim's GitHub token stored on the attacker's account.
+# The cookie `/connect` sets ties the callback to that browser; `SameSite=Lax` still
+# travels on GitHub's top-level redirect back to us.
+OAUTH_STATE_COOKIE = "aw_github_oauth_state"
+OAUTH_STATE_COOKIE_PATH = "/api/v1/github/callback"
+
+
+async def _active_connections(
+    session: AsyncSession, user_id: uuid.UUID | None
+) -> list[GitHubConnection]:
+    """A user's unrevoked connections, newest first (one user may link several accounts)."""
+    result = await session.execute(
+        select(GitHubConnection)
+        .where(
+            GitHubConnection.user_id == user_id,
+            GitHubConnection.revoked_at.is_(None),
+        )
+        .order_by(GitHubConnection.created_at.desc())
+    )
+    return list(result.scalars().all())
+
 
 @router.post("/connect", response_model=GitHubAuthUrlResponse)
 async def github_connect(
+    response: Response,
     principal: Principal = Depends(require_own_org_permission(Permission.GITHUB_CONNECT)),
     session: AsyncSession = Depends(get_db),
     oauth_client: GitHubOAuthClient = Depends(create_github_oauth_client),
+    settings: Settings = Depends(get_settings),
 ) -> GitHubAuthUrlResponse:
     """Initiate GitHub OAuth flow."""
     if principal.user_id is None:
@@ -67,14 +95,25 @@ async def github_connect(
     session.add(oauth_state)
     await session.commit()
 
+    response.set_cookie(
+        OAUTH_STATE_COOKIE,
+        state,
+        max_age=OAUTH_STATE_TTL_SECONDS,
+        path=OAUTH_STATE_COOKIE_PATH,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="lax",
+    )
     auth_url = oauth_client.get_authorization_url(state)
     return GitHubAuthUrlResponse(auth_url=auth_url, state=state)
 
 
 @public_router.get("/callback", response_model=GitHubStatusResponse)
 async def github_callback(
+    response: Response,
     code: str = Query(...),
     state: str = Query(...),
+    state_cookie: str | None = Cookie(default=None, alias=OAUTH_STATE_COOKIE),
     oauth_client: GitHubOAuthClient = Depends(create_github_oauth_client),
     app_client: GitHubAppClient = Depends(create_github_app_client),
     vault: VaultClient = Depends(create_vault_client),
@@ -100,6 +139,10 @@ async def github_callback(
         await session.delete(oauth_state)
         await session.commit()
         raise ConflictError("OAuth state has expired.")
+
+    if state_cookie is None or not hmac.compare_digest(state_cookie, state):
+        # Left unconsumed: the browser that started the flow can still finish it.
+        raise ConflictError("OAuth state was not issued to this browser.")
 
     # Exchange code for token
     try:
@@ -146,6 +189,9 @@ async def github_callback(
             scopes_granted={"user": scopes, "app": []},
         )
         session.add(connection)
+        # The primary-key default is applied at flush. Without this every new connection
+        # would build its Vault path from `None` and overwrite every other user's token.
+        await session.flush()
 
     # Store tokens in Vault
     vault_base = f"secret/github/connections/{connection.id}"
@@ -160,6 +206,7 @@ async def github_callback(
 
     await session.commit()
     await session.refresh(connection)
+    response.delete_cookie(OAUTH_STATE_COOKIE, path=OAUTH_STATE_COOKIE_PATH)
 
     return GitHubStatusResponse(
         connected=True,
@@ -183,18 +230,12 @@ async def github_status(
     app_client: GitHubAppClient = Depends(create_github_app_client),
 ) -> GitHubStatusResponse:
     """Get current GitHub connection status including accessible App installations."""
-    result = await session.execute(
-        select(GitHubConnection).where(
-            GitHubConnection.user_id == principal.user_id,
-            GitHubConnection.revoked_at.is_(None),
-        )
-    )
-    connections = result.scalars().all()
+    connections = await _active_connections(session, principal.user_id)
 
     if not connections:
         return GitHubStatusResponse(connected=False)
 
-    # Return the first active connection
+    # Report the most recently linked connection
     conn = connections[0]
     installations: list[dict[str, Any]] = []
 
@@ -236,26 +277,19 @@ async def github_disconnect(
     session: AsyncSession = Depends(get_db),
     vault: VaultClient = Depends(create_vault_client),
 ) -> None:
-    """Revoke GitHub connection and delete tokens from Vault."""
-    result = await session.execute(
-        select(GitHubConnection).where(
-            GitHubConnection.user_id == principal.user_id,
-            GitHubConnection.revoked_at.is_(None),
-        )
-    )
-    connection = result.scalar_one_or_none()
+    """Revoke every active GitHub connection of the user and delete its tokens from Vault."""
+    connections = await _active_connections(session, principal.user_id)
 
-    if connection is None:
+    if not connections:
         raise NotFoundError("No active GitHub connection found.")
 
-    # Mark as revoked
-    connection.revoked_at = datetime.now(UTC)
-
-    # Delete tokens from Vault
-    if connection.access_token_vault_path:
-        await vault.delete_secret(connection.access_token_vault_path)
-    if connection.refresh_token_vault_path:
-        await vault.delete_secret(connection.refresh_token_vault_path)
+    now = datetime.now(UTC)
+    for connection in connections:
+        connection.revoked_at = now
+        if connection.access_token_vault_path:
+            await vault.delete_secret(connection.access_token_vault_path)
+        if connection.refresh_token_vault_path:
+            await vault.delete_secret(connection.refresh_token_vault_path)
 
     await session.commit()
 
@@ -268,17 +302,12 @@ async def github_repos(
     app_client: GitHubAppClient = Depends(create_github_app_client),
 ) -> GitHubReposResponse:
     """List user's GitHub repositories (requires active GitHub connection and Vault token)."""
-    result = await session.execute(
-        select(GitHubConnection).where(
-            GitHubConnection.user_id == principal.user_id,
-            GitHubConnection.revoked_at.is_(None),
-        )
-    )
-    connection = result.scalar_one_or_none()
+    connections = await _active_connections(session, principal.user_id)
 
-    if connection is None:
+    if not connections:
         raise ConflictError("No active GitHub connection. Connect first via /github/connect")
 
+    connection = connections[0]
     if not connection.access_token_vault_path:
         return GitHubReposResponse(repos=[])
 
