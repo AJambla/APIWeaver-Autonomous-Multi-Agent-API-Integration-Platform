@@ -17,12 +17,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db
-from app.core.errors import ForbiddenError, NotFoundError
+from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.core.logging import get_logger
 from app.models.enums import OrgRole, ProjectRole
 from app.models.organization import OrganizationMember
 from app.models.project import Project, ProjectMember
 from app.rbac.policy import (
+    ARCHIVE_BLOCKED_PERMISSIONS,
     HUMAN_ONLY_ORG_PERMISSIONS,
     PERMISSIONS,
     PROJECT_ROLE_RANK,
@@ -270,6 +271,10 @@ async def _enforce_project_requirement(
                 required_role=requirement.org_role,
             )
             raise ForbiddenError()
+
+    # After the role checks, so a caller who could not do this anyway still gets 403.
+    if project.archived_at is not None and permission in ARCHIVE_BLOCKED_PERMISSIONS:
+        raise ConflictError("This project is archived.")
 
 
 async def assert_project_permission(

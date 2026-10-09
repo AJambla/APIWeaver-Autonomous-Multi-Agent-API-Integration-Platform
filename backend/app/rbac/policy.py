@@ -117,6 +117,25 @@ class RoleRequirement:
     project_role: str | None = None
 
 
+# Project actions refused once a project is archived (soft-deleted). Archiving used to
+# change nothing but a timestamp: uploads, runs, exports and GitHub pushes all kept
+# working. Reads, cancelling a run, re-archiving, member management and credential
+# writes (which include *removing* stored secrets) stay available.
+ARCHIVE_BLOCKED_PERMISSIONS: frozenset[Permission] = frozenset(
+    {
+        Permission.PROJECT_UPDATE,
+        Permission.PROJECT_SETTINGS_WRITE,
+        Permission.DOCUMENT_UPLOAD,
+        Permission.SPEC_UPDATE,
+        Permission.WORKFLOW_TRIGGER,
+        Permission.WORKFLOW_APPROVE,
+        Permission.CODE_GENERATE,
+        Permission.TEST_RUN,
+        Permission.EXPORT_CREATE,
+        Permission.GITHUB_EXPORT,
+    }
+)
+
 # Organization actions an API key never performs, whatever role backs it. Managing keys,
 # members and billing from a key would let one leaked automation credential mint or revoke
 # every other credential (the owner's included) and lock humans out of their own org.
