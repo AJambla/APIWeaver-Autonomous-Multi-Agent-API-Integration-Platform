@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Cookie, Depends, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +49,7 @@ def _context(request: Request, settings: Settings) -> RequestContext:
     summary="Create an account and its organization",
 )
 async def register(
+    response: Response,
     payload: RegisterRequest,
     request: Request,
     session: AsyncSession = Depends(get_db),
@@ -63,6 +64,15 @@ async def register(
         settings=settings,
         context=_context(request, settings),
     )
+    response.set_cookie(
+        "refresh_token",
+        tokens.refresh_token,
+        max_age=settings.jwt_refresh_token_expire_days * 86400,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="strict",
+        path="/api/v1/auth",
+    )
     return TokenResponse(
         access_token=tokens.access_token,
         refresh_token=tokens.refresh_token,
@@ -72,6 +82,7 @@ async def register(
 
 @router.post("/login", response_model=TokenResponse, summary="Exchange credentials for a JWT")
 async def login(
+    response: Response,
     payload: LoginRequest,
     request: Request,
     session: AsyncSession = Depends(get_db),
@@ -84,6 +95,15 @@ async def login(
         settings=settings,
         context=_context(request, settings),
     )
+    response.set_cookie(
+        "refresh_token",
+        tokens.refresh_token,
+        max_age=settings.jwt_refresh_token_expire_days * 86400,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="strict",
+        path="/api/v1/auth",
+    )
     return TokenResponse(
         access_token=tokens.access_token,
         refresh_token=tokens.refresh_token,
@@ -93,16 +113,31 @@ async def login(
 
 @router.post("/refresh", response_model=TokenResponse, summary="Rotate a refresh token")
 async def refresh(
-    payload: RefreshRequest,
+    response: Response,
     request: Request,
+    payload: RefreshRequest | None = None,
+    cookie_refresh_token: str | None = Cookie(default=None, alias="refresh_token"),
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> TokenResponse:
+    token_to_use = (payload.refresh_token if payload and payload.refresh_token else None) or cookie_refresh_token
+    if not token_to_use:
+        raise UnauthenticatedError("No refresh token provided in request or cookie.")
+
     tokens = await auth_service.refresh(
         session,
-        refresh_token=payload.refresh_token,
+        refresh_token=token_to_use,
         settings=settings,
         context=_context(request, settings),
+    )
+    response.set_cookie(
+        "refresh_token",
+        tokens.refresh_token,
+        max_age=settings.jwt_refresh_token_expire_days * 86400,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="strict",
+        path="/api/v1/auth",
     )
     return TokenResponse(
         access_token=tokens.access_token,
@@ -118,19 +153,20 @@ async def refresh(
     summary="Revoke the current session",
 )
 async def logout(
-    payload: LogoutRequest,
+    response: Response,
     request: Request,
-    # Optional: a client whose access token already expired must still be able to end
-    # its session. Logout used to demand a live access token, so it could not.
+    payload: LogoutRequest | None = None,
+    cookie_refresh_token: str | None = Cookie(default=None, alias="refresh_token"),
     principal: Principal | None = Depends(get_optional_principal),
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
     settings: Settings = Depends(get_settings),
 ) -> None:
+    token_to_use = (payload.refresh_token if payload and payload.refresh_token else None) or cookie_refresh_token
     if principal is not None and principal.user_id is None:
         # An API key has no session to end; it is revoked via the org API-key endpoints.
         raise UnauthenticatedError("Logout requires a user session, not an API key.")
-    if principal is None and not payload.refresh_token:
+    if principal is None and not token_to_use:
         raise UnauthenticatedError("Present the access token or the refresh token to log out.")
 
     await auth_service.logout(
@@ -139,9 +175,16 @@ async def logout(
         user_id=principal.user_id if principal else None,
         organization_id=principal.organization_id if principal else None,
         jti=principal.jti if principal else None,
-        refresh_token=payload.refresh_token,
+        refresh_token=token_to_use,
         settings=settings,
         context=_context(request, settings),
+    )
+    response.delete_cookie(
+        "refresh_token",
+        path="/api/v1/auth",
+        httponly=True,
+        secure=settings.is_production,
+        samesite="strict",
     )
 
 

@@ -33,6 +33,9 @@ class FakeVaultClient:
         clean_path = validate_vault_path(path)
         self._secrets.pop(clean_path, None)
 
+    async def renew_token(self, increment_seconds: int = 3600) -> bool:
+        return True
+
 
 class FakeQdrantClient:
     """In-memory vector store mock for unit and integration testing."""
