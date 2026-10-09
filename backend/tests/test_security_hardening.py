@@ -279,3 +279,25 @@ async def test_an_unreachable_denylist_fails_closed_with_503(
 
     assert res.status_code == 503, res.text
     assert "Timeout reading" not in res.text
+
+
+def test_token_counts_are_logged_but_credentials_are_not() -> None:
+    from app.core.logging import REDACTED, _redact_value
+
+    event = {
+        "tokens_used": 1200,
+        "total_tokens": 3400,
+        "speed_tokens_per_second": 950.5,
+        "tokens_before": 10,
+        "access_token": "eyJabc",
+        "refresh_tokens": ["r1"],
+        "token": "t",
+        "api_token": "x",
+    }
+    redacted = _redact_value(event)
+    assert redacted["tokens_used"] == 1200
+    assert redacted["total_tokens"] == 3400
+    assert redacted["speed_tokens_per_second"] == 950.5
+    assert redacted["tokens_before"] == 10
+    for secret_key in ("access_token", "refresh_tokens", "token", "api_token"):
+        assert redacted[secret_key] == REDACTED, secret_key
