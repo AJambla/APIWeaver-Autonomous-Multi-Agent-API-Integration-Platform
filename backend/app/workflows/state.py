@@ -72,4 +72,3 @@ class WorkflowState(TypedDict, total=False):
     errors: Annotated[list[str], add_errors]
     total_tokens_used: int
     token_budget: int | None
-    execution_mode: str | None

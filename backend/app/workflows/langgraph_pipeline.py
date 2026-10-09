@@ -9,10 +9,9 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
-import time
 import uuid
 from decimal import Decimal
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -180,54 +179,6 @@ def route_after_testing(state: WorkflowState) -> str:
 
     # Exhausted repair attempts: escalate to human approval gate
     return "approval_gate"
-
-
-async def _wait_for_celery_task(
-    result: Any,
-    timeout: float = 300.0,
-    initial_poll_interval: float = 0.2,
-    max_poll_interval: float = 1.0,
-) -> Any:
-    """Asynchronously poll for Celery task completion without blocking an executor thread.
-
-    `asyncio.to_thread(result.get, timeout=300)` blocks an OS worker thread in Python's
-    default ThreadPoolExecutor for up to 5 minutes, leading to thread pool exhaustion
-    under concurrent execution. This async helper polls `result.ready()` with cooperative
-    `asyncio.sleep` intervals, yielding execution back to the event loop.
-    """
-    if hasattr(result, "ready"):
-        start_time = time.monotonic()
-        deadline = start_time + timeout
-        poll_interval = initial_poll_interval
-
-        while time.monotonic() < deadline:
-            if result.ready():
-                if hasattr(result, "successful") and not result.successful():
-                    if hasattr(result, "failed") and result.failed():
-                        task_err = getattr(result, "result", None)
-                        if isinstance(task_err, BaseException):
-                            raise task_err
-                        raise RuntimeError(
-                            f"Celery task {getattr(result, 'id', 'unknown')} failed: {task_err}"
-                        )
-                if hasattr(result, "result") and result.result is not None:
-                    return result.result
-                if hasattr(result, "get"):
-                    return result.get(timeout=0.1)
-                return getattr(result, "result", None)
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            await asyncio.sleep(min(poll_interval, remaining))
-            poll_interval = min(poll_interval * 1.5, max_poll_interval)
-
-        task_id = getattr(result, "id", "unknown")
-        raise TimeoutError(f"Celery task {task_id} timed out after {timeout}s")
-
-    if hasattr(result, "get"):
-        return await asyncio.to_thread(result.get, timeout=timeout)
-    return result
 
 
 # --- Graph Factory ------------------------------------------------------------------
@@ -700,7 +651,6 @@ def create_apiweaver_graph(
         files_before = list(generated_files)
         total_tokens = tokens_before
         budget = state.get("token_budget") or DEFAULT_TOKEN_BUDGET
-        execution_mode = state.get("execution_mode", "sync")
 
         try:
             for phase in phases:
@@ -709,21 +659,13 @@ def create_apiweaver_graph(
 
                 phase_num = phase.get("phase_number")
                 await _emit_thought(state, "code_agent", f"Phase {phase_num}/{len(phases)}: Synthesizing {target_langs} client and models for '{phase.get('group_name', 'endpoints')}'...", action="codegen_phase", step=phase_num, total_steps=len(phases))
-                if execution_mode == "async":
-                    from agent_worker.celery_app import app as celery_app
-                    result = celery_app.send_task(
-                        "agent_worker.tasks.run_code_agent",
-                        args=[str(run_id), {**state, "generated_files": generated_files, "total_tokens_used": total_tokens}, phase_num],
-                        task_id=f"run_code_agent:{run_id}:phase_{phase_num}",
-                    )
-                    phase_result = await _wait_for_celery_task(result, timeout=300)
-                else:
-                    from app.workflows.agents import code_agent as code_agent_module
-                    phase_result = await code_agent_module.run_code_agent(
-                        {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
-                        phase_number=phase_num,
-                        qdrant_client=qdrant_client,
-                    )
+                from app.workflows.agents import code_agent as code_agent_module
+
+                phase_result = await code_agent_module.run_code_agent(
+                    {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
+                    phase_number=phase_num,
+                    qdrant_client=qdrant_client,
+                )
 
                 if phase_result.get("status") == "failed":
                     # run_code_agent reports its own failures ("Phase N not found", "no
@@ -757,40 +699,31 @@ def create_apiweaver_graph(
             # Consistency pass
             if total_tokens < budget:
                 await _emit_thought(state, "code_agent", "Running multi-file consistency, typing, and import alignment pass...", action="codegen_consistency")
-                if execution_mode == "async":
-                    from agent_worker.celery_app import app as celery_app
-                    result = celery_app.send_task(
-                        "agent_worker.tasks.run_code_agent",
-                        args=[str(run_id), {**state, "generated_files": generated_files, "total_tokens_used": total_tokens}, None],
-                        task_id=f"run_code_agent:{run_id}:consistency",
-                    )
-                    consistency_result = await _wait_for_celery_task(result, timeout=300)
-                else:
-                    from app.workflows.agents import code_agent as code_agent_module
+                from app.workflows.agents import code_agent as code_agent_module
 
-                    # Optional polish over files every phase already produced: a
-                    # truncated reply, bad JSON or an open LLM circuit here must not fail
-                    # a run whose generation succeeded. Keep the phase output instead.
-                    try:
-                        consistency_result = await code_agent_module.run_code_agent(
-                            {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
-                            phase_number=None,
-                            qdrant_client=qdrant_client,
-                        )
-                    except WorkflowCancelledError:
-                        raise
-                    except Exception as consistency_exc:
-                        logger.warning(
-                            "consistency_pass_failed", run_id=run_id, error=str(consistency_exc)
-                        )
-                        await _emit_thought(
-                            state,
-                            "code_agent",
-                            f"Consistency pass skipped ({consistency_exc}); keeping the phase output.",
-                            level="warn",
-                            action="codegen_consistency_skipped",
-                        )
-                        consistency_result = {}
+                # Optional polish over files every phase already produced: a
+                # truncated reply, bad JSON or an open LLM circuit here must not fail
+                # a run whose generation succeeded. Keep the phase output instead.
+                try:
+                    consistency_result = await code_agent_module.run_code_agent(
+                        {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
+                        phase_number=None,
+                        qdrant_client=qdrant_client,
+                    )
+                except WorkflowCancelledError:
+                    raise
+                except Exception as consistency_exc:
+                    logger.warning(
+                        "consistency_pass_failed", run_id=run_id, error=str(consistency_exc)
+                    )
+                    await _emit_thought(
+                        state,
+                        "code_agent",
+                        f"Consistency pass skipped ({consistency_exc}); keeping the phase output.",
+                        level="warn",
+                        action="codegen_consistency_skipped",
+                    )
+                    consistency_result = {}
 
                 if consistency_result.get("status") != "failed" and consistency_result.get(
                     "generated_files"
@@ -1477,7 +1410,6 @@ class LangGraphOrchestrator:
         event_publisher: EventPublisher | None = None,
         qdrant_client: QdrantClient | None = None,
         checkpointer: Any | None = None,
-        execution_mode: Literal["sync", "async"] = "sync",
         settings: Settings | None = None,
     ) -> None:
         self.settings = settings or get_settings()
@@ -1494,7 +1426,6 @@ class LangGraphOrchestrator:
         # Cross-step durable recovery and human-in-the-loop pause/resume are persisted
         # across all workers via PostgreSQL WorkflowCheckpoint snapshots.
         self.checkpointer = checkpointer or MemorySaver()
-        self.execution_mode = execution_mode
 
         self._builder = create_apiweaver_graph(
             session_factory=self.session_factory,
@@ -1585,7 +1516,6 @@ class LangGraphOrchestrator:
         current: dict[str, Any] = dict(initial_state)
         current["workflow_run_id"] = run_id_str
         current["status"] = WorkflowStatus.RUNNING
-        current["execution_mode"] = self.execution_mode
         current.setdefault("total_tokens_used", 0)
         # A resumed run (plan approval) starts from a checkpoint whose total already
         # includes the pre-pause spend, which was billed when that execution paused.
@@ -1637,7 +1567,6 @@ class LangGraphOrchestrator:
             event_type="workflow_started",
             payload={
                 "stages": current.get("stages", ["plan"]),
-                "execution_mode": self.execution_mode,
             },
         )
 
@@ -1874,5 +1803,3 @@ class LangGraphOrchestrator:
             except Exception as exc:  # noqa: BLE001 - a missed beat is not fatal
                 logger.warning("workflow_heartbeat_failed", error=str(exc))
 
-
-Orchestrator = LangGraphOrchestrator
