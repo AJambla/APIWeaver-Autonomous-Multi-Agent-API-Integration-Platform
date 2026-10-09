@@ -401,8 +401,13 @@ async def test_async_workflow_triggers_celery_task(client: AsyncClient, monkeypa
         def send_task(self, name, args=None, task_id=None):
             dispatched.append({"name": name, "args": args, "task_id": task_id})
 
-    from agent_worker import celery_app as celery_module
-    monkeypatch.setattr(celery_module, "app", _MockCelery())
+    monkeypatch.setattr("app.core.celery_client.get_producer", lambda _url: _MockCelery())
+    # The API image is built from backend/ and has no agent_worker package: dispatch
+    # must work without importing it.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "agent_worker", None)
+    monkeypatch.setitem(sys.modules, "agent_worker.celery_app", None)
 
     res = await client.post(
         f"/api/v1/projects/{project_id}/workflows",
@@ -421,11 +426,11 @@ async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
     """In production, failure to enqueue to Celery must fail loud with 503 rather than silently falling back."""
     project_id, _, headers = await _setup_project(client)
 
-    from agent_worker import celery_app as celery_module
-    def _failing_send_task(*args, **kwargs):
-        raise ConnectionError("Redis broker is offline")
+    class _OfflineBroker:
+        def send_task(self, *args, **kwargs):
+            raise ConnectionError("Redis broker is offline at redis:6379")
 
-    monkeypatch.setattr(celery_module.app, "send_task", _failing_send_task)
+    monkeypatch.setattr("app.core.celery_client.get_producer", lambda _url: _OfflineBroker())
 
     from app.core.config import get_settings
 
@@ -439,6 +444,7 @@ async def test_async_workflow_fails_loud_in_production_when_celery_unavailable(
     )
     assert res.status_code == 503
     assert "workflow queue is unavailable" in res.json()["error"]["message"]
+    assert "redis:6379" not in res.text
 
     # No orphaned QUEUED run is left behind the 503.
     from sqlalchemy import select
@@ -478,9 +484,7 @@ async def test_async_workflow_dispatches_to_celery(client: AsyncClient, monkeypa
         def send_task(self, name, args=None, task_id=None):
             dispatched.append({"name": name, "args": args, "task_id": task_id})
 
-    from agent_worker import celery_app as celery_module
-    mock_celery = _MockCelery()
-    monkeypatch.setattr(celery_module.app, "send_task", mock_celery.send_task)
+    monkeypatch.setattr("app.core.celery_client.get_producer", lambda _url: _MockCelery())
 
     res = await client.post(
         f"/api/v1/projects/{project_id}/workflows",
@@ -586,7 +590,7 @@ async def test_upload_dispatch_to_worker_carries_a_storage_key_not_bytes(
     client: AsyncClient, app, test_settings, monkeypatch
 ) -> None:
     """Broker messages are JSON: the worker reloads the document from object storage."""
-    from agent_worker import celery_app as celery_module
+    from types import SimpleNamespace
 
     from app.core.config import get_settings
 
@@ -596,7 +600,9 @@ async def test_upload_dispatch_to_worker_carries_a_storage_key_not_bytes(
     def send_task(name, args=None, task_id=None):
         dispatched.append({"name": name, "args": args, "task_id": task_id})
 
-    monkeypatch.setattr(celery_module.app, "send_task", send_task)
+    monkeypatch.setattr(
+        "app.core.celery_client.get_producer", lambda _url: SimpleNamespace(send_task=send_task)
+    )
     app.dependency_overrides[get_settings] = lambda: test_settings.model_copy(
         update={"require_celery_worker": True}
     )
