@@ -13,7 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import APIError, NotFoundError
-from app.models.enums import ActorType, ExportType, WorkflowStatus
+from app.models.enums import ExportType, WorkflowStatus
 from app.models.export import Export
 from app.models.project import Project
 from app.models.workflow import WorkflowRun
@@ -74,8 +74,8 @@ async def trigger_export(
 
     await audit_service.record(
         session,
+        **audit_service.actor(principal),
         action="export.triggered",
-        actor_type=ActorType.USER,
         organization_id=project.organization_id,
         resource_type="export",
         resource_id=str(project.id),

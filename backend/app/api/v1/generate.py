@@ -15,7 +15,7 @@ from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger
 from app.models.codegen import CodeGenerationRun, GeneratedFile
-from app.models.enums import ActorType, WorkflowStatus
+from app.models.enums import WorkflowStatus
 from app.models.project import Project
 from app.models.versioning import ArtifactVersion
 from app.models.workflow import WorkflowRun
@@ -72,8 +72,8 @@ async def trigger_generate(
 
     await audit_service.record(
         session,
+        **audit_service.actor(principal),
         action="code_generation.triggered",
-        actor_type=ActorType.USER,
         organization_id=project.organization_id,
         resource_type="workflow_run",
         resource_id=str(run.id),

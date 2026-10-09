@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -16,8 +17,8 @@ from app.core.errors import NotFoundError
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
 from app.models.workflow import WorkflowRun
-from app.rbac.enforce import load_project_for_principal
-from app.rbac.policy import Principal
+from app.rbac.enforce import assert_project_permission
+from app.rbac.policy import Permission, Principal
 
 logger = get_logger(__name__)
 
@@ -29,10 +30,16 @@ async def _verify_run_access(
     principal: Principal,
     run_id: Any,
 ) -> WorkflowRun:
-    run = await session.get(WorkflowRun, run_id)
+    try:
+        run_uuid = run_id if isinstance(run_id, uuid.UUID) else uuid.UUID(str(run_id))
+    except ValueError as exc:
+        raise NotFoundError("Workflow run not found.") from exc
+    run = await session.get(WorkflowRun, run_uuid)
     if run is None:
         raise NotFoundError("Workflow run not found.")
-    await load_project_for_principal(session, principal, run.project_id)
+    # Live events carry thoughts, errors and tool output: the project role is required,
+    # not just membership of the owning organization.
+    await assert_project_permission(session, principal, Permission.WORKFLOW_READ, run.project_id)
     return run
 
 

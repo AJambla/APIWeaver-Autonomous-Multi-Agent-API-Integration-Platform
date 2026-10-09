@@ -18,6 +18,20 @@ from app.models.audit import AuditLog
 from app.models.enums import ActorType
 
 
+def actor(principal: Any) -> dict[str, Any]:
+    """`actor_type` and `actor_user_id` for an authenticated principal.
+
+    An API key acts as the organization (no user), so it is recorded as a system actor;
+    a JWT principal is the user behind it. Every route should pass `**actor(principal)`
+    so no audit row is left without an actor.
+    """
+    is_key = bool(getattr(principal, "is_api_key", False))
+    return {
+        "actor_type": ActorType.SYSTEM if is_key else ActorType.USER,
+        "actor_user_id": getattr(principal, "user_id", None),
+    }
+
+
 async def record(
     session: AsyncSession,
     *,

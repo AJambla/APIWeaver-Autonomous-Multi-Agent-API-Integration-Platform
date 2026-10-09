@@ -118,6 +118,9 @@ async def consume(redis_client: aioredis.Redis, identity: str, limit: int) -> Ve
     )
 
 
+_CREDENTIAL_PATH_PREFIXES = ("/api/v1/auth/", "/api/v1/github/callback")
+
+
 def _client_identity(request: Request) -> str:
     """Pre-auth identity: the API key's hash if present, else the client IP.
 
@@ -130,7 +133,11 @@ def _client_identity(request: Request) -> str:
     `get_settings()` is called directly because middleware gets no dependency injection;
     the process reads it once, so the cost is an `lru_cache` hit.
     """
-    if api_key := request.headers.get("x-api-key"):
+    # Credential endpoints never accept an API key, so they are always limited per IP:
+    # keying them on an arbitrary X-API-Key header let a caller mint a fresh bucket per
+    # request (any random value) and brute-force logins without limit.
+    is_credential_path = request.url.path.startswith(_CREDENTIAL_PATH_PREFIXES)
+    if not is_credential_path and (api_key := request.headers.get("x-api-key")):
         from app.core.security import hash_opaque_token
 
         return f"key:{hash_opaque_token(api_key)[:16]}"

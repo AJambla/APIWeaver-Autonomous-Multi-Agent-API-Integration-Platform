@@ -13,7 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
 from app.core.errors import NotFoundError, UnprocessableEntityError
-from app.models.enums import ActorType, TestEnvironment, WorkflowStatus
+from app.models.enums import TestEnvironment, WorkflowStatus
 from app.models.project import Project
 from app.models.testing import RepairAttempt, TestResult, TestRun
 from app.models.workflow import WorkflowRun
@@ -80,8 +80,8 @@ async def trigger_test(
 
     await audit_service.record(
         session,
+        **audit_service.actor(principal),
         action="test.triggered",
-        actor_type=ActorType.USER,
         organization_id=project.organization_id,
         resource_type="test_run",
         resource_id=str(test_run.id),
