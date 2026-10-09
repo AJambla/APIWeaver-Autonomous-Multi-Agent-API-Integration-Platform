@@ -7,13 +7,13 @@ import uuid
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
-from app.core.errors import NotFoundError, UnprocessableEntityError
+from app.core.errors import ConflictError, NotFoundError, UnprocessableEntityError
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
 from app.models.enums import ActorType, WorkflowStatus
@@ -239,8 +239,18 @@ async def approve_workflow_gate(
         if latest_checkpoint is None:
             raise UnprocessableEntityError("Workflow has no checkpoint to resume from.")
 
-    run.status = WorkflowStatus.RUNNING if payload.approved else WorkflowStatus.FAILED
-    await session.flush()
+    # Claim the gate atomically: two concurrent approvals both saw PAUSED above, and
+    # each started a resume orchestrator. Only the request that flips the row proceeds.
+    new_status = WorkflowStatus.RUNNING if payload.approved else WorkflowStatus.FAILED
+    claimed = await session.execute(
+        update(WorkflowRun)
+        .where(WorkflowRun.id == run.id, WorkflowRun.status == WorkflowStatus.PAUSED_FOR_APPROVAL)
+        .values(status=new_status)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        raise ConflictError("This approval gate was already answered.")
+    run.status = new_status
 
     await audit_service.record(
         session,
