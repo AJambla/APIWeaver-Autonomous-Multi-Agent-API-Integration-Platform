@@ -9,6 +9,7 @@ Provides live terminal visibility into:
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from typing import Any
@@ -16,6 +17,14 @@ from typing import Any
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+_ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def strip_ansi(text: str) -> str:
+    """Strip ANSI color and styling escape sequences."""
+    return _ANSI_REGEX.sub("", text)
+
 
 # ANSI Color Codes for terminal formatting
 CYAN = "\033[1;36m"
@@ -39,6 +48,8 @@ class LangGraphAgentLogger:
     def _emit(self, text: str) -> None:
         """Prints directly to terminal with flush for immediate live feedback."""
         try:
+            if not sys.stdout.isatty():
+                text = strip_ansi(text)
             sys.stdout.write(text + "\n")
             sys.stdout.flush()
         except (OSError, UnicodeEncodeError) as err:
