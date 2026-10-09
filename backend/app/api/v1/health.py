@@ -14,6 +14,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy import text
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.deps import get_current_principal, get_db, get_redis
+from app.core.errors import APIError
 from app.core.logging import get_logger
 from app.rbac.enforce import require_own_org_permission
 from app.rbac.policy import Permission, Principal
@@ -114,6 +116,30 @@ async def test_llm_connection(
             "status": "error",
             "latency_ms": latency_ms,
             "model": active_llm_model(settings),
-            "error": str(exc),
+            "error": describe_provider_error(exc),
         }
+
+
+def describe_provider_error(exc: Exception) -> str:
+    """A diagnosis an admin can act on, without the raw exception text.
+
+    Provider and transport exceptions carry request URLs, response bodies and sometimes
+    echoed headers; the full text goes to the server log, the caller gets a category.
+    """
+    if isinstance(exc, APIError):
+        return exc.message  # our own messages, written to be shown
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        hint = {
+            401: "the API key was rejected",
+            403: "the API key lacks access to this model",
+            404: "the model or endpoint was not found",
+            429: "rate limited or out of quota",
+        }.get(code, "the provider returned an error")
+        return f"LLM provider returned HTTP {code}: {hint}."
+    if isinstance(exc, httpx.TimeoutException):
+        return "The LLM provider did not answer in time."
+    if isinstance(exc, httpx.TransportError):
+        return "Could not connect to the LLM provider (check OPENAI_API_BASE_URL and network)."
+    return "The LLM provider call failed; see the server log for details."
 

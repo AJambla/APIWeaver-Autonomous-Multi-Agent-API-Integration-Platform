@@ -477,7 +477,7 @@ async def logout(
     session: AsyncSession,
     redis_client: aioredis.Redis,
     *,
-    user_id: uuid.UUID,
+    user_id: uuid.UUID | None,
     organization_id: uuid.UUID | None,
     jti: str | None,
     refresh_token: str | None,
@@ -485,6 +485,10 @@ async def logout(
     context: RequestContext,
 ) -> None:
     """Revoke the current session.
+
+    `user_id` is None when only the refresh token was presented (the access token had
+    expired). Holding a refresh token is then the credential: it can revoke its own
+    family, which harms nobody else.
 
     Denylists the access token's `jti` (`Security.md §4`) so it stops working before its
     natural expiry, and revokes the presented refresh token's family so no descendant
@@ -498,10 +502,15 @@ async def logout(
             select(RefreshToken).where(RefreshToken.token_hash == hash_opaque_token(refresh_token))
         )
         stored = result.scalar_one_or_none()
-        # Only revoke a family belonging to the caller — otherwise presenting someone
-        # else's refresh token would let an attacker log them out.
-        if stored is not None and stored.user_id == user_id:
+        # With an access token, only revoke a family belonging to that user — otherwise a
+        # token pair from two accounts could log the other one out.
+        if stored is not None and (user_id is None or stored.user_id == user_id):
             await _revoke_family(session, stored.family_id)
+            user_id = user_id or stored.user_id
+
+    if user_id is None:
+        # An unknown or already-revoked refresh token: nothing to end, nothing to audit.
+        return
 
     await audit_service.record(
         session,

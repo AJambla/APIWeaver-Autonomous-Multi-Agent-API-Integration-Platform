@@ -148,7 +148,9 @@ async def github_callback(
     try:
         token_data = await oauth_client.exchange_code(code)
     except Exception as exc:
-        raise ConflictError(f"Failed to exchange code: {exc}") from exc
+        # The exception text can include GitHub's response body; it stays in the log.
+        logger.warning("github_code_exchange_failed", error=str(exc))
+        raise ConflictError("Could not complete GitHub authorization. Please try again.") from exc
 
     access_token = token_data.get("access_token")
     _ = token_data.get("refresh_token")

@@ -63,6 +63,12 @@ TIER_LIMITS: dict[str, dict[str, int]] = {
 # fairness quota.
 ANONYMOUS_REQUESTS_PER_MINUTE = 120
 
+# Failed authentications (any 401) allowed per client IP per window. Successful requests
+# never count, so valid keys and logins are unaffected; guessing is not. This covers
+# password spraying across many accounts (the per-account lockout only sees one account
+# at a time) and invalid X-API-Key values, each of which used to get a fresh bucket.
+AUTH_FAILURES_PER_MINUTE = 30
+
 # Probes are polled constantly by the load balancer and carry no credential to attribute
 # to an org, so they are exempt (`Architecture.md §11`).
 EXEMPT_PATHS = frozenset({"/healthz", "/readyz", "/metrics"})
@@ -125,6 +131,26 @@ async def consume(redis_client: aioredis.Redis, identity: str, limit: int) -> Ve
 _CREDENTIAL_PATH_PREFIXES = ("/api/v1/auth/", "/api/v1/github/callback")
 
 
+def _ip_identity(request: Request) -> str:
+    identity = select_client_ip(
+        request.headers.get("x-forwarded-for"),
+        request.client.host if request.client else None,
+        get_settings().trusted_proxy_hops,
+    )
+    return f"ip:{identity or 'unknown'}"
+
+
+async def _auth_failures(redis_client: aioredis.Redis, ip_identity: str) -> int:
+    """This window's failed authentications from the IP. 0 if Redis is unreachable."""
+    window = int(_clock()) // WINDOW_SECONDS
+    try:
+        value = await redis_client.get(f"ratelimit:authfail:{ip_identity}:{window}")
+    except Exception as exc:  # noqa: BLE001 - fail open, like the rest of the limiter
+        logger.warning("rate_limit_unavailable", error=str(exc), identity=ip_identity)
+        return 0
+    return int(value or 0)
+
+
 def _client_identity(request: Request) -> str:
     """Pre-auth identity: the API key's hash if present, else the client IP.
 
@@ -146,12 +172,7 @@ def _client_identity(request: Request) -> str:
 
         return f"key:{hash_opaque_token(api_key)[:16]}"
 
-    identity = select_client_ip(
-        request.headers.get("x-forwarded-for"),
-        request.client.host if request.client else None,
-        get_settings().trusted_proxy_hops,
-    )
-    return f"ip:{identity or 'unknown'}"
+    return _ip_identity(request)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -173,6 +194,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if redis_client is None:
             return await call_next(request)
 
+        ip_identity = _ip_identity(request)
+        if await _auth_failures(redis_client, ip_identity) >= AUTH_FAILURES_PER_MINUTE:
+            logger.info("rate_limit_exceeded", scope="auth_failures", path=request.url.path)
+            reset_at = (int(_clock()) // WINDOW_SECONDS + 1) * WINDOW_SECONDS
+            blocked = Verdict(
+                allowed=False, limit=AUTH_FAILURES_PER_MINUTE, remaining=0, reset_at=reset_at
+            )
+            return JSONResponse(
+                status_code=429,
+                content=build_error_body(
+                    code=ErrorCode.RATE_LIMIT_EXCEEDED,
+                    message="Too many failed authentication attempts. Please retry later.",
+                    request_id=getattr(request.state, "request_id", ""),
+                ),
+                headers={"Retry-After": str(blocked.retry_after), **blocked.headers()},
+            )
+
         verdict = await consume(
             redis_client, _client_identity(request), ANONYMOUS_REQUESTS_PER_MINUTE
         )
@@ -193,6 +231,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
 
         response = await call_next(request)
+        if response.status_code == 401:
+            await consume(redis_client, f"authfail:{ip_identity}", AUTH_FAILURES_PER_MINUTE)
         # setdefault semantics: the org-tier limiter runs later in the stack and its
         # numbers are the meaningful ones, so don't clobber headers it already set.
         for header, value in verdict.headers().items():
