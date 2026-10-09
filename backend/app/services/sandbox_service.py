@@ -40,6 +40,9 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# What a hermetic (mock-answered, no-network) run sees in place of the target credential.
+HERMETIC_PLACEHOLDER_API_KEY = "apiweaver-hermetic-placeholder"
+
 
 @dataclass(frozen=True, slots=True)
 class SandboxResult:
@@ -278,15 +281,12 @@ class DockerSandboxExecutor:
         settings: Settings,
         *,
         docker_client: Any | None = None,
-        network_enabled: bool | None = None,
+        network_enabled: bool = False,
     ) -> None:
         self._settings = settings
         self._docker_client = docker_client
-        self._network_enabled = (
-            network_enabled
-            if network_enabled is not None
-            else getattr(settings, "sandbox_network_enabled", False)
-        )
+        # Hermetic unless the caller is running a vetted live test.
+        self._network_enabled = network_enabled
         self._workspace: Path | None = None
         self._client_module: str | None = None
         self._client_file: str | None = None
@@ -785,8 +785,13 @@ class DockerSandboxExecutor:
             }
             if self._api_key:
                 # Runtime secret injection (Security.md §7): the credential travels
-                # in the container environment, never inside a file.
-                environment["APIWEAVER_API_KEY"] = self._api_key
+                # in the container environment, never inside a file. Only a live run
+                # can use it; a hermetic run gets a placeholder so clients that require
+                # a key still construct, without handing the real secret to generated
+                # code whose output (stack traces) is stored and fed back to the LLM.
+                environment["APIWEAVER_API_KEY"] = (
+                    self._api_key if self._network_enabled else HERMETIC_PLACEHOLDER_API_KEY
+                )
 
             if self._language == "node":
                 image = self._settings.sandbox_node_image

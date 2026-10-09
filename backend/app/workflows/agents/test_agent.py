@@ -531,7 +531,10 @@ async def _create_sandbox(
     live = state.get("environment") == "live"
     if live and not getattr(settings, "sandbox_live_network_enabled", False):
         raise RuntimeError("Live testing is disabled (SANDBOX_LIVE_NETWORK_ENABLED=false).")
-    network_enabled = live or bool(getattr(settings, "sandbox_network_enabled", False))
+    # Only live runs get a network. A hermetic run is answered by the mock transport, and
+    # giving it network would run LLM-generated code against `base_url` with none of the
+    # live-mode vetting below.
+    network_enabled = live
     if live:
         # Live mode hands generated code the network; refuse targets on private,
         # loopback or metadata addresses before any container starts.

@@ -166,8 +166,9 @@ class Settings(BaseSettings):
     sandbox_max_memory: str = "1Gi"
     sandbox_timeout_seconds: int = 300
     sandbox_pids_limit: int = 64
-    # Hermetic by default: sandbox-mode tests answer the generated client from a mock and
-    # need no network. Turning this on gives every sandbox container network access.
+    # Deprecated and ignored: it used to give *hermetic* runs network access, skipping the
+    # live-mode target vetting. Only `environment="live"` runs get a network now. Kept so a
+    # deployment that still sets it gets a startup warning instead of silent behaviour change.
     sandbox_network_enabled: bool = False
     # `environment="live"` tests call the real target API and therefore need network.
     # Off unless the deployment opts in; targets are still vetted against private,
@@ -322,6 +323,18 @@ def validate_startup_environment(settings: Settings) -> None:
 
     if not settings.redis_url or not settings.redis_url.strip():
         raise ValueError("REDIS_URL must be set and non-empty.")
+
+    if settings.sandbox_network_enabled:
+        from app.core.logging import get_logger
+
+        get_logger(__name__).warning(
+            "deprecated_setting_ignored",
+            setting="SANDBOX_NETWORK_ENABLED",
+            detail=(
+                "Hermetic sandbox runs never get network access. Use "
+                "SANDBOX_LIVE_NETWORK_ENABLED with environment='live' to test a real API."
+            ),
+        )
 
     def _resolve_path(path: Path) -> Path:
         if path.is_file():
