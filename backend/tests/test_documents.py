@@ -343,3 +343,81 @@ def test_pdf_extraction_survives_pypdf_upgrade() -> None:
     # Hex for "H5 marker".
     extracted = extract_text(_minimal_pdf("4835206d61726b6572"), "spec.pdf")
     assert extracted.strip() == "H5 marker"
+
+
+async def test_fetch_spec_refuses_private_and_metadata_targets(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    """URL import is server-side, so it must not become an SSRF primitive."""
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    org_id = me.json()["organizations"][0]["organization_id"]
+    project = await client.post(
+        "/api/v1/projects", json={"name": "Fetch", "organization_id": org_id}, headers=auth_headers
+    )
+    project_id = project.json()["id"]
+
+    for url in (
+        "http://127.0.0.1:8000/openapi.json",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.1.2.3/spec.yaml",
+    ):
+        res = await client.post(
+            f"/api/v1/projects/{project_id}/fetch-spec", json={"url": url}, headers=auth_headers
+        )
+        assert res.status_code == 422, (url, res.text)
+        assert "non-public" in res.json()["error"]["message"]
+
+    res = await client.post(
+        f"/api/v1/projects/{project_id}/fetch-spec",
+        json={"url": "file:///etc/passwd"},
+        headers=auth_headers,
+    )
+    assert res.status_code == 400, res.text
+
+
+async def test_fetch_spec_returns_the_document_and_revalidates_redirects(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch
+) -> None:
+    import httpx
+
+    from app.services import remote_fetch
+
+    async def public(url: str, *, allow_private: bool = False) -> None:
+        if "internal" in url:
+            raise ValueError("live test target 'internal' resolves to non-public address(es)")
+
+    monkeypatch.setattr(remote_fetch, "assert_public_target", public)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/redirect-inside":
+            return httpx.Response(302, headers={"location": "http://internal.test/secret"})
+        return httpx.Response(200, text="openapi: 3.0.3\n", headers={"content-type": "text/yaml"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        remote_fetch.httpx,
+        "AsyncClient",
+        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+    )
+
+    me = await client.get("/api/v1/auth/me", headers=auth_headers)
+    org_id = me.json()["organizations"][0]["organization_id"]
+    project = await client.post(
+        "/api/v1/projects", json={"name": "Fetch2", "organization_id": org_id}, headers=auth_headers
+    )
+    project_id = project.json()["id"]
+
+    ok = await client.post(
+        f"/api/v1/projects/{project_id}/fetch-spec",
+        json={"url": "https://specs.example.com/openapi.yaml"},
+        headers=auth_headers,
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["content"] == "openapi: 3.0.3\n"
+
+    bounced = await client.post(
+        f"/api/v1/projects/{project_id}/fetch-spec",
+        json={"url": "https://specs.example.com/redirect-inside"},
+        headers=auth_headers,
+    )
+    assert bounced.status_code == 422, bounced.text

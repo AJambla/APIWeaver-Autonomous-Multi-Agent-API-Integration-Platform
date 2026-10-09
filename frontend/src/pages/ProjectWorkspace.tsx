@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -33,7 +33,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
-import { apiFetch } from '../lib/api';
+import { apiFetch, apiFetchBlob } from '../lib/api';
 import { useWorkflowEvents, isWorkflowTerminal } from '../lib/use-workflow-events';
 import {
   AgentEventLog,
@@ -388,6 +388,7 @@ const formatExportType = (type: string) => {
 
 export const ProjectWorkspace: React.FC = () => {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
 
   /* --- shared data --- */
   const [project, setProject] = useState<ProjectSummary | null>(null);
@@ -429,6 +430,16 @@ export const ProjectWorkspace: React.FC = () => {
   const [liveThoughts, setLiveThoughts] = useState<LiveThought[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const terminalEndRef = useRef<HTMLDivElement>(null);
+  /* Polling loops (tests, exports) stop when the page unmounts. */
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  /* The project whose dependency graph has been fetched; see the Plan tab effect. */
+  const graphFetchedFor = useRef<string | null>(null);
 
   /* --- test tab --- */
   const [testEnv, setTestEnv] = useState('sandbox');
@@ -473,6 +484,7 @@ export const ProjectWorkspace: React.FC = () => {
       ]);
       setSpec(specRes);
       setEndpoints(Array.isArray(endpointsRes) ? endpointsRes : []);
+      graphFetchedFor.current = id;
       if (graphRes) {
         setGraph(graphRes);
         if (graphRes.nodes && graphRes.nodes.length > 0) {
@@ -682,9 +694,12 @@ export const ProjectWorkspace: React.FC = () => {
     }
   }, [activeTab, activeRunId, latestRun]);
 
-  /* Refresh dependency graph when Plan tab opens if missing or empty */
+  /* Load the dependency graph when the Plan tab opens, once per project.
+     Keyed on a ref, not on `graph`: a project with no dependencies legitimately has
+     zero edges, and re-fetching "until there are edges" looped until rate limited. */
   useEffect(() => {
-    if (activeTab === 'plan' && id && (!graph || graph.edges.length === 0)) {
+    if (activeTab === 'plan' && id && graphFetchedFor.current !== id) {
+      graphFetchedFor.current = id;
       apiFetch<DependencyGraph>(`/projects/${id}/dependency-graph`)
         .then(g => {
           if (g) {
@@ -695,9 +710,11 @@ export const ProjectWorkspace: React.FC = () => {
             }
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          graphFetchedFor.current = null;
+        });
     }
-  }, [activeTab, id, graph]);
+  }, [activeTab, id]);
 
   /* Refresh test summary when Test tab opens if missing */
   useEffect(() => {
@@ -722,7 +739,9 @@ export const ProjectWorkspace: React.FC = () => {
     };
   }, [spec, project]);
 
-  const hasValidInput = mode === 'file' ? file !== null : mode === 'paste' ? specContent.trim().length > 0 : urlValue.trim().length > 0;
+  // URL mode uploads nothing directly: Import fetches the document into the editor
+  // (switching to paste mode) so it can be reviewed first.
+  const hasValidInput = mode === 'file' ? file !== null : mode === 'paste' ? specContent.trim().length > 0 : false;
 
   const handleUpload = async () => {
     if (!id || !hasValidInput || phase === 'working') return;
@@ -732,8 +751,9 @@ export const ProjectWorkspace: React.FC = () => {
     try {
       const isJson = specContent.trim().startsWith('{');
       const payloadFile =
-        file ??
-        new File(
+        mode === 'file' && file
+          ? file
+          : new File(
           [specContent],
           isJson ? 'spec.json' : 'spec.yaml',
           { type: isJson ? 'application/json' : 'application/yaml' },
@@ -780,10 +800,13 @@ export const ProjectWorkspace: React.FC = () => {
     setUploadError('');
     setUrlNote('');
     try {
-      const res = await fetch(urlValue.trim());
-      if (!res.ok) throw new Error(`Unable to fetch the URL (${res.status} ${res.statusText}).`);
-      const text = await res.text();
-      setSpecContent(text);
+      // Fetched server-side: the page's CSP only allows its own origin, and the server
+      // applies SSRF and size limits to the target.
+      const fetched = await apiFetch<{ content: string }>(`/projects/${id}/fetch-spec`, {
+        method: 'POST',
+        body: JSON.stringify({ url: urlValue.trim() }),
+      });
+      setSpecContent(fetched.content);
       setMode('paste');
       setUrlNote('Specification fetched — review it below, then upload & analyze.');
       setPhase('idle');
@@ -805,22 +828,30 @@ export const ProjectWorkspace: React.FC = () => {
 
   /* --- plan actions --- */
 
+  /* The run waiting at the approval gate, if any: approving anything else is a 422. */
+  const pausedRunId =
+    (activeRun?.status === 'paused_for_approval' ? activeRun.id : null) ||
+    (latestRun?.status === 'paused_for_approval' ? latestRun.workflow_run_id : null);
+
+  /* An approval belongs to one run; a new run starts unapproved. */
+  useEffect(() => {
+    setPlanApproved(false);
+  }, [pausedRunId]);
+
   const approvePlan = async () => {
+    if (!pausedRunId) return;
     setPlanBusy(true);
     setPlanError('');
     try {
-      const runId = activeRunId || latestRun?.workflow_run_id;
-      if (runId) {
-        await apiFetch(`/workflows/${runId}/approve`, {
-          method: 'POST',
-          body: JSON.stringify({
-            approved: true,
-            target_languages: targetLanguages.length > 0 ? targetLanguages : ['python', 'node'],
-          }),
-        });
-        setActiveRunId(runId);
-        setActiveRun(prev => (prev ? { ...prev, status: 'running' } : null));
-      }
+      await apiFetch(`/workflows/${pausedRunId}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({
+          approved: true,
+          target_languages: targetLanguages.length > 0 ? targetLanguages : ['python', 'node'],
+        }),
+      });
+      setActiveRunId(pausedRunId);
+      setActiveRun(prev => (prev ? { ...prev, status: 'running' } : null));
       setPlanApproved(true);
       await loadProjectData();
     } catch (err) {
@@ -856,7 +887,9 @@ export const ProjectWorkspace: React.FC = () => {
         body: JSON.stringify({
           stages: ['plan', 'generate', 'test', 'export'],
           target_languages: targetLanguages.length > 0 ? targetLanguages : ['python', 'node'],
-          execution_mode: 'sync',
+          // Runs execute on the agent worker; the API falls back in-process only in
+          // development when no worker is reachable.
+          execution_mode: 'async',
         }),
       });
       setActiveRunId(res.workflow_run_id);
@@ -880,14 +913,15 @@ export const ProjectWorkspace: React.FC = () => {
       let summary: TestRunSummary | null = null;
       for (let attempt = 0; attempt < 20; attempt += 1) {
         await sleep(attempt === 0 ? 1500 : 3000);
+        if (!mountedRef.current) return;
         summary = await apiFetch<TestRunSummary>(`/projects/${id}/test-runs/${trigger.test_run_id}`).catch(() => summary);
         if (summary && (summary.results.length > 0 || TERMINAL_TEST_STATUSES.includes(summary.status))) break;
       }
-      setTestSummary(summary);
+      if (mountedRef.current) setTestSummary(summary);
     } catch (err) {
-      setTestError(errorMessage(err));
+      if (mountedRef.current) setTestError(errorMessage(err));
     } finally {
-      setTestBusy(false);
+      if (mountedRef.current) setTestBusy(false);
     }
   };
 
@@ -911,6 +945,7 @@ export const ProjectWorkspace: React.FC = () => {
         let rows: ExportRecord[] = [];
         for (let attempt = 0; attempt < 20; attempt += 1) {
           await sleep(attempt === 0 ? 1500 : 3000);
+          if (!mountedRef.current) return;
           const next = await apiFetch<ExportRecord[]>(`/projects/${id}/exports`).catch(() => null);
           if (Array.isArray(next)) rows = next;
           const mine = rows.filter(row => watched.has(row.id));
@@ -940,19 +975,10 @@ export const ProjectWorkspace: React.FC = () => {
 
   const handleDownloadExport = async (row: ExportRecord) => {
     if (!row.download_url) return;
+    setExportError('');
     try {
-      const token = sessionStorage.getItem('access_token');
-      const res = await fetch(row.download_url, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (!res.ok) throw new Error('Download failed');
-      const blob = await res.blob();
-      const disposition = res.headers.get('Content-Disposition');
-      let filename = `export-${row.export_type}.zip`;
-      if (disposition && disposition.includes('filename=')) {
-        const match = disposition.match(/filename="?([^"]+)"?/);
-        if (match) filename = match[1];
-      }
+      const { blob, filename: served } = await apiFetchBlob(row.download_url);
+      const filename = served || `export-${row.export_type}.zip`;
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = blobUrl;
@@ -962,7 +988,7 @@ export const ProjectWorkspace: React.FC = () => {
       document.body.removeChild(a);
       URL.revokeObjectURL(blobUrl);
     } catch (err) {
-      console.error('Failed to download export artifact:', err);
+      setExportError(`Download failed: ${errorMessage(err)}`);
     }
   };
 
@@ -1150,7 +1176,7 @@ export const ProjectWorkspace: React.FC = () => {
                   },
                 },
                 ...(latestRun
-                  ? [{ label: 'Open latest run', onSelect: () => window.location.assign(`/dashboard/runs/${latestRun.workflow_run_id}?project=${project.id}`) }]
+                  ? [{ label: 'Open latest run', onSelect: () => navigate(`/dashboard/runs/${latestRun.workflow_run_id}?project=${project.id}`) }]
                   : []),
               ]}
             />
@@ -1423,7 +1449,7 @@ export const ProjectWorkspace: React.FC = () => {
                 </button>
                 <button
                   onClick={approvePlan}
-                  disabled={planBusy || planApproved}
+                  disabled={planBusy || planApproved || !pausedRunId}
                   className={`flex items-center gap-2 rounded-full px-5 h-10 text-sm font-medium transition-colors ${
                     planApproved
                       ? 'border border-emerald-500/30 bg-emerald-500/15 text-emerald-300'
@@ -1443,9 +1469,9 @@ export const ProjectWorkspace: React.FC = () => {
             </div>
 
             {planError && <ErrorBanner message={planError} onDismiss={() => setPlanError('')} />}
-            {planApproved && !latestRun && (
+            {!pausedRunId && !planApproved && (
               <p className="text-xs text-neutral-500">
-                Approval recorded locally — no workflow run exists yet, so it will apply when a build is triggered.
+                Nothing is waiting for approval. Start a build — it pauses here so you can review the plan first.
               </p>
             )}
 

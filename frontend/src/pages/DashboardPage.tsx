@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../lib/auth-context';
-import { apiFetch } from '../lib/api';
-import { PROJECT_STATUSES, Page, Project, ProjectSummary } from '../lib/types';
+import { apiFetch, apiFetchAll } from '../lib/api';
+import { PROJECT_STATUSES, Project, ProjectSummary } from '../lib/types';
 import { relativeTime } from '../lib/format';
 import {
   btnGhost,
@@ -44,10 +44,13 @@ export const DashboardPage: React.FC = () => {
   const closeModal = () => setSearchParams({});
 
   const loadProjects = useCallback(() => {
-    if (!organizationId) return;
+    if (!organizationId) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
-    apiFetch<Page<Project>>(`/projects?limit=100&organization_id=${organizationId}`)
-      .then(({ data }) => {
+    apiFetchAll<Project>(`/projects?limit=100&organization_id=${organizationId}`)
+      .then(data => {
         setProjects(data);
         // Enrich visible cards with real per-project summary counts without exhausting rate limit.
         Promise.allSettled(data.slice(0, 6).map(p => apiFetch<ProjectSummary>(`/projects/${p.id}`))).then(results => {

@@ -98,6 +98,8 @@ export function useWorkflowEvents(runId: string | null) {
           await refreshAccessToken();
           return "retry-now";
         }
+        // The run is gone or not ours: retrying every 15s forever helps nobody.
+        if (response.status === 403 || response.status === 404) return "stop";
         if (!response.ok || !response.body) return "retry";
         attempt = 0;
         setConnected(true);

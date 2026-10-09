@@ -49,7 +49,10 @@ export const OverviewPage: React.FC = () => {
   const orgName = organizations.find(o => o.organization_id === organizationId)?.organization_name;
 
   useEffect(() => {
-    if (!organizationId) return;
+    if (!organizationId) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError('');

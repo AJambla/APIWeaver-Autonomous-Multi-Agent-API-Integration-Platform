@@ -191,6 +191,9 @@ class Settings(BaseSettings):
 
     # --- Uploads (Security.md §10) --------------------------------------------
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, description="50MB default")
+    # Spec import by URL is fetched server-side; private/loopback targets are refused
+    # unless this is set (trusted local development only).
+    spec_fetch_allow_private_targets: bool = False
 
     # --- Proxy topology (audit L1) --------------------------------------------
     # How many reverse proxies sit between the internet and this process, each of which

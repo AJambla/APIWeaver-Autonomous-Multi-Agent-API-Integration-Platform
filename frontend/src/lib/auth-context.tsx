@@ -14,6 +14,7 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const ORG_STORAGE_KEY = 'apiweaver.organization';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -24,7 +25,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const setCurrentUser = (data: MeResponse) => {
     setUser(data.user);
     setOrganizations(data.organizations);
-    setOrganizationId(data.organizations[0]?.organization_id ?? null);
+    // Restore the workspace chosen earlier in this browser, if still a member of it.
+    let remembered: string | null = null;
+    try {
+      remembered = localStorage.getItem(ORG_STORAGE_KEY);
+    } catch {
+      /* storage unavailable: fall back to the first organization */
+    }
+    const stillMember = data.organizations.some(o => o.organization_id === remembered);
+    setOrganizationId(stillMember ? remembered : data.organizations[0]?.organization_id ?? null);
+  };
+
+  const selectOrganization = (orgId: string) => {
+    setOrganizationId(orgId);
+    try {
+      localStorage.setItem(ORG_STORAGE_KEY, orgId);
+    } catch {
+      /* best effort */
+    }
   };
 
   const clearSession = () => {
@@ -101,7 +119,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         organizationId,
         organizations,
-        selectOrganization: setOrganizationId,
+        selectOrganization,
         loading,
         login,
         register,

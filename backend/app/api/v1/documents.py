@@ -27,9 +27,16 @@ from app.models.spec import APISpec, Endpoint
 from app.models.workflow import WorkflowRun
 from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
-from app.schemas.document import EndpointResponse, SpecResponse, UploadResponse
+from app.schemas.document import (
+    EndpointResponse,
+    FetchSpecRequest,
+    FetchSpecResponse,
+    SpecResponse,
+    UploadResponse,
+)
 from app.services import audit_service
 from app.services.ingestion_service import ingest_document
+from app.services.remote_fetch import fetch_text
 from app.services.storage_service import ObjectStorage
 from app.workflows.dispatch import dispatch_run
 from app.workflows.state import WorkflowState
@@ -173,6 +180,27 @@ async def upload_document(
         workflow_run_id=run.id,
         api_spec_id=api_spec.id if api_spec else None,
         endpoints_discovered=len(normalized.endpoints) if normalized else 0,
+    )
+
+
+@router.post("/{id}/fetch-spec", response_model=FetchSpecResponse)
+async def fetch_spec_from_url(
+    payload: FetchSpecRequest,
+    project: Project = Depends(require_project_permission(Permission.DOCUMENT_UPLOAD)),
+    settings: Settings = Depends(get_settings),
+) -> FetchSpecResponse:
+    """Fetch a specification by URL for review before upload.
+
+    Server-side because the SPA's CSP only allows its own origin; SSRF-guarded on every
+    redirect hop and capped at the upload size limit. Nothing is stored.
+    """
+    content, content_type = await fetch_text(
+        payload.url,
+        max_bytes=settings.max_upload_bytes,
+        allow_private=settings.spec_fetch_allow_private_targets,
+    )
+    return FetchSpecResponse(
+        content=content, content_type=content_type, size_bytes=len(content.encode("utf-8"))
     )
 
 
