@@ -11,11 +11,13 @@ import datetime
 import json
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any, cast
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import and_, func, or_, select, update
@@ -143,6 +145,12 @@ def route_from_start(state: WorkflowState) -> str:
     if "plan" in stages and not (state.get("plan_approved") and "generate" in stages):
         return "planner_agent"
     if "generate" in stages:
+        if state.get("generated_files") and state.get("current_node") in (
+            "code_agent",
+            "test_agent",
+            "repair_agent",
+        ):
+            return route_after_code(state)
         return "code_agent"
     if "test" in stages:
         return "test_agent"
@@ -1443,6 +1451,27 @@ def create_apiweaver_graph(
     return builder
 
 
+@asynccontextmanager
+async def make_orchestrator_checkpointer(
+    settings: Settings | None = None,
+) -> AsyncIterator[BaseCheckpointSaver]:
+    """Provide an AsyncPostgresSaver when PostgreSQL is configured, else MemorySaver."""
+    settings = settings or get_settings()
+    db_url = settings.database_url
+    if "postgres" in db_url.lower():
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            pg_conn = db_url.replace("postgresql+asyncpg://", "postgresql://")
+            async with AsyncPostgresSaver.from_conn_string(pg_conn) as saver:
+                await saver.setup()
+                yield saver
+                return
+        except Exception as exc:
+            logger.warning("async_postgres_saver_init_failed", error=str(exc))
+    yield MemorySaver()
+
+
 class LangGraphOrchestrator:
     """Orchestrator that executes workflows using compiled LangGraph state machines."""
 
@@ -1451,7 +1480,7 @@ class LangGraphOrchestrator:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         event_publisher: EventPublisher | None = None,
         qdrant_client: QdrantClient | None = None,
-        checkpointer: Any | None = None,
+        checkpointer: BaseCheckpointSaver | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.settings = settings or get_settings()
@@ -1608,6 +1637,32 @@ class LangGraphOrchestrator:
                         )
                         current["status"] = existing.status
                         return cast(WorkflowState, current)
+
+                # Restore state from previous checkpoint if available (crash recovery / worker retry)
+                latest_checkpoint = await session.scalar(
+                    select(WorkflowCheckpoint)
+                    .where(WorkflowCheckpoint.workflow_run_id == workflow_run_id)
+                    .order_by(WorkflowCheckpoint.created_at.desc())
+                    .limit(1)
+                )
+                if latest_checkpoint is not None and latest_checkpoint.state_snapshot:
+                    snapshot = dict(latest_checkpoint.state_snapshot)
+                    logger.info(
+                        "langgraph_restoring_from_checkpoint",
+                        run_id=run_id_str,
+                        checkpoint_node=latest_checkpoint.node_name,
+                    )
+                    # Merge current caller overrides over checkpoint snapshot
+                    for k, v in current.items():
+                        if k in ("generated_files", "test_suite", "repair_attempts", "exports") and not v and snapshot.get(k):
+                            continue
+                        if k == "total_tokens_used" and (v == 0 or v is None) and snapshot.get(k):
+                            continue
+                        if k in ("plan", "normalized_spec", "execution_plan") and v is None and snapshot.get(k) is not None:
+                            continue
+                        snapshot[k] = v
+                    current = snapshot
+                    tokens_at_start = int(current.get("total_tokens_used") or 0)
 
         await self._record_event(
             workflow_run_id,
