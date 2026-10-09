@@ -1,8 +1,3 @@
-variable "region" {
-  description = "AWS region"
-  type        = string
-}
-
 variable "environment" {
   description = "Environment name"
   type        = string
@@ -50,12 +45,6 @@ variable "master_username" {
   description = "Master username"
   type        = string
   default     = "apiweaver"
-}
-
-variable "master_password" {
-  description = "Master password"
-  type        = string
-  sensitive   = true
 }
 
 variable "backup_retention_period" {
