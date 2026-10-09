@@ -34,6 +34,10 @@ COPY backend ./backend
 # Copy agent_worker package
 COPY agent_worker ./agent_worker
 
+# `ENV` does not cross `FROM`: the builder's PYTHONPATH is gone here, and without it
+# `agent_worker.tasks.base` cannot import `app` and the worker exits on boot.
+ENV PYTHONPATH=/app/backend:/app
+
 # Create non-root user
 RUN useradd -m appuser && chown -R appuser /app
 
