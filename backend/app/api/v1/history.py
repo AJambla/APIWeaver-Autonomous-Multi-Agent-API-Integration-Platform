@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db
 from app.core.errors import ConflictError, NotFoundError
+from app.core.logging import get_logger
 from app.models.project import Project
 from app.models.versioning import ArtifactVersion
 from app.models.workflow import WorkflowRun
@@ -25,6 +26,8 @@ from app.schemas.history import (
     VersionRollbackResponse,
 )
 from app.services import audit_service
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["history"])
 
@@ -46,8 +49,9 @@ async def get_project_history(
             stmt = stmt.where(
                 tuple_(WorkflowRun.created_at, WorkflowRun.id) < tuple_(literal(last_created), literal(last_id))
             )
-        except (KeyError, TypeError, ValueError):
-            pass
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.debug("history_cursor_invalid", cursor=cursor, error=str(exc))
+            # Malformed cursor: start from beginning rather than 400
 
     # `created_at` is never NULL: paging on `started_at` crashed on queued runs and
     # skipped them (a row-value compare with NULL is never true).
@@ -119,8 +123,9 @@ async def get_project_versions(
                 tuple_(ArtifactVersion.created_at, ArtifactVersion.id)
                 < tuple_(literal(last_created), literal(last_id))
             )
-        except (KeyError, TypeError, ValueError):
-            pass
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.debug("versions_cursor_invalid", cursor=cursor, error=str(exc))
+            # Malformed cursor: start from beginning rather than 400
 
     stmt = stmt.order_by(
         ArtifactVersion.created_at.desc(), ArtifactVersion.id.desc()

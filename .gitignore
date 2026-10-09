@@ -148,3 +148,11 @@ Desktop.ini
 # Skills
 ui-ux-pro-max-skill/
 .agents
+graphify-out
+.contextignore
+AGENTS.md
+CLAUDE.md
+gen-context.config.json
+.github/copilot-instructions.md
+.github/gemini-context.md
+.context

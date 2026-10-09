@@ -7,6 +7,7 @@ Supports chunked generation, cross-chunk consistency, and targeted self-healing 
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import re
 import uuid
@@ -495,7 +496,11 @@ async def _run_self_review(
         }
     except Exception as e:
         logger.warning("self_review_failed", error=str(e))
-        return {"self_review_passed": True, "self_review_issues": [], "self_review_summary": f"Review failed: {e}"}
+        return {
+            "self_review_passed": False,
+            "self_review_issues": [{"file": "general", "issue": f"Self-review failed: {e}", "severity": "warning"}],
+            "self_review_summary": f"Review failed: {e}",
+        }
 
 
 async def _render_templates(
@@ -580,22 +585,24 @@ async def _render_templates(
         "author_email": to_email(author_email, fallback="support@apiweaver.dev"),
     }
 
-    files = {}
     template_files = {
         "python": ["models.py.j2", "client.py.j2", "__init__.py.j2", "pyproject.toml.j2", "README.md.j2"],
         "node": ["types.ts.j2", "client.ts.j2", "index.ts.j2", "package.json.j2", "tsconfig.json.j2", "README.md.j2"],
     }
 
-    for tmpl_name in template_files.get(language, []):
-        try:
-            template = env.get_template(tmpl_name)
-            output_path = tmpl_name.replace(".j2", "")
-            content = template.render(**context)
-            files[output_path] = content
-        except Exception as e:
-            logger.warning("template_render_failed", template=tmpl_name, error=str(e))
+    def _render_all() -> dict[str, str]:
+        rendered_files = {}
+        for tmpl_name in template_files.get(language, []):
+            try:
+                template = env.get_template(tmpl_name)
+                output_path = tmpl_name.replace(".j2", "")
+                content = template.render(**context)
+                rendered_files[output_path] = content
+            except Exception as e:
+                logger.warning("template_render_failed", template=tmpl_name, error=str(e))
+        return rendered_files
 
-    return files
+    return await asyncio.to_thread(_render_all)
 
 
 async def run_code_agent(
@@ -922,7 +929,12 @@ async def run_code_agent(
             if fp not in all_files:
                 if fp.endswith(".py") and not _source_is_parseable(fp, tmpl_content):
                     logger.error("template_syntax_error_phase1", file=fp)
-                    raise SyntaxError(f"Rendered template {fp} has syntax error on initial phase")
+                    return {
+                        "current_node": "code_agent",
+                        "progress_percent": 50,
+                        "status": "failed",
+                        "errors": [f"Rendered template {fp} has syntax error on initial phase."],
+                    }
                 all_files[fp] = tmpl_content
             elif fp.endswith(".py"):
                 all_files[fp] = _merge_python_code(all_files[fp], tmpl_content, fp)
