@@ -382,11 +382,12 @@ async def test_fetch_spec_returns_the_document_and_revalidates_redirects(
 
     from app.services import remote_fetch
 
-    async def public(url: str, *, allow_private: bool = False) -> None:
-        if "internal" in url:
-            raise ValueError("live test target 'internal' resolves to non-public address(es)")
+    async def public(hostname: str, port: int) -> str:
+        if "internal" in hostname:
+            raise ValueError("'internal' resolves to non-public address(es)")
+        return "93.184.216.34"
 
-    monkeypatch.setattr(remote_fetch, "assert_public_target", public)
+    monkeypatch.setattr(remote_fetch, "resolve_public_address", public)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/redirect-inside":
@@ -421,3 +422,59 @@ async def test_fetch_spec_returns_the_document_and_revalidates_redirects(
         headers=auth_headers,
     )
     assert bounced.status_code == 422, bounced.text
+
+
+
+async def test_fetch_spec_connects_to_the_address_it_vetted(monkeypatch) -> None:
+    """DNS rebinding: the name was checked, then httpx resolved it again to connect."""
+    import httpx
+
+    from app.services import remote_fetch
+
+    answers = iter(["93.184.216.34", "169.254.169.254"])  # rebinding DNS server
+    resolutions: list[str] = []
+
+    async def rebinding_dns(hostname: str, port: int) -> str:
+        resolutions.append(hostname)
+        return next(answers)
+
+    monkeypatch.setattr(remote_fetch, "resolve_public_address", rebinding_dns)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text="openapi: 3.0.3\n")
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        remote_fetch.httpx,
+        "AsyncClient",
+        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+    )
+
+    text, _ = await remote_fetch.fetch_text("https://specs.example.com/openapi.yaml", max_bytes=10_000)
+
+    assert text == "openapi: 3.0.3\n"
+    assert resolutions == ["specs.example.com"]  # resolved exactly once
+    assert seen[0].url.host == "93.184.216.34"  # connected to the vetted address
+    assert seen[0].headers["host"] == "specs.example.com"
+    assert seen[0].extensions["sni_hostname"] == "specs.example.com"
+
+
+@pytest.mark.parametrize(
+    ("address", "public"),
+    [
+        ("93.184.216.34", True),
+        ("2606:2800:220:1:248:1893:25c8:1946", True),
+        ("10.0.0.1", False),
+        ("169.254.169.254", False),
+        ("100.100.100.200", False),  # CGNAT range, missed before
+        ("::ffff:10.0.0.1", False),  # IPv4-mapped private
+        ("127.0.0.1", False),
+        ("224.0.1.1", False),
+    ],
+)
+def test_public_address_classification(address: str, public: bool) -> None:
+    from app.services.sandbox_service import _is_public_address
+
+    assert _is_public_address(address) is public

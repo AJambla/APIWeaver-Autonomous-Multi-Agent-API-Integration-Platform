@@ -189,15 +189,38 @@ def endpoint_path_regex(path: str) -> str:
 
 
 def _is_public_address(address: str) -> bool:
-    ip = ipaddress.ip_address(address)
-    return not (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    """Globally routable unicast only.
+
+    `is_global` also excludes ranges the old private/loopback/link-local list missed,
+    such as 100.64.0.0/10 (carrier-grade NAT, home of some cloud metadata services). An
+    IPv4-mapped IPv6 address (::ffff:10.0.0.1) is judged by the IPv4 address it carries.
+    """
+    ip = ipaddress.ip_address(address.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+async def resolve_public_address(hostname: str, port: int) -> str:
+    """Resolve `hostname` once and return an address to connect to, all of them vetted.
+
+    Callers must connect to the returned address rather than the name: resolving the
+    name again at connect time is exactly what a DNS-rebinding server exploits (public
+    answer for the check, 169.254.169.254 for the connection).
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"cannot resolve {hostname!r}: {exc}") from exc
+    addresses = [str(info[4][0]) for info in infos]
+    blocked = sorted({a for a in addresses if not _is_public_address(a)})
+    if blocked or not addresses:
+        raise ValueError(
+            f"{hostname!r} resolves to non-public address(es) {blocked}; "
+            "set SANDBOX_ALLOW_PRIVATE_TARGETS=true only for trusted local development"
+        )
+    return addresses[0]
 
 
 async def assert_public_target(url: str | None, *, allow_private: bool = False) -> None:
@@ -212,17 +235,8 @@ async def assert_public_target(url: str | None, *, allow_private: bool = False) 
         raise ValueError(f"live testing needs an absolute http(s) base URL, got {url!r}")
     if allow_private:
         return
-    loop = asyncio.get_running_loop()
-    try:
-        infos = await loop.getaddrinfo(parts.hostname, parts.port or 443, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise ValueError(f"cannot resolve live test target {parts.hostname!r}: {exc}") from exc
-    blocked = sorted({info[4][0] for info in infos if not _is_public_address(info[4][0])})
-    if blocked:
-        raise ValueError(
-            f"live test target {parts.hostname!r} resolves to non-public address(es) {blocked}; "
-            "set SANDBOX_ALLOW_PRIVATE_TARGETS=true only for trusted local development"
-        )
+    default_port = 443 if parts.scheme == "https" else 80
+    await resolve_public_address(parts.hostname, parts.port or default_port)
 
 
 def reap_orphaned_sandboxes(docker_client: Any, *, max_age_seconds: int) -> int:
