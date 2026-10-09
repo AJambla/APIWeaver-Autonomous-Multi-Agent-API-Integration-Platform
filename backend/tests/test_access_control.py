@@ -159,7 +159,12 @@ async def test_member_backed_keys_see_no_projects(
     assert listed.json()["data"] == []
 
 
-async def test_rotating_api_key_headers_do_not_bypass_the_login_limit(client: AsyncClient) -> None:
+async def test_rotating_api_key_headers_do_not_bypass_the_login_limit(
+    client: AsyncClient, monkeypatch
+) -> None:
+    # ~120 Argon2 logins take ~30-40 s; on the real clock the fixed 60 s window often
+    # rolled over mid-test and reset the counter, so the 429 never came (flaky).
+    monkeypatch.setattr("app.core.ratelimit._clock", lambda: 1_800_000_000.0)
     statuses = []
     for _ in range(ANONYMOUS_REQUESTS_PER_MINUTE + 1):
         res = await client.post(

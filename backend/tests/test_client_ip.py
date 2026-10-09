@@ -46,6 +46,7 @@ def _request(
     forwarded_for: str | None = None,
     peer: str | None = PEER,
     api_key: str | None = None,
+    path: str = "/api/v1/auth/login",
 ) -> Request:
     headers = []
     if forwarded_for is not None:
@@ -58,8 +59,8 @@ def _request(
         "http_version": "1.1",
         "method": "POST",
         "scheme": "http",
-        "path": "/api/v1/auth/login",
-        "raw_path": b"/api/v1/auth/login",
+        "path": path,
+        "raw_path": path.encode(),
         "query": "",
         "root_path": "",
         "headers": headers,
@@ -215,9 +216,16 @@ def test_a_poisoned_header_falls_back_instead_of_forking_the_bucket(
 
 
 def test_api_key_identity_is_hashed_not_plain(limiter_settings: Settings) -> None:
-    with_key = _request(forwarded_for=f"{FORGED}, 203.0.113.9", api_key="aw_live_supersecretkey")
-    other_key = _request(api_key="aw_live_secondsecretkey")
-    moved = _request(forwarded_for="5.6.7.8, 9.9.9.9", api_key="aw_live_supersecretkey")
+    # Credential paths are always limited per IP (any X-API-Key there is ignored), so the
+    # key-keyed bucket is exercised on an ordinary API path.
+    api_path = "/api/v1/projects"
+    with_key = _request(
+        forwarded_for=f"{FORGED}, 203.0.113.9", api_key="aw_live_supersecretkey", path=api_path
+    )
+    other_key = _request(api_key="aw_live_secondsecretkey", path=api_path)
+    moved = _request(
+        forwarded_for="5.6.7.8, 9.9.9.9", api_key="aw_live_supersecretkey", path=api_path
+    )
 
     identity = _client_identity(with_key)
 

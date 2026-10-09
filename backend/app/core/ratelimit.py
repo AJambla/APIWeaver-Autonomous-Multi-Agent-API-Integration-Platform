@@ -39,6 +39,10 @@ logger = get_logger(__name__)
 
 WINDOW_SECONDS = 60
 
+# Indirection so tests can pin the fixed window; patching `time.time` itself would move
+# every clock in the process.
+_clock = time.time
+
 # Requests/min per plan tier — `API.md §3`. Enterprise is documented as "Custom"; until
 # per-org overrides exist it takes the Pro ceiling rather than being treated as unlimited,
 # so a misconfigured enterprise org still cannot exhaust the cluster.
@@ -73,7 +77,7 @@ class Verdict:
 
     @property
     def retry_after(self) -> int:
-        return max(1, self.reset_at - int(time.time()))
+        return max(1, self.reset_at - int(_clock()))
 
     def headers(self) -> dict[str, str]:
         """The `X-RateLimit-*` trio required on every response by `API.md §3`."""
@@ -95,7 +99,7 @@ async def consume(redis_client: aioredis.Redis, identity: str, limit: int) -> Ve
 
     Returns an allow-verdict on Redis failure (fail open).
     """
-    window = int(time.time()) // WINDOW_SECONDS
+    window = int(_clock()) // WINDOW_SECONDS
     reset_at = (window + 1) * WINDOW_SECONDS
     key = f"ratelimit:{identity}:{window}"
 
