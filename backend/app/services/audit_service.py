@@ -54,15 +54,18 @@ async def record(
     Callers must not pass secret values in `metadata`; log redaction (`Security.md §19`)
     covers log emission, not database columns.
     """
+    # Request-derived strings are bounded to their columns. The audit row shares the
+    # caller's transaction, so a 600-character User-Agent used to fail the insert and roll
+    # back the action itself - including the failed-login lockout counter.
     entry = AuditLog(
         organization_id=organization_id,
         actor_user_id=actor_user_id,
         actor_type=actor_type,
         action=action,
-        resource_type=resource_type,
-        resource_id=resource_id,
+        resource_type=resource_type[:50] if resource_type else resource_type,
+        resource_id=resource_id[:100] if resource_id else resource_id,
         ip_address=ip_address,
-        user_agent=user_agent,
+        user_agent=user_agent[:500] if user_agent else user_agent,
         event_metadata=metadata,
     )
     session.add(entry)
