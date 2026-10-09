@@ -257,3 +257,31 @@ async def test_api_keys_cannot_manage_the_org_api_keys(
     # The human owner still manages keys.
     human = await client.get(f"/api/v1/org/{org_id}/api-keys", headers=seed["owner_headers"])
     assert human.status_code == 200, human.text
+
+
+async def test_an_archived_project_refuses_new_work_but_stays_readable(
+    client: AsyncClient, session_factory, test_settings
+) -> None:
+    seed = await _seed(session_factory, test_settings)
+    project_id = seed["project_a"].id
+    headers = seed["owner_headers"]
+
+    archived = await client.delete(f"/api/v1/projects/{project_id}", headers=headers)
+    assert archived.status_code in (200, 204), archived.text
+
+    trigger = await client.post(
+        f"/api/v1/projects/{project_id}/workflows", json={"stages": ["plan"]}, headers=headers
+    )
+    assert trigger.status_code == 409, trigger.text
+    upload = await client.post(
+        f"/api/v1/projects/{project_id}/upload",
+        files={"file": ("notes.md", b"# API", "text/markdown")},
+        headers=headers,
+    )
+    assert upload.status_code == 409, upload.text
+
+    read = await client.get(f"/api/v1/projects/{project_id}", headers=headers)
+    assert read.status_code == 200, read.text
+    # Removing stored credentials is cleanup, and stays possible.
+    delete_auth = await client.delete(f"/api/v1/projects/{project_id}/auth", headers=headers)
+    assert delete_auth.status_code != 409, delete_auth.text
