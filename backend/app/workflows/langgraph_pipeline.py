@@ -1511,6 +1511,38 @@ class LangGraphOrchestrator:
             pipeline_error_total.labels(subsystem="event_record", error_type=type(exc).__name__).inc()
             logger.error("langgraph_event_record_failed", error=str(exc), exc_info=True)
 
+    async def _record_usage(
+        self,
+        session: AsyncSession,
+        run_obj: WorkflowRun,
+        state: dict[str, Any],
+        tokens_spent: int,
+    ) -> None:
+        """Bill the tokens spent by *this* execution as a UsageMetric.
+
+        Billing the cumulative `total_tokens_used` charged pre-pause spend again every
+        time an approved plan resumed. The run row still carries the cumulative total.
+        """
+        if tokens_spent <= 0:
+            return
+        try:
+            org_id = state.get("organization_id")
+            if not org_id:
+                project_row = await session.get(Project, run_obj.project_id)
+                org_id = project_row.organization_id if project_row else None
+            if org_id:
+                session.add(
+                    UsageMetric(
+                        organization_id=uuid.UUID(str(org_id)),
+                        metric_name="token_cost_usd",
+                        value=calculate_token_cost_usd(
+                            tokens_spent, active_llm_model(self.settings), settings=self.settings
+                        ),
+                    )
+                )
+        except Exception as metric_err:
+            logger.warning("failed_to_record_usage_metric", error=str(metric_err))
+
     async def run(
         self,
         workflow_run_id: uuid.UUID,
@@ -1523,6 +1555,9 @@ class LangGraphOrchestrator:
         current["status"] = WorkflowStatus.RUNNING
         current["execution_mode"] = self.execution_mode
         current.setdefault("total_tokens_used", 0)
+        # A resumed run (plan approval) starts from a checkpoint whose total already
+        # includes the pre-pause spend, which was billed when that execution paused.
+        tokens_at_start = int(current.get("total_tokens_used") or 0)
 
         # Move the run to RUNNING only if nobody finished or cancelled it while it was
         # queued: an unconditional write here used to resurrect cancelled runs.
@@ -1615,23 +1650,9 @@ class LangGraphOrchestrator:
                             )
                             run_obj.estimated_cost_usd = cost_usd
 
-                            if total_tokens > 0:
-                                try:
-                                    org_id = result_state.get("organization_id")
-                                    if not org_id:
-                                        project_row = await session.get(
-                                            Project, run_obj.project_id
-                                        )
-                                        org_id = project_row.organization_id if project_row else None
-                                    if org_id:
-                                        metric = UsageMetric(
-                                            organization_id=uuid.UUID(str(org_id)),
-                                            metric_name="token_cost_usd",
-                                            value=cost_usd,
-                                        )
-                                        session.add(metric)
-                                except Exception as metric_err:
-                                    logger.warning("failed_to_record_usage_metric", error=str(metric_err))
+                            await self._record_usage(
+                                session, run_obj, result_state, total_tokens - tokens_at_start
+                            )
 
                             if final_status == WorkflowStatus.COMPLETED and result_state.get("generated_files"):
                                 try:
@@ -1708,21 +1729,9 @@ class LangGraphOrchestrator:
                         run_obj.total_tokens_used = total_tokens
                         run_obj.estimated_cost_usd = cost_usd
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
-                        if total_tokens > 0:
-                            try:
-                                org_id = current.get("organization_id")
-                                if not org_id:
-                                    project_row = await session.get(Project, run_obj.project_id)
-                                    org_id = project_row.organization_id if project_row else None
-                                if org_id:
-                                    metric = UsageMetric(
-                                        organization_id=uuid.UUID(str(org_id)),
-                                        metric_name="token_cost_usd",
-                                        value=cost_usd,
-                                    )
-                                    session.add(metric)
-                            except Exception as metric_err:
-                                logger.warning("failed_to_record_usage_metric", error=str(metric_err))
+                        await self._record_usage(
+                            session, run_obj, current, total_tokens - tokens_at_start
+                        )
                         await session.commit()
             await self._record_event(
                 workflow_run_id,
@@ -1760,21 +1769,9 @@ class LangGraphOrchestrator:
                         run_obj.current_node = current.get("current_node") or "failed"
                         run_obj.progress_percent = current.get("progress_percent") or 75
                         run_obj.completed_at = datetime.datetime.now(datetime.UTC)
-                        if total_tokens > 0:
-                            try:
-                                org_id = current.get("organization_id")
-                                if not org_id:
-                                    project_row = await session.get(Project, run_obj.project_id)
-                                    org_id = project_row.organization_id if project_row else None
-                                if org_id:
-                                    metric = UsageMetric(
-                                        organization_id=uuid.UUID(str(org_id)),
-                                        metric_name="token_cost_usd",
-                                        value=cost_usd,
-                                    )
-                                    session.add(metric)
-                            except Exception as metric_err:
-                                logger.warning("failed_to_record_usage_metric", error=str(metric_err))
+                        await self._record_usage(
+                            session, run_obj, current, total_tokens - tokens_at_start
+                        )
                     try:
                         project = await session.get(
                             Project, uuid.UUID(str(current.get("project_id")))

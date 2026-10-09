@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any
 
 from httpx import AsyncClient
@@ -379,6 +380,43 @@ async def test_a_failing_consistency_pass_keeps_the_generated_files(
 
     assert result["status"] != WorkflowStatus.FAILED, result.get("errors")
     assert [f["file_path"] for f in result["generated_files"]] == ["client.py"]
+
+
+
+async def test_a_resumed_run_bills_only_its_own_tokens(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Resume state carries the pre-pause total, which was already billed."""
+    from unittest.mock import patch
+
+    from sqlalchemy import select
+
+    from app.core.config import get_settings
+    from app.models.metrics import UsageMetric
+    from app.workflows.agents import code_agent as code_agent_module
+    from app.workflows.langgraph_pipeline import LangGraphOrchestrator as Orchestrator
+    from app.workflows.langgraph_pipeline import active_llm_model, calculate_token_cost_usd
+
+    project_id, run_id = await _seed_project_run(session_factory, "resumebill")
+    state = _generate_state(project_id, run_id, phase_count=1, token_budget=1_000_000)
+    state["total_tokens_used"] = 50_000  # spent (and billed) before the approval pause
+
+    calls: list[Any] = []
+    with patch.object(code_agent_module, "run_code_agent", _spending_code_agent(calls, 100)):
+        result = await Orchestrator(session_factory).run(uuid.UUID(run_id), state)
+
+    assert result["total_tokens_used"] > 50_000
+    spent_now = result["total_tokens_used"] - 50_000
+    settings = get_settings()
+    async with session_factory() as session:
+        billed = list(await session.scalars(select(UsageMetric.value)))
+    model = active_llm_model(settings)
+    expected = calculate_token_cost_usd(spent_now, model, settings=settings)
+    already_billed = calculate_token_cost_usd(50_000, model, settings=settings)
+    assert len(billed) == 1
+    # Within the column's 4-decimal precision, and nowhere near re-billing the 50k.
+    assert abs(billed[0] - expected) <= Decimal("0.0001")
+    assert billed[0] < already_billed
 
 
 class _FakeAsyncResult:
