@@ -10,9 +10,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.deps import get_current_principal, get_db, get_redis
-from app.core.errors import NotFoundError
+from app.core.errors import NotFoundError, UnprocessableEntityError
 from app.models.enums import ActorType, TestEnvironment, WorkflowStatus
 from app.models.project import Project
 from app.models.testing import RepairAttempt, TestResult, TestRun
@@ -46,13 +47,18 @@ async def trigger_test(
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
 ) -> TestRunResponse:
     """Trigger tests for a project."""
     # Validate environment
     env = payload.environment
     if env not in (TestEnvironment.SANDBOX.value, TestEnvironment.LIVE.value):
-        from app.core.errors import UnprocessableEntityError
         raise UnprocessableEntityError(f"Invalid environment: {env}. Must be 'sandbox' or 'live'.")
+    if env == TestEnvironment.LIVE.value and not settings.sandbox_live_network_enabled:
+        # Live tests give generated code network access to the target API.
+        raise UnprocessableEntityError(
+            "Live testing is disabled on this deployment (SANDBOX_LIVE_NETWORK_ENABLED=false)."
+        )
 
     # The orchestrator writes agent events keyed by workflow run, so this stage needs a
     # real WorkflowRun row rather than the TestRun's own id.

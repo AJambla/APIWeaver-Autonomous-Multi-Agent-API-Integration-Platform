@@ -21,7 +21,7 @@ from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
 from app.models.auth_config import AuthConfig, SecretRef
 from app.models.enums import AuthScheme
-from app.services.sandbox_service import DockerSandboxExecutor
+from app.services.sandbox_service import DockerSandboxExecutor, assert_public_target
 from app.services.storage_service import storage_service
 from app.services.test_run_service import record_test_run_results
 from app.services.vault_service import create_vault_client
@@ -179,9 +179,27 @@ async def generate_test_fixtures(spec: dict[str, Any] | list[Any], llm_client: L
                 req["body"] = det_fixture["request"]["body"]
             fixture_json["request"] = req
 
+        if not isinstance(fixture_json.get("expected_status"), int):
+            fixture_json["expected_status"] = det_fixture["expected_status"]
+        fixture_json["mock_response"] = _mock_response(ep, fixture_json["expected_status"], defs)
         fixtures[ep_key] = fixture_json
 
     return fixtures
+
+
+def _mock_response(ep: dict[str, Any], status: int, definitions: dict[str, Any]) -> Any:
+    """Response body the hermetic sandbox serves for `status`, synthesized from the spec."""
+    if status in (204, 304):
+        return None
+    schemas = ep.get("response_schemas") or {}
+    schema = schemas.get(str(status)) if isinstance(schemas, dict) else None
+    if not isinstance(schema, dict) or not schema:
+        return {}
+    try:
+        return synthesize_schema_data(schema, definitions, field_name="response")
+    except Exception as exc:
+        logger.debug("mock_response_synthesis_failed", error=str(exc))
+        return {}
 
 
 def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -256,6 +274,39 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
         "expected_status": expected_status,
         "is_fallback": True,
     }
+
+
+def _resource_key(path: str) -> str:
+    """Normalized resource name of a path: `/store/orders/{id}` -> `order`."""
+    segments = [s for s in path.split("/") if s and not s.startswith("{")]
+    name = re.sub(r"[^a-z0-9]", "", (segments[-1] if segments else "").lower())
+    return name[:-1] if name.endswith("s") and len(name) > 3 else name
+
+
+def _record_created_id(
+    created_ids: dict[str, Any], path: str, result: dict[str, Any], body: Any
+) -> None:
+    snapshot = result.get("response_snapshot") or {}
+    resp_body = snapshot.get("body") if isinstance(snapshot, dict) else None
+    created = None
+    if isinstance(resp_body, dict) and resp_body.get("id") is not None:
+        created = resp_body["id"]
+    elif isinstance(body, dict) and body.get("id") is not None:
+        created = body["id"]
+    if created is not None:
+        created_ids[_resource_key(path)] = created
+
+
+def _chained_id(created_ids: dict[str, Any], param_name: str, path: str) -> Any:
+    """An id created earlier that this path parameter refers to, if any.
+
+    `{petId}` matches resource `pet`; a bare `{id}` matches the path's own resource.
+    """
+    norm = re.sub(r"[^a-z0-9]", "", param_name.lower())
+    if not norm.endswith("id"):
+        return None
+    resource = norm[:-2] or _resource_key(path.split("/{", 1)[0])
+    return created_ids.get(resource)
 
 
 def _is_unnecessary_endpoint(ep: dict[str, Any]) -> tuple[bool, str]:
@@ -477,17 +528,55 @@ async def _create_sandbox(
                 "sandbox_file_download_failed", file=file_meta.get("file_path"), error=str(e)
             )
 
-    network_enabled = (
-        state.get("environment") == "live"
-        or getattr(settings, "sandbox_network_enabled", False)
-    )
+    live = state.get("environment") == "live"
+    if live and not getattr(settings, "sandbox_live_network_enabled", False):
+        raise RuntimeError("Live testing is disabled (SANDBOX_LIVE_NETWORK_ENABLED=false).")
+    network_enabled = live or bool(getattr(settings, "sandbox_network_enabled", False))
+    if live:
+        # Live mode hands generated code the network; refuse targets on private,
+        # loopback or metadata addresses before any container starts.
+        await assert_public_target(
+            spec_dict.get("base_url"),
+            allow_private=bool(getattr(settings, "sandbox_allow_private_targets", False)),
+        )
 
     executors: dict[str, DockerSandboxExecutor] = {}
+    try:
+        return await _load_executors(
+            executors,
+            settings,
+            state,
+            spec_dict,
+            auth,
+            target_languages,
+            python_files,
+            node_files,
+            network_enabled,
+        )
+    except BaseException:
+        # A failed load must not leak the workspaces of executors already staged.
+        for executor in executors.values():
+            try:
+                await executor.cleanup()
+            except Exception as cleanup_err:
+                logger.warning("sandbox_cleanup_failed", error=str(cleanup_err))
+        raise
 
+
+async def _load_executors(
+    executors: dict[str, DockerSandboxExecutor],
+    settings: Any,
+    state: WorkflowState,
+    spec_dict: dict[str, Any],
+    auth: dict[str, Any] | None,
+    target_languages: list[str],
+    python_files: dict[str, str],
+    node_files: dict[str, str],
+    network_enabled: bool,
+) -> DockerSandboxExecutor | MultiLanguageSandboxExecutor:
     if "python" in target_languages and python_files:
-        exec_py = DockerSandboxExecutor(settings)
-        if hasattr(exec_py, "_network_enabled"):
-            exec_py._network_enabled = network_enabled
+        exec_py = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+        executors["python"] = exec_py
         load_kw: dict[str, Any] = {
             "project_id": state.get("project_id"),
             "files": python_files,
@@ -497,12 +586,10 @@ async def _create_sandbox(
         if "language" in inspect.signature(exec_py.load).parameters:
             load_kw["language"] = "python"
         await exec_py.load(**load_kw)
-        executors["python"] = exec_py
 
     if "node" in target_languages and node_files:
-        exec_node = DockerSandboxExecutor(settings)
-        if hasattr(exec_node, "_network_enabled"):
-            exec_node._network_enabled = network_enabled
+        exec_node = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+        executors["node"] = exec_node
         load_kw_node: dict[str, Any] = {
             "project_id": state.get("project_id"),
             "files": node_files,
@@ -512,13 +599,11 @@ async def _create_sandbox(
         if "language" in inspect.signature(exec_node.load).parameters:
             load_kw_node["language"] = "node"
         await exec_node.load(**load_kw_node)
-        executors["node"] = exec_node
 
     if not executors:
         all_files = {**python_files, **node_files}
-        single = DockerSandboxExecutor(settings)
-        if hasattr(single, "_network_enabled"):
-            single._network_enabled = network_enabled
+        single = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+        executors["default"] = single
         await single.load(
             project_id=state.get("project_id"),
             files=all_files,
@@ -643,16 +728,11 @@ async def run_test_agent(
         total_tests = len(endpoints_to_test) * len(language_executors)
         test_counter = 0
 
+        chain_ids = state.get("environment") == "live"
         for lang, executor in language_executors.items():
-            # Seed realistic dynamic context for real test parameter chaining
-            live_context: dict[str, Any] = {
-                "id": 105001,
-                "petId": 105001,
-                "orderId": 105001,
-                "username": "weaver_test_user",
-                "password": "Secret123!",
-                "status": "available",
-            }
+            # Live runs chain ids returned by earlier creates into later path parameters
+            # (POST /pets -> GET /pets/{petId}); hermetic runs need no chaining.
+            created_ids: dict[str, Any] = {}
 
             for i, ep in enumerate(endpoints_to_test):
                 test_counter += 1
@@ -710,28 +790,11 @@ async def run_test_agent(
                 if isinstance(body, dict):
                     body = dict(body)
 
-                for p_name in re.findall(r"\{([^}]+)\}", path):
-                    p_norm = p_name.lower().replace("_", "").replace("-", "")
-                    if p_name in live_context:
-                        params[p_name] = live_context[p_name]
-                    elif p_norm in live_context:
-                        params[p_name] = live_context[p_norm]
-                    elif p_norm.endswith("id") and "id" in live_context:
-                        params[p_name] = live_context["id"]
-
-                if "status" in params and isinstance(params["status"], str) and params["status"] not in ("available", "pending", "sold"):
-                    params["status"] = "available"
-                if "/user/login" in path:
-                    params["username"] = live_context.get("username", "weaver_test_user")
-                    params["password"] = live_context.get("password", "Secret123!")
-
-                if isinstance(body, dict):
-                    if "id" in body and body["id"] in (1, 0, None):
-                        body["id"] = live_context.get("id", 105001)
-                    if "username" in body:
-                        body["username"] = live_context.get("username", "weaver_test_user")
-                    if "petId" in body and body["petId"] in (1, 0, None):
-                        body["petId"] = live_context.get("petId", 105001)
+                if chain_ids:
+                    for p_name in re.findall(r"\{([^}]+)\}", path):
+                        chained = _chained_id(created_ids, p_name, path)
+                        if chained is not None:
+                            params[p_name] = chained
 
                 resolved_fixture = dict(fixture)
                 resolved_fixture["request"] = {"params": params, "body": body}
@@ -743,27 +806,9 @@ async def run_test_agent(
                         result["error"] = f"[{lang}] {result['error']}"
                 test_results.append(result)
 
-                # Capture created resource IDs to chain into subsequent tests
-                if result.get("status") == "passed":
-                    snapshot = result.get("response_snapshot") or {}
-                    resp_body = snapshot.get("body") if isinstance(snapshot, dict) else snapshot
-                    ext_id = None
-                    if isinstance(resp_body, dict) and "id" in resp_body:
-                        ext_id = resp_body["id"]
-                    elif isinstance(body, dict) and "id" in body:
-                        ext_id = body["id"]
-
-                    if ext_id is not None:
-                        live_context["id"] = ext_id
-                        if "/pet" in path:
-                            live_context["petId"] = ext_id
-                        elif "/store" in path or "/order" in path:
-                            live_context["orderId"] = ext_id
-
-                    if isinstance(resp_body, dict) and "username" in resp_body:
-                        live_context["username"] = resp_body["username"]
-                    elif isinstance(body, dict) and "username" in body:
-                        live_context["username"] = body["username"]
+                # Capture created resource ids to chain into subsequent tests
+                if chain_ids and result.get("status") == "passed" and method == "POST":
+                    _record_created_id(created_ids, path, result, body)
 
                 st = str(result.get("status", "unknown")).upper()
                 lat = result.get("latency_ms", 0)

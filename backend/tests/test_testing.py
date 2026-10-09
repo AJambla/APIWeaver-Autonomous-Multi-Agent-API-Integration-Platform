@@ -237,6 +237,18 @@ class TestTestingAPI:
             )).scalars())
             assert foreign == []
 
+    @pytest.mark.asyncio
+    async def test_live_tests_are_refused_unless_the_deployment_enables_them(self, client):
+        """Live tests give generated code network access; off unless opted in."""
+        headers, project = await self._register_with_project(client, "live")
+
+        res = await client.post(
+            f"/api/v1/projects/{project}/test", json={"environment": "live"}, headers=headers
+        )
+
+        assert res.status_code == 422, res.text
+        assert "SANDBOX_LIVE_NETWORK_ENABLED" in res.json()["error"]["message"]
+
     async def _seed_viewer_with_two_projects(self, client, db, tag: str):
         """One org with two projects; the user can only read project A. Returns everything.
 
