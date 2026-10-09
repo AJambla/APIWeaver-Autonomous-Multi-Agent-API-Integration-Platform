@@ -220,3 +220,31 @@ class TestStartupEnvironmentValidation:
         )
         validate_startup_environment(prod)
 
+
+
+async def test_password_hashing_does_not_block_the_event_loop() -> None:
+    """Argon2 takes ~200 ms; run inline it froze every other request on the worker."""
+    import asyncio
+    import time
+
+    from app.core.security import hash_password_async, verify_password_async
+
+    ticks = 0
+    stop = False
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not stop:
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    task = asyncio.create_task(ticker())
+    started = time.perf_counter()
+    hashed = await hash_password_async("correct horse battery")
+    assert await verify_password_async("correct horse battery", hashed)
+    elapsed = time.perf_counter() - started
+    stop = True
+    await task
+
+    # The loop kept running for most of the hashing time instead of stalling.
+    assert ticks >= max(3, int(elapsed / 0.005 * 0.3)), (ticks, elapsed)

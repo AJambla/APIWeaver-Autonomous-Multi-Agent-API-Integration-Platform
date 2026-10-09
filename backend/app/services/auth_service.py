@@ -26,9 +26,9 @@ from app.core.security import (
     create_access_token,
     generate_opaque_token,
     hash_opaque_token,
-    hash_password,
+    hash_password_async,
     password_needs_rehash,
-    verify_password,
+    verify_password_async,
 )
 from app.models.audit import AuditAction
 from app.models.enums import ActorType, OrgRole
@@ -161,7 +161,7 @@ async def register(
     organization = Organization(name=organization_name, slug=slug)
     user = User(
         email=normalized_email,
-        password_hash=hash_password(password),
+        password_hash=await hash_password_async(password),
         full_name=full_name,
     )
     session.add_all([organization, user])
@@ -222,7 +222,7 @@ async def login(
     if user is None:
         # Hash anyway so a nonexistent account takes the same time as a wrong password;
         # otherwise response timing enumerates valid emails.
-        hash_password(password)
+        await verify_password_async(password, None)
         await audit_service.record(
             session,
             action=AuditAction.USER_LOGIN_FAILED,
@@ -237,7 +237,7 @@ async def login(
             "Email or password is incorrect.", code=ErrorCode.INVALID_CREDENTIALS
         )
 
-    password_ok = verify_password(password, user.password_hash)
+    password_ok = await verify_password_async(password, user.password_hash)
     now = _utc_now()
 
     if user.locked_until is not None and user.locked_until > now:
@@ -306,7 +306,7 @@ async def login(
 
     # Transparently upgrade the stored hash when the work factor has been raised.
     if user.password_hash and password_needs_rehash(user.password_hash):
-        user.password_hash = hash_password(password)
+        user.password_hash = await hash_password_async(password)
 
     membership = await _primary_membership(session, user.id)
     org_id, org_role = membership if membership else (None, None)
