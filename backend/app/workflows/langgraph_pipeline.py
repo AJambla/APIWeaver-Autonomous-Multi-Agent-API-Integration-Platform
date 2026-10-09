@@ -22,7 +22,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import DEFAULT_MODEL_PRICING_PER_TOKEN, Settings, get_settings
 from app.core.constants import DEFAULT_TARGET_LANGUAGES, DEFAULT_WORKFLOW_STAGES
-from app.core.logging import get_logger
+from app.core.logging import get_logger, workflow_run_id_ctx
 from app.core.metrics import pipeline_error_total
 from app.models.enums import ProjectStatus, WorkflowStatus
 from app.models.metrics import UsageMetric
@@ -1565,7 +1565,22 @@ class LangGraphOrchestrator:
         workflow_run_id: uuid.UUID,
         initial_state: WorkflowState,
     ) -> WorkflowState:
-        """Executes the workflow graph for the specified run."""
+        """Executes the workflow graph for the specified run.
+
+        Binds `workflow_run_id` for the duration, so every log line the agents emit is
+        attributable to its run (the context variable was declared but never set).
+        """
+        token = workflow_run_id_ctx.set(str(workflow_run_id))
+        try:
+            return await self._run(workflow_run_id, initial_state)
+        finally:
+            workflow_run_id_ctx.reset(token)
+
+    async def _run(
+        self,
+        workflow_run_id: uuid.UUID,
+        initial_state: WorkflowState,
+    ) -> WorkflowState:
         run_id_str = str(workflow_run_id)
         current: dict[str, Any] = dict(initial_state)
         current["workflow_run_id"] = run_id_str

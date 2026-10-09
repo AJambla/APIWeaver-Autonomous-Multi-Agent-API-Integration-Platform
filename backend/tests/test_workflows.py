@@ -528,7 +528,7 @@ async def test_async_workflow_triggers_celery_task(client: AsyncClient, monkeypa
     dispatched = []
 
     class _MockCelery:
-        def send_task(self, name, args=None, task_id=None):
+        def send_task(self, name, args=None, task_id=None, **_kwargs):
             dispatched.append({"name": name, "args": args, "task_id": task_id})
 
     monkeypatch.setattr("app.core.celery_client.get_producer", lambda _url: _MockCelery())
@@ -611,7 +611,7 @@ async def test_async_workflow_dispatches_to_celery(client: AsyncClient, monkeypa
     dispatched = []
 
     class _MockCelery:
-        def send_task(self, name, args=None, task_id=None):
+        def send_task(self, name, args=None, task_id=None, **_kwargs):
             dispatched.append({"name": name, "args": args, "task_id": task_id})
 
     monkeypatch.setattr("app.core.celery_client.get_producer", lambda _url: _MockCelery())
@@ -727,7 +727,7 @@ async def test_upload_dispatch_to_worker_carries_a_storage_key_not_bytes(
     project_id, _, headers = await _setup_project(client)
     dispatched: list[dict[str, Any]] = []
 
-    def send_task(name, args=None, task_id=None):
+    def send_task(name, args=None, task_id=None, **_kwargs):
         dispatched.append({"name": name, "args": args, "task_id": task_id})
 
     monkeypatch.setattr(

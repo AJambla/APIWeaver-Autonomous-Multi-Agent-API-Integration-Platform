@@ -15,6 +15,7 @@ from typing import Any
 from celery import Celery
 
 from app.core.config import Settings
+from app.core.logging import request_id_ctx
 
 
 @lru_cache(maxsize=4)
@@ -41,4 +42,9 @@ async def send_task(
     in a thread rather than stalling every other request on this worker.
     """
     producer = get_producer(settings.celery_broker_url)
-    await asyncio.to_thread(producer.send_task, name, args=args, task_id=task_id)
+    # The worker binds this into its log context, so one request id follows the work from
+    # the HTTP request through the broker into every agent log line.
+    headers = {"request_id": request_id_ctx.get()} if request_id_ctx.get() else None
+    await asyncio.to_thread(
+        producer.send_task, name, args=args, task_id=task_id, headers=headers
+    )
