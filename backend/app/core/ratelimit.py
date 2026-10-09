@@ -231,9 +231,10 @@ async def enforce_org_rate_limit(
     if org is None:
         limit = TIER_REQUESTS_PER_MINUTE["free"]
     else:
-        limit = org.rate_limit_override or TIER_REQUESTS_PER_MINUTE.get(
-            org.plan_tier or "", TIER_REQUESTS_PER_MINUTE["free"]
-        )
+        limit = TIER_REQUESTS_PER_MINUTE.get(org.plan_tier or "", TIER_REQUESTS_PER_MINUTE["free"])
+        if org.rate_limit_override:
+            # Clamped here too, for overrides stored before the ceiling existed.
+            limit = min(org.rate_limit_override, get_settings().rate_limit_override_max_rpm)
 
     verdict = await consume(redis_client, f"org:{principal.organization_id}", limit)
 

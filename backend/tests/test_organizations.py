@@ -138,3 +138,21 @@ async def test_workflow_control_limit_answers_429_not_500(
             assert response.headers["X-RateLimit-Remaining"] == "0"
         else:
             raise AssertionError("the 121st control request must be rate limited")
+
+
+async def test_an_owner_cannot_lift_their_org_past_the_override_ceiling(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    test_settings: Settings,
+) -> None:
+    """The override is self-service; without a cap one tenant could exempt itself."""
+    headers, org = await _owner(session_factory, test_settings, plan_tier="enterprise")
+    ceiling = test_settings.rate_limit_override_max_rpm
+
+    response = await client.put(
+        f"/api/v1/organizations/{org.id}/rate-limit", json={"limit": ceiling + 1}, headers=headers
+    )
+
+    assert response.status_code in (400, 422), response.text
+    async with session_factory() as session:
+        assert (await session.get(Organization, org.id)).rate_limit_override is None
