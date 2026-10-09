@@ -27,7 +27,7 @@ from app.core.metrics import registry as metrics_registry
 from app.core.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
 from app.core.ratelimit import RateLimitMiddleware
 from app.core.security import load_keys
-from app.core.telemetry import instrument_app
+from app.core.telemetry import instrument_backends, instrument_http
 from app.db.session import dispose_engine, get_engine
 from app.services.storage_service import create_object_storage
 
@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.object_storage = create_object_storage(settings)
     engine = get_engine(settings)
 
-    instrument_app(app, engine)
+    instrument_backends(engine)
 
     logger.info("application_started", app_env=settings.app_env)
     try:
@@ -220,6 +220,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    # Before any request: the middleware stack is built on the first call (see telemetry).
+    instrument_http(app)
 
     # Middleware is applied bottom-up, so the request-id middleware is added last to run
     # first — the rate limiter's error body needs a request_id already assigned.
