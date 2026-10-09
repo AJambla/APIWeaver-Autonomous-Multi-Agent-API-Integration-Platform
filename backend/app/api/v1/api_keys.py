@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
 from app.core.errors import NotFoundError
+from app.core.logging import get_logger
 from app.models.enums import ActorType
 from app.models.organization import Organization
 from app.models.project import Project
@@ -28,6 +29,7 @@ from app.schemas.api_key import (
 from app.services import audit_service
 
 router = APIRouter(prefix="/org", tags=["api_keys"])
+logger = get_logger(__name__)
 
 
 def _hash_key(key: str) -> str:
@@ -133,8 +135,9 @@ async def list_api_keys(
             stmt = stmt.where(
                 tuple_(APIKey.created_at, APIKey.id) < tuple_(literal(last_created), literal(last_id))
             )
-        except (KeyError, TypeError, ValueError):
-            pass
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.debug("api_keys_cursor_invalid", cursor=cursor, error=str(exc))
+            # Malformed cursor: start from beginning rather than 400
 
     stmt = stmt.order_by(APIKey.created_at.desc(), APIKey.id.desc()).limit(limit + 1)
 

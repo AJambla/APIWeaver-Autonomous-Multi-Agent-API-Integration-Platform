@@ -10,7 +10,10 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from app.core.config import Settings
+from app.core.logging import get_logger
 from app.core.metrics import s3_download_bytes_total, s3_upload_bytes_total
+
+logger = get_logger(__name__)
 
 
 class ObjectStorage(Protocol):
@@ -90,8 +93,8 @@ class AsyncS3ObjectStorage:
                             fallback_res = await client.get_object(Bucket=fallback, Key=key)
                             async with fallback_res["Body"] as stream:
                                 return await stream.read()
-                        except botocore.exceptions.ClientError:
-                            pass
+                        except botocore.exceptions.ClientError as fb_err:
+                            logger.debug("storage_fallback_get_failed", key=key, bucket=fallback, error=str(fb_err))
                     return None
                 raise
 
@@ -112,8 +115,8 @@ class AsyncS3ObjectStorage:
             if fallback:
                 try:
                     await client.delete_object(Bucket=fallback, Key=key)
-                except Exception:
-                    pass
+                except Exception as del_err:
+                    logger.debug("storage_fallback_delete_failed", key=key, bucket=fallback, error=str(del_err))
 
     async def upload(self, key: str, content: bytes, bucket: str | None = None) -> None:
         await self.put(key=key, content=content, content_type="text/plain", bucket=bucket)
