@@ -1265,7 +1265,9 @@ def create_apiweaver_graph(
         )
         await _save_checkpoint({**state, **updates}, "export_agent")
 
-        if session_factory and state.get("project_id"):
+        # POST /export already created (and will finalize) one row per type; inserting
+        # here as well recorded every export twice.
+        if session_factory and state.get("project_id") and not state.get("export_rows_managed"):
             try:
                 async with session_factory() as session:
                     from app.models.export import Export
