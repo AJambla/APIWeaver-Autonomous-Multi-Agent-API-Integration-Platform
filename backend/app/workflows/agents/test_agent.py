@@ -226,7 +226,8 @@ def _generate_deterministic_fixture(ep: dict[str, Any], definitions: dict[str, A
                 params[name] = p["enum"][0]
                 continue
 
-            p_schema = p.get("schema") if isinstance(p.get("schema"), dict) else {}
+            raw_schema = p.get("schema")
+            p_schema: dict[str, Any] = raw_schema if isinstance(raw_schema, dict) else {}
             if "example" in p_schema:
                 params[name] = p_schema["example"]
                 continue
@@ -732,7 +733,7 @@ async def run_test_agent(
         )
 
         # Run tests for each endpoint across all configured language executors
-        test_results = []
+        test_results: list[dict[str, Any]] = []
         all_passed = True
 
         language_executors: dict[str, Any]

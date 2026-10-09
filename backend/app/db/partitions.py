@@ -20,8 +20,10 @@ below and dates computed here, never from request data (Security.md §11).
 from __future__ import annotations
 
 import datetime
+from typing import Any, cast
 
 from sqlalchemy import text
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.core.logging import get_logger
@@ -82,12 +84,12 @@ async def ensure_partitions(
                 await conn.execute(
                     text(f"CREATE TABLE {name} (LIKE {table} INCLUDING DEFAULTS INCLUDING CONSTRAINTS)")
                 )
-                moved = await conn.execute(
+                moved = cast(CursorResult[Any], await conn.execute(
                     text(
                         f"WITH moved AS (DELETE FROM {table}_default WHERE {in_range} RETURNING *) "
                         f"INSERT INTO {name} SELECT * FROM moved"
                     )
-                )
+                ))
                 await conn.execute(text(f"ALTER TABLE {table} ATTACH PARTITION {name} FOR VALUES {bounds}"))
                 created.append(name)
                 logger.info("partition_created", partition=name, rows_moved=moved.rowcount)

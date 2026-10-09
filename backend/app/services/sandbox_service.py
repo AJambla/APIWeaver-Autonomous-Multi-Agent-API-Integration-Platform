@@ -430,6 +430,7 @@ class DockerSandboxExecutor:
                     detach=True,
                     **common,
                 )
+            assert container is not None  # both branches above create it
 
             try:
                 wait_result = await asyncio.wait_for(

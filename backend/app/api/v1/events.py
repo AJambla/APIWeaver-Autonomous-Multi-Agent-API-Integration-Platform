@@ -54,7 +54,7 @@ SSE_BLOCK_MS = 5000
 # A stream is closed after this long; the client resumes from its Last-Event-ID.
 SSE_MAX_SECONDS = 3600
 _STREAM_ID = re.compile(r"^\d+-\d+$")
-_TERMINAL_EVENT_FOR_STATUS = {
+_TERMINAL_EVENT_FOR_STATUS: dict[str, str] = {
     WorkflowStatus.COMPLETED: "workflow.completed",
     WorkflowStatus.FAILED: "workflow.failed",
     WorkflowStatus.CANCELLED: "workflow.cancelled",

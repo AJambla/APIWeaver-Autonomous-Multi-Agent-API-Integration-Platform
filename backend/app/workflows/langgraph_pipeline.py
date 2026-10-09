@@ -10,12 +10,15 @@ import asyncio
 import datetime
 import json
 import uuid
+from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any, cast
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -74,10 +77,19 @@ class WorkflowCancelledError(Exception):
     pass
 
 
+def token_budget(state: Mapping[str, Any], settings: Settings | None = None) -> int:
+    """The run's budget: its own, else the configured default."""
+    cfg = settings or get_settings()
+    return int(
+        state.get("token_budget")
+        or getattr(cfg, "default_token_budget", None)
+        or DEFAULT_TOKEN_BUDGET
+    )
+
+
 def check_budget(state: WorkflowState, settings: Settings | None = None) -> None:
     """Check whether token budget has been exceeded."""
-    cfg = settings or get_settings()
-    budget = state.get("token_budget") or getattr(cfg, "default_token_budget", DEFAULT_TOKEN_BUDGET)
+    budget = token_budget(state, settings)
     used = state.get("total_tokens_used", 0)
     if used >= budget:
         raise RuntimeError(f"token_budget_exceeded: {used}/{budget}")
@@ -264,7 +276,7 @@ def create_apiweaver_graph(
             },
         )
 
-    async def _save_checkpoint(state: WorkflowState, node_name: str) -> None:
+    async def _save_checkpoint(state: Mapping[str, Any], node_name: str) -> None:
         """Persist intermediate state snapshot checkpoint to PostgreSQL."""
         if session_factory is None or not state.get("workflow_run_id"):
             return
@@ -636,7 +648,7 @@ def create_apiweaver_graph(
         check_budget(state)
         await _set_project_status(state, ProjectStatus.BUILDING)
         run_id = state.get("workflow_run_id", "")
-        plan = state.get("execution_plan", {})
+        plan = state.get("execution_plan") or {}
         phases = plan.get("phases", [])
         target_langs = state.get("target_languages") or list(DEFAULT_TARGET_LANGUAGES)
         terminal_logger.log_start(
@@ -650,7 +662,8 @@ def create_apiweaver_graph(
         generated_files = list(state.get("generated_files", []))
         files_before = list(generated_files)
         total_tokens = tokens_before
-        budget = state.get("token_budget") or DEFAULT_TOKEN_BUDGET
+        # Same rule as check_budget: this used to ignore DEFAULT_TOKEN_BUDGET from settings.
+        budget = token_budget(state)
 
         try:
             for phase in phases:
@@ -806,9 +819,12 @@ def create_apiweaver_graph(
                         session.add(existing_run)
                         await session.flush()
 
-                    existing_entries = set((await session.execute(
-                        select(GeneratedFile.language, GeneratedFile.file_path).where(GeneratedFile.code_generation_run_id == existing_run.id)
-                    )).all())
+                    existing_entries: set[tuple[Any, Any]] = {
+                        tuple(row)
+                        for row in (await session.execute(
+                            select(GeneratedFile.language, GeneratedFile.file_path).where(GeneratedFile.code_generation_run_id == existing_run.id)
+                        )).all()
+                    }
 
                     for gf in generated_files:
                         fp = gf.get("file_path", "")
@@ -1463,7 +1479,7 @@ class LangGraphOrchestrator:
         self,
         session: AsyncSession,
         run_obj: WorkflowRun,
-        state: dict[str, Any],
+        state: Mapping[str, Any],
         tokens_spent: int,
     ) -> None:
         """Bill the tokens spent by *this* execution as a UsageMetric.
@@ -1530,7 +1546,7 @@ class LangGraphOrchestrator:
         if self.session_factory:
             async with self.session_factory() as session:
                 now = datetime.datetime.now(datetime.UTC)
-                claimed = await session.execute(
+                claimed = cast(CursorResult[Any], await session.execute(
                     update(WorkflowRun)
                     .where(
                         WorkflowRun.id == workflow_run_id,
@@ -1548,7 +1564,7 @@ class LangGraphOrchestrator:
                         started_at=func.coalesce(WorkflowRun.started_at, now),
                     )
                     .execution_options(synchronize_session=False)
-                )
+                ))
                 await session.commit()
                 if claimed.rowcount == 0:
                     existing = await session.get(WorkflowRun, workflow_run_id)
@@ -1577,7 +1593,7 @@ class LangGraphOrchestrator:
                 stages=current.get("stages", ["plan"]),
             )
 
-        config = {"configurable": {"thread_id": run_id_str}}
+        config: RunnableConfig = {"configurable": {"thread_id": run_id_str}}
 
         # The latest full state seen while streaming. If a node raises (or the run is
         # cancelled), tokens spent by earlier nodes are still recorded from here instead
@@ -1649,7 +1665,7 @@ class LangGraphOrchestrator:
                                         )
                                     ) or 0
                                     new_ver_num = curr_max_v + 1
-                                    diff_ref_key = f"artifacts/{run_obj.project_id}/v{new_ver_num}/manifest.json"
+                                    diff_ref_key: str | None = f"artifacts/{run_obj.project_id}/v{new_ver_num}/manifest.json"
                                     manifest_data = {
                                         "version_number": new_ver_num,
                                         "workflow_run_id": str(workflow_run_id),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,7 +72,8 @@ async def put_auth_config(
     # If credentials are provided, persist them to Vault
     if payload.credentials:
         vault_path = f"apiweaver/projects/{project.id}/auth"
-        await vault.write_secret(vault_path, payload.credentials)
+        # The request model's validator always normalizes credentials to a plain dict.
+        await vault.write_secret(vault_path, cast(dict[str, Any], payload.credentials))
 
         secret_ref = await session.scalar(
             select(SecretRef).where(SecretRef.auth_config_id == config.id)

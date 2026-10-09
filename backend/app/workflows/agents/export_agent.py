@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import select
@@ -104,11 +105,12 @@ class ExportAgent:
         )
 
         total_tokens = state.get("total_tokens_used", 0)
-        project_id = state.get("project_id")
+        project_id = state.get("project_id") or ""
         generated_files = state.get("generated_files", [])
-        test_run_summary = state.get("test_run_summary", {})
+        # `or {}`: a key present with None (no tests run / no spec yet) is common.
+        test_run_summary = state.get("test_run_summary") or {}
         target_languages = state.get("target_languages") or list(DEFAULT_TARGET_LANGUAGES)
-        normalized_spec = state.get("normalized_spec", {})
+        normalized_spec = state.get("normalized_spec") or {}
 
         if export_types is None:
             export_types = state.get("export_types") or list(DEFAULT_EXPORT_TYPES)
@@ -163,7 +165,7 @@ class ExportAgent:
         **kwargs: Any,
     ) -> dict[str, Any] | None:
         """Dispatch to the appropriate export packager."""
-        packagers = {
+        packagers: dict[str, Callable[..., Awaitable[dict[str, Any] | None]]] = {
             "sdk": self._package_sdk,
             "client": self._package_client,
             "fastapi": self._package_fastapi,
@@ -1101,7 +1103,7 @@ if __name__ == "__main__":
         converted_schemas = _migrate_refs(raw_schemas)
 
         doc_version = str(normalized_spec.get("version") or (normalized_spec.get("info") or {}).get("version") or "1.0.0")
-        openapi_spec = {
+        openapi_spec: dict[str, Any] = {
             "openapi": "3.1.0",
             "info": {
                 "title": normalized_spec.get("title", "API"),

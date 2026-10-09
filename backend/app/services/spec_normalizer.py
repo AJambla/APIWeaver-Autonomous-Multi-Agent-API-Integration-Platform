@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
-import yaml
+import yaml  # type: ignore[import-untyped]  # PyYAML ships no type information
 
 from app.core.errors import UnprocessableEntityError
 from app.core.logging import get_logger
@@ -127,6 +127,11 @@ def _parse_document(content: bytes) -> Any:
     return parsed
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    """`value` if it is a mapping, else an empty dict (specs routinely omit sections)."""
+    return value if isinstance(value, dict) else {}
+
+
 def _sniff_parsed(parsed: Any, filename: str = "") -> str | None:
     """Sniff API document format from an already-parsed payload, then the filename."""
     if isinstance(parsed, dict):
@@ -220,7 +225,7 @@ def _normalize_openapi(data: dict[str, Any], document_format: str) -> Normalized
         else:
             raise UnprocessableEntityError("Only Swagger 2.0 documents are supported.")
 
-    info = data.get("info") if isinstance(data.get("info"), dict) else {}
+    info: dict[str, Any] = _as_dict(data.get("info"))
     endpoints: list[NormalizedEndpoint] = []
     paths = data.get("paths")
     if not isinstance(paths, dict):
@@ -253,9 +258,9 @@ def _normalize_openapi(data: dict[str, Any], document_format: str) -> Normalized
             ))
 
     base_url = _openapi_base_url(data, document_format)
-    definitions = data.get("definitions") if isinstance(data.get("definitions"), dict) else {}
-    components = data.get("components") if isinstance(data.get("components"), dict) else {}
-    sec_defs = data.get("securityDefinitions") if isinstance(data.get("securityDefinitions"), dict) else {}
+    definitions: dict[str, Any] = _as_dict(data.get("definitions"))
+    components: dict[str, Any] = _as_dict(data.get("components"))
+    sec_defs: dict[str, Any] = _as_dict(data.get("securityDefinitions"))
     security = data.get("security") if isinstance(data.get("security"), list) else []
     tags = data.get("tags") if isinstance(data.get("tags"), list) else []
 
@@ -309,7 +314,7 @@ def _openapi_parameters(*groups: Any) -> list[dict[str, Any]]:
             }
             if location not in allowed_locations:
                 continue
-            schema = parameter.get("schema") if isinstance(parameter.get("schema"), dict) else {}
+            schema: dict[str, Any] = _as_dict(parameter.get("schema"))
             item_data: dict[str, Any] = {
                 "name": str(parameter.get("name", "unnamed")),
                 "location": location,
@@ -381,7 +386,7 @@ def _openapi_base_url(data: dict[str, Any], document_format: str) -> str | None:
 
 
 def _normalize_postman(data: dict[str, Any]) -> NormalizedSpec:
-    info = data.get("info") if isinstance(data.get("info"), dict) else {}
+    info: dict[str, Any] = _as_dict(data.get("info"))
     if str(info.get("schema", "")).find("collection/v2.1") == -1:
         raise UnprocessableEntityError("Only Postman Collection v2.1 is supported.")
     endpoints: list[NormalizedEndpoint] = []
@@ -418,7 +423,7 @@ def _normalize_postman(data: dict[str, Any]) -> NormalizedSpec:
             ))
 
     visit(data.get("item"))
-    raw = {
+    raw: dict[str, Any] = {
         "format": DocumentFormat.POSTMAN,
         "title": _string_or_none(info.get("name")),
         "version": _string_or_none(info.get("version")),

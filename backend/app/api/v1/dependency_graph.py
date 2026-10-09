@@ -71,7 +71,7 @@ async def get_dependency_graph(
                 DependencyEdge(
                     from_id=f"ep_{from_ep.id}",
                     to_id=f"ep_{to_ep.id}",
-                    relationship=rel,
+                    relationship=DependencyRelationship(rel),
                 )
             )
 

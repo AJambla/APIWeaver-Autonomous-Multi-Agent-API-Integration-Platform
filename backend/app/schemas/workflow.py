@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import Field
 
@@ -19,10 +19,10 @@ from app.schemas.common import ResponseModel, StrictModel
 
 class TriggerWorkflowRequest(StrictModel):
     stages: list[WorkflowStage] = Field(
-        default_factory=lambda: list(DEFAULT_WORKFLOW_STAGES), min_length=1, max_length=5
+        default_factory=lambda: cast(list[WorkflowStage], list(DEFAULT_WORKFLOW_STAGES)), min_length=1, max_length=5
     )
     target_languages: list[TargetLanguage] = Field(
-        default_factory=lambda: list(DEFAULT_TARGET_LANGUAGES), min_length=1, max_length=2
+        default_factory=lambda: cast(list[TargetLanguage], list(DEFAULT_TARGET_LANGUAGES)), min_length=1, max_length=2
     )
     execution_mode: Literal["sync", "async"] = "sync"
 
