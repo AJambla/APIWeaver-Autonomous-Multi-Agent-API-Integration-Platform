@@ -242,15 +242,10 @@ async def download_export(
     if export.s3_key:
         candidate_keys.append(export.s3_key)
     candidate_keys.extend([
-        f"exports/{project.id}/{export.export_type}/python/sdk-python.zip",
-        f"exports/{project.id}/{export.export_type}/node/sdk-node.zip",
-        f"exports/{project.id}/{export.export_type}/python/package.json",
-        f"exports/{project.id}/{export.export_type}/node/package.json",
-        f"exports/{project.id}/{export.export_type}/python/client.py",
-        f"exports/{project.id}/{export.export_type}/node/client.ts",
-        f"exports/{project.id}/{export.export_type}/Dockerfile",
-        f"exports/{project.id}/{export.export_type}/package.json",
-        f"exports/{project.id}/{export.export_type}/manifest.json",
+        f"exports/{project.id}/mcp/apiweaver-mcp.zip",
+        f"exports/{project.id}/mcp/manifest.json",
+        f"exports/{project.id}/docs/openapi.json",
+        f"exports/{project.id}/docs/reference.md",
     ])
     # Only this export's own type: falling back to another type's key served the wrong
     # artifact (an MCP manifest for a Docker export).
