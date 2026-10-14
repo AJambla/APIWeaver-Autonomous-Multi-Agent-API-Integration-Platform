@@ -24,7 +24,7 @@ from app.models.enums import AuthScheme
 from app.services.sandbox_service import DockerSandboxExecutor, assert_public_target
 from app.services.storage_service import storage_service
 from app.services.test_run_service import record_test_run_results
-from app.services.vault_service import create_vault_client
+from app.services.crypto_service import create_crypto_service as create_vault_client
 from app.workflows.agents.schema_synthesizer import synthesize_schema_data
 from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.state import WorkflowState

@@ -32,7 +32,7 @@ from app.models.organization import Organization, OrganizationMember
 from app.models.project import Project, ProjectMember
 from app.models.user import User
 from app.services.qdrant_service import create_qdrant_client
-from app.services.vault_service import create_vault_client
+from app.services.crypto_service import create_vault_client
 from tests.fakes import FakeQdrantClient, FakeVaultClient
 
 TEST_PASSWORD = "correct-horse-battery-staple"

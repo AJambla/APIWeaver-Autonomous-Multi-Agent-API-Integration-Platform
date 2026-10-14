@@ -24,7 +24,7 @@ from app.core.config import Settings
 from app.services.github_service import GitHubAppClient, GitHubOAuthClient
 from app.services.qdrant_service import HttpQdrantClient
 from app.services.storage_service import _is_transient_s3_error
-from app.services.vault_service import HttpVaultClient
+from app.services.crypto_service import HttpVaultClient
 from app.workflows.llm import LLMClient
 
 # ==============================================================================

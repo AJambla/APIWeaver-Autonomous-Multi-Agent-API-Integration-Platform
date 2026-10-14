@@ -21,7 +21,7 @@ from httpx import AsyncClient
 
 from app.core.config import Settings
 from app.services.github_service import sanitize_github_path
-from app.services.vault_service import HttpVaultClient
+from app.services.crypto_service import HttpVaultClient
 from app.workflows.agents.code_agent import _run_self_review
 from tests.fakes import FakeVaultClient
 

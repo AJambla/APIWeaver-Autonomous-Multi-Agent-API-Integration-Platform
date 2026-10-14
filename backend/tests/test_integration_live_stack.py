@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import Settings, get_settings
 from app.services.qdrant_service import HttpQdrantClient
 from app.services.storage_service import AsyncS3ObjectStorage
-from app.services.vault_service import HttpVaultClient
+from app.services.crypto_service import HttpVaultClient
 
 # Default service URLs matching the local Docker compose stack
 LIVE_PG_URL = os.environ.get(
