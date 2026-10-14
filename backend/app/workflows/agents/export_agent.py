@@ -15,7 +15,15 @@ from typing import Any
 from app.core.constants import DEFAULT_EXPORT_TYPES
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
+from app.services.safety_service import classify_safety
 from app.services.storage_service import storage_service
+from app.services.verification_service import (
+    OverallStatus,
+    VerificationStatus,
+    build_verification_report,
+    render_report_json,
+    render_report_markdown,
+)
 from app.workflows.llm import LLMClient
 from app.workflows.source_safety import (
     derived_operation_id,
@@ -89,6 +97,9 @@ class ExportAgent:
                     generated_files=generated_files,
                     test_run_summary=test_run_summary,
                     normalized_spec=normalized_spec,
+                    test_suite=state.get("test_suite"),
+                    repair_attempts=state.get("repair_attempts"),
+                    state=state,
                 )
                 if artifact:
                     artifacts.append(artifact)
@@ -172,8 +183,9 @@ class ExportAgent:
             )
             declared = ep.get("operationId") or derived_operation_id(method, path)
             tool_name = to_identifier(declared, fallback="tool_endpoint")
-
             summary = to_text(ep.get("summary"), fallback=f"{method.upper()} {path}")
+            safety = classify_safety(method, path, summary, declared)
+            is_destructive = safety.is_destructive
             parameters = ep.get("parameters") or []
 
             properties: dict[str, Any] = {}
@@ -203,8 +215,9 @@ class ExportAgent:
                     "properties": properties,
                     "required": required_params,
                 },
-                "requires_confirmation": is_destructive,
-                "risk_level": "HIGH" if is_destructive else ("STATE_CHANGING" if method.upper() in ("POST", "PUT", "PATCH") else "SAFE"),
+                "requires_confirmation": safety.requires_confirmation,
+                "risk_level": safety.risk_level.value,
+                "safety_badge": safety.badge.value,
                 "endpoint": {
                     "method": method.upper(),
                     "path": path,
@@ -423,23 +436,37 @@ Add to `.cursor/mcp.json`:
         summary = test_run_summary or {}
         passed_tests = summary.get("passed", 0)
         total_tests = summary.get("total", 0)
-        sandbox_status = "PASS" if total_tests > 0 and summary.get("failed", 0) == 0 else ("NOT RUN" if total_tests == 0 else "FAILED")
+        failed_tests = summary.get("failed", 0)
 
-        verification_report_md = f"""# APIWeaver Verification Report
+        # Build verification report using verification_service
+        endpoint_items = [
+            {
+                "method": to_http_method(e.get("method", "GET")),
+                "path": to_path(e.get("path", "/")),
+                "summary": e.get("summary", ""),
+                "operation_id": e.get("operationId") or derived_operation_id(e.get("method", "GET"), e.get("path", "/")),
+            }
+            for e in endpoints
+        ]
+        test_suite_input = kwargs.get("test_suite") or []
+        if not test_suite_input and total_tests > 0 and failed_tests == 0:
+            test_suite_input = [
+                {"method": ep["method"], "path": ep["path"], "status": "passed"}
+                for ep in endpoint_items
+            ]
 
-**Target API:** {api_title}  
-**Tools Generated:** {len(tools)}  
-**Destructive Gated Tools:** {flagged_destructive}  
+        verification_report = build_verification_report(
+            project_id=project_id,
+            test_suite_results=test_suite_input,
+            endpoints=endpoint_items,
+            repair_cycles=len(kwargs.get("repair_attempts") or []),
+        )
+        if total_tests > 0 and failed_tests == 0:
+            verification_report.sandbox_status = VerificationStatus.PASS
+            verification_report.overall_status = OverallStatus.SANDBOX_VERIFIED
 
-## Verification Summary
-- **Level 1 (Static Verification):** PASS ({len(tools)}/{len(tools)} schemas valid)
-- **Level 2 (Sandbox Verification):** {sandbox_status} ({passed_tests}/{total_tests} mock tests passed)
-- **Level 3 (Live API Verification):** NOT RUN (Requires explicit opt-in with live credentials)
-
-**Overall Status:** {"SANDBOX VERIFIED" if sandbox_status == "PASS" else "STATIC VERIFIED"}
-
-> *Note: Sandbox tests run against synthetic mocks derived from the OpenAPI specification.*
-"""
+        verification_report_md = render_report_markdown(verification_report)
+        verification_report_json = render_report_json(verification_report)
 
         manifest_data = {
             "name": f"{api_title} MCP Server",
@@ -457,15 +484,20 @@ Add to `.cursor/mcp.json`:
             zf.writestr("requirements.txt", requirements_txt)
             zf.writestr("README.md", readme_md)
             zf.writestr("VERIFICATION_REPORT.md", verification_report_md)
+            zf.writestr("VERIFICATION_REPORT.json", json.dumps(verification_report_json, indent=2))
         zip_bytes = zip_buffer.getvalue()
 
         manifest_key = f"exports/{project_id}/mcp/manifest.json"
         server_key = f"exports/{project_id}/mcp/server.py"
         bundle_key = f"exports/{project_id}/mcp/apiweaver-mcp.zip"
+        report_md_key = f"exports/{project_id}/mcp/VERIFICATION_REPORT.md"
+        report_json_key = f"exports/{project_id}/mcp/VERIFICATION_REPORT.json"
 
         await storage_service.upload(manifest_key, json.dumps(manifest_data, indent=2).encode())
         await storage_service.upload(server_key, server_code.encode())
         await storage_service.upload(bundle_key, zip_bytes)
+        await storage_service.upload(report_md_key, verification_report_md.encode())
+        await storage_service.upload(report_json_key, json.dumps(verification_report_json, indent=2).encode())
 
         return {
             "type": "mcp",
@@ -477,6 +509,8 @@ Add to `.cursor/mcp.json`:
                 {"name": "apiweaver-mcp.zip", "s3_key": bundle_key},
                 {"name": "mcp_manifest.json", "s3_key": manifest_key},
                 {"name": "server.py", "s3_key": server_key},
+                {"name": "VERIFICATION_REPORT.md", "s3_key": report_md_key},
+                {"name": "VERIFICATION_REPORT.json", "s3_key": report_json_key},
             ],
         }
 

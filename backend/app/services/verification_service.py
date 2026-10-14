@@ -253,3 +253,9 @@ def render_report_markdown(report: VerificationReport) -> str:
     lines.append("```")
     lines.append("")
     return "\n".join(lines)
+
+
+def render_report_json(report: VerificationReport) -> dict[str, Any]:
+    """Render Verification Report as structured dictionary/JSON."""
+    return report.to_dict()
+
