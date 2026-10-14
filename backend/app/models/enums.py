@@ -101,6 +101,7 @@ class GeneratedFileType(StrEnum):
     CI_CD = "ci_cd"
     README = "readme"
     MCP_MANIFEST = "mcp_manifest"
+    MCP = "mcp"
 
 
 class TestEnvironment(StrEnum):

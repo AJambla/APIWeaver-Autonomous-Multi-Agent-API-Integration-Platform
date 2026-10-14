@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     s3_endpoint_url: str | None = None
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
+    storage_backend: str = "local"  # "local" (default for dev) or "s3" (production)
+    storage_local_dir: str = "./storage"
 
     # --- Vault (required by §9; client lands in Phase 2) ----------------------
     vault_addr: str = "http://localhost:8200"

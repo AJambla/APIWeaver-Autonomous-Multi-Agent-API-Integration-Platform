@@ -8,6 +8,7 @@ in-memory implementation.
 from __future__ import annotations
 
 import mimetypes
+from pathlib import Path
 from typing import Any, Protocol
 
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
@@ -164,15 +165,60 @@ class AsyncS3ObjectStorage:
         return result
 
 
+class LocalFileSystemObjectStorage:
+    """Local filesystem storage client for development (MinIO-free)."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._base_dir = Path(getattr(settings, "storage_local_dir", "./storage")).resolve()
+        self._base_dir.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_path(self, key: str, bucket: str | None = None) -> Path:
+        safe_key = validate_storage_key(key)
+        prefix = bucket if bucket else ""
+        target = (self._base_dir / prefix / safe_key).resolve()
+        if not str(target).startswith(str(self._base_dir)):
+            raise ValueError(f"Unsafe path traversal detected: {key}")
+        return target
+
+    async def get(self, *, key: str, bucket: str | None = None) -> bytes | None:
+        target = self._resolve_path(key, bucket)
+        if not target.is_file():
+            if bucket:
+                fallback = self._resolve_path(key, None)
+                if fallback.is_file():
+                    return fallback.read_bytes()
+            return None
+        return target.read_bytes()
+
+    async def put(self, *, key: str, content: bytes, content_type: str | None = None, bucket: str | None = None) -> None:
+        target = self._resolve_path(key, bucket)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+
+    async def delete(self, *, key: str, bucket: str | None = None) -> None:
+        target = self._resolve_path(key, bucket)
+        if target.is_file():
+            target.unlink()
+
+    async def upload(self, key: str, content: bytes, bucket: str | None = None) -> None:
+        await self.put(key=key, content=content, bucket=bucket)
+
+    async def download(self, key: str, bucket: str | None = None) -> bytes:
+        result = await self.get(key=key, bucket=bucket)
+        if result is None:
+            raise FileNotFoundError(f"Object not found: {key}")
+        return result
+
+
 def create_object_storage(settings: Settings) -> ObjectStorage:
+    if getattr(settings, "storage_backend", "local") == "local":
+        return LocalFileSystemObjectStorage(settings)
     try:
         import aiobotocore  # noqa: F401
         return AsyncS3ObjectStorage(settings)
     except (ImportError, ModuleNotFoundError) as err:
-        from app.core.errors import DependencyUnavailableError
-        raise DependencyUnavailableError(
-            "Object storage requires 'aiobotocore' library in production."
-        ) from err
+        logger.warning("aiobotocore_not_available_fallback_to_local_storage", error=str(err))
+        return LocalFileSystemObjectStorage(settings)
 
 
 # Global instance for agents to use

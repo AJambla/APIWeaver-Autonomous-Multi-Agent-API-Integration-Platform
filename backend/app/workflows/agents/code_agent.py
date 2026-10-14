@@ -291,25 +291,19 @@ def _merge_ts_code(existing_code: str, new_code: str, file_path: str = "") -> st
 
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 
-CODE_GENERATOR_SYSTEM_PROMPT = """You are the Code Generator Agent. Generate {target_language} client code for
+CODE_GENERATOR_SYSTEM_PROMPT = """You are the Code Generator Agent. Generate {target_language} code for
 the following endpoint group, following the project's style guide:
 
-- Python: PEP 8, type hints on all functions, Pydantic v2 models, httpx for
-  HTTP, structured custom exceptions per error class, docstrings (Google style).
-  Use standard library, httpx, and pydantic ONLY. Do not import external packages like tenacity (implement retries using standard loops / asyncio.sleep).
-  CRITICAL ASYNC REQUIREMENT: All client methods and `_request` MUST be asynchronous (`async def _request(...)` and `async def <method>(self, ...)`). Always use httpx.AsyncClient.
-  CRITICAL HEADERS: Always set default request headers: {{"Content-Type": "application/json", "Accept": "application/json"}}.
-  CRITICAL CONSTRUCTOR REQUIREMENT: The main Client class __init__ MUST accept:
-  def __init__(self, base_url: str | None = None, api_key: str | None = None, **kwargs: Any) -> None:
-  Never omit api_key or **kwargs from __init__.
-  CRITICAL CLASS NAMING: Name the main client class `Client` (or alias `Client = <ApiName>Client`). Maintain consistent class naming across all execution phases.
-  IMPORTANT IMPORT RULE: For Python sibling modules, always use top-level imports (e.g. `from models import *` or `import models`, NOT package-relative `from .models import *`) so modules can be imported directly when staged in sys.path without package parent context.
-- Node.js: TypeScript strict mode, Zod schemas, native fetch, ESM modules.
-  Client constructor MUST accept an optional config object: constructor(config?: {{ baseUrl?: string; apiKey?: string; [key: string]: any }})
-  CRITICAL CLASS NAMING: Name or export the main client class as `Client` (or `export class Client` / `export {{ <Name>Client as Client }}`).
-  CRITICAL HEADERS: Always set default request headers: {{ "Content-Type": "application/json", "Accept": "application/json" }}.
-  CRITICAL URL RESOLUTION: When constructing endpoint URLs, preserve any subpath on baseUrl (e.g. /v2) by stripping trailing slashes from baseUrl and leading slashes from path before concatenating.
-  IMPORTANT IMPORT RULE: When importing sibling TypeScript modules (e.g. types, errors, schemas), use exact `.ts` extensions (e.g. `import {{ ApiError }} from './errors.ts'`, NOT `.js`) so Node.js native TypeScript execution loads them directly without missing modules.
+- Model Context Protocol (MCP) Tools & Server:
+  - Generate FastMCP tools in `tools.py` with `@mcp.tool` decorators, full Python type hints (Pydantic models or primitives), and detailed docstrings for AI agents.
+  - SAFETY CLASSIFICATION:
+    - DELETE endpoints and dangerous keywords ('purge', 'drop', 'revoke', 'cancel') MUST have `requires_confirmation=True`.
+    - Safe endpoints (GET) MUST have `requires_confirmation=False`.
+  - Use httpx for asynchronous HTTP requests to the upstream API. Handle HTTP errors gracefully without unhandled exceptions.
+  - Generate `server.py` configuring FastMCP entrypoint and credential injection from environment variables (API_BASE_URL, API_KEY).
+  - Generate `test_mcp.py` with pytest tests validating tool parameter formatting and response handling.
+- Python SDK compatibility: PEP 8, Pydantic v2 models in `models.py`, Client in `client.py`.
+- Node.js compatibility: TypeScript strict mode, Zod schemas, native fetch.
 
 Always implement: retry with exponential backoff for 429/500/502/503,
 pagination helpers if the endpoint response indicates pagination
@@ -959,14 +953,16 @@ async def run_code_agent(
         for file_path, content in all_files.items():
             # Determine file type
             if file_path.endswith((".py", ".ts")):
-                if "model" in file_path or "type" in file_path or "schema" in file_path:
+                if "tool" in file_path.lower() or "server" in file_path.lower() or "mcp" in file_path.lower():
+                    file_type = "mcp"
+                elif "model" in file_path or "type" in file_path or "schema" in file_path:
                     file_type = "sdk"
                 elif "test" in file_path:
                     file_type = "test"
                 elif "client" in file_path:
                     file_type = "sdk"
                 else:
-                    file_type = "sdk"
+                    file_type = "mcp"
             elif file_path in ("pyproject.toml", "package.json", "tsconfig.json"):
                 file_type = "sdk"
             elif file_path == "Dockerfile":
