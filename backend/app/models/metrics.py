@@ -13,25 +13,21 @@ import uuid
 from sqlalchemy import BigInteger, ForeignKey, Index, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, TZDateTime, utcnow
-from app.models.workflow import PARTITIONED_TABLE_INFO
+from app.db.base import Base, TZDateTime, bigint_pk, utcnow
 
 
 class UsageMetric(Base):
-    """Composite `(id, recorded_at)` PK — `recorded_at` is the partition key, and
-    Postgres requires it in every unique constraint on a partitioned table."""
+    """Usage metrics per organization."""
 
     __tablename__ = "usage_metrics"
     __table_args__ = (
         Index("idx_usage_metrics_org_id", "organization_id"),
         Index("idx_usage_metrics_metric_name", "metric_name"),
-        {"info": PARTITIONED_TABLE_INFO},
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = bigint_pk()
     recorded_at: Mapped[datetime.datetime] = mapped_column(
         TZDateTime(),
-        primary_key=True,
         nullable=False,
         server_default=utcnow(),
         default=lambda: datetime.datetime.now(datetime.UTC),
