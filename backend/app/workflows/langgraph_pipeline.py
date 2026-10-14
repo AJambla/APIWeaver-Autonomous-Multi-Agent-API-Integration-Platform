@@ -1114,6 +1114,27 @@ def create_apiweaver_graph(
             if repair_result.get("generated_files"):
                 repaired_files = repair_result["generated_files"]
 
+            # Pre-sandbox static validation gate
+            from app.services.validation_service import validate_mcp_code_statically
+            repaired_meta = next(
+                (f for f in repaired_files if f.get("file_path") == target_file_path),
+                None,
+            )
+            if repaired_meta and target_file_path.endswith(".py"):
+                file_bytes = await storage_service.download(repaired_meta["content_s3_key"])
+                file_text = file_bytes.decode("utf-8") if isinstance(file_bytes, bytes) else str(file_bytes)
+                static_val = validate_mcp_code_statically(file_text, file_path=target_file_path)
+                if not static_val.is_valid:
+                    error_details = "; ".join(static_val.errors)
+                    raise ValueError(f"Pre-sandbox static validation failed for {target_file_path}: {error_details}")
+                await _emit_thought(
+                    state,
+                    "repair_agent",
+                    f"Pre-sandbox static validation passed for {target_file_path} ({static_val.tool_count} tool(s) verified).",
+                    level="success",
+                    action="static_validation_passed",
+                )
+
             diff_summary = "Targeted repair applied"
             for rf in repaired_files:
                 if rf.get("file_path") == target_file_path and rf.get("repair_diagnosis"):
