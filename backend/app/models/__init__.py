@@ -26,16 +26,8 @@ from app.models.workflow import AgentEvent, ToolCall, WorkflowCheckpoint, Workfl
 
 
 def non_partitioned_tables() -> list[Table]:
-    """Tables that `metadata.create_all` can build directly.
-
-    `agent_events` and `usage_metrics` are natively partitioned with composite
-    `(id, <partition key>)` primary keys, which `create_all` cannot express — they exist
-    only via the raw DDL in migration `0002`. Tests that build a schema from metadata
-    pass this list so they don't trip over Postgres-only DDL.
-    """
-    return [
-        table for table in Base.metadata.sorted_tables if not table.info.get("managed_by_migration")
-    ]
+    """Returns all tables for metadata.create_all."""
+    return list(Base.metadata.sorted_tables)
 
 
 __all__ = [

@@ -38,20 +38,6 @@ def include_object(
     _reflected: bool,
     _compare_to: Any,
 ) -> bool:
-    """Exclude natively-partitioned tables and their partitions from autogenerate.
-
-    `agent_events` and `usage_metrics` are created by raw DDL in `0002` because
-    SQLAlchemy cannot express `PARTITION BY RANGE`. Left to its own devices, autogenerate
-    would compare the model against the partitioned reality and emit a migration that
-    "fixes" them into plain tables, silently destroying the partitioning on the next
-    deploy. Their child partitions are likewise invisible to the model, so they are
-    filtered by name prefix.
-    """
-    if type_ == "table":
-        if obj.info.get("managed_by_migration"):
-            return False
-        if name and name.startswith(("agent_events_", "usage_metrics_")):
-            return False
     return True
 
 
