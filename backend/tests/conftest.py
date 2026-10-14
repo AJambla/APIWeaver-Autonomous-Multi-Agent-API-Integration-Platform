@@ -328,8 +328,6 @@ async def session_factory(
     tables = non_partitioned_tables()
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tables))
-        await conn.execute(text(AGENT_EVENTS_SQLITE_DDL))
-        await conn.execute(text(USAGE_METRICS_SQLITE_DDL))
 
     yield async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 

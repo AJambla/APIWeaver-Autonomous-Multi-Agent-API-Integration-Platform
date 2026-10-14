@@ -35,7 +35,6 @@ from app.core.middleware import (
 from app.core.ratelimit import RateLimitMiddleware
 from app.core.security import load_keys
 from app.core.telemetry import instrument_backends, instrument_http
-from app.db.partitions import run_partition_maintenance_forever
 from app.db.session import dispose_engine, get_engine, get_sessionmaker
 from app.services.storage_service import create_object_storage
 from app.workflows.reaper import run_reaper_forever
@@ -94,15 +93,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Fails runs whose executor died or that nobody claimed (workflows/reaper.py).
     reaper = asyncio.create_task(run_reaper_forever(get_sessionmaker(settings), settings))
-    # Rolls agent_events/usage_metrics partitions forward (db/partitions.py).
-    partitions = asyncio.create_task(run_partition_maintenance_forever(engine))
-
     logger.info("application_started", app_env=settings.app_env)
     try:
         yield
     finally:
         reaper.cancel()
-        partitions.cancel()
         await app.state.redis.aclose()
         await app.state.redis_stream.aclose()
         await dispose_engine()
