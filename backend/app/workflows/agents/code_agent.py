@@ -16,8 +16,10 @@ from typing import Any
 
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
-from app.services.qdrant_service import QdrantClient
+from app.services.safety_service import classify_safety, format_tool_docstring
 from app.services.storage_service import storage_service
+from app.services.validation_service import validate_mcp_code_statically
+from app.services.qdrant_service import QdrantClient
 from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.source_safety import (
     client_class_name,
@@ -47,15 +49,11 @@ def _language_for_path(file_path: str) -> str:
 
 
 def _source_is_parseable(file_path: str, content: str) -> bool:
-    """Cheap validity gate. Only Python can be checked here; other languages pass."""
+    """Cheap validity gate using validation_service for Python files; other languages pass."""
     if not content or not content.strip():
         return False
     if file_path.endswith(".py"):
-        try:
-            ast.parse(content)
-            return True
-        except (SyntaxError, ValueError, MemoryError, RecursionError):
-            return False
+        return validate_mcp_code_statically(content, file_path).ast_syntax_valid
     return True
 
 
@@ -653,6 +651,13 @@ async def run_code_agent(
 
     # Build endpoint group for this phase
     endpoint_group = _build_endpoint_group(spec, current_phase, target_languages)
+    for ep in endpoint_group.get("endpoints", []):
+        if isinstance(ep, dict):
+            m = str(ep.get("method") or "GET").upper()
+            p = str(ep.get("path") or "/")
+            s = ep.get("summary")
+            op = ep.get("operation_id") or ep.get("operationId")
+            ep["safety_classification"] = classify_safety(m, p, s, op).to_dict()
 
     new_generated_files = list(generated_files)
 
@@ -740,12 +745,18 @@ async def run_code_agent(
         )
         diagnosis = repair_json.get("diagnosis", "No diagnosis provided")
 
-        if not corrected_content or not _source_is_parseable(target_file, corrected_content):
+        if not corrected_content:
             raise ValueError(
-                f"Repair of {target_file} returned "
-                f"{'no usable content' if not corrected_content else 'unparseable content'}; "
-                "keeping the previous version."
+                f"Repair of {target_file} returned no usable content; keeping the previous version."
             )
+
+        if target_file.endswith(".py"):
+            validation_res = validate_mcp_code_statically(corrected_content, target_file)
+            if not validation_res.is_valid:
+                raise ValueError(
+                    f"Repair of {target_file} failed static validation: {'; '.join(validation_res.errors)}; "
+                    "keeping the previous version."
+                )
 
         # Upload corrected file to S3
         s3_key = f"generated/{state['project_id']}/{uuid.uuid4()}/{target_file}"

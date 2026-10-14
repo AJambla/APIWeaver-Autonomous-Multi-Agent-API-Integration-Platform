@@ -25,6 +25,12 @@ from app.services.sandbox_service import DockerSandboxExecutor, assert_public_ta
 from app.services.storage_service import storage_service
 from app.services.test_run_service import record_test_run_results
 from app.services.crypto_service import create_crypto_service as create_vault_client
+from app.services.validation_service import StaticValidationResult, validate_mcp_code_statically
+from app.services.verification_service import (
+    build_verification_report,
+    render_report_json,
+    render_report_markdown,
+)
 from app.workflows.agents.schema_synthesizer import synthesize_schema_data
 from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.state import WorkflowState
@@ -707,6 +713,34 @@ async def run_test_agent(
                     scheme=auth.get("scheme"),
                 )
 
+        # Pre-sandbox static validation gate
+        static_errors: list[str] = []
+        static_warnings: list[str] = []
+        discovered_tools: list[str] = []
+        for f in generated_files:
+            fp = f.get("file_path", "")
+            if fp.endswith(".py") and f.get("content_s3_key"):
+                try:
+                    raw_bytes = await storage_service.download(f["content_s3_key"])
+                    code_text = raw_bytes.decode("utf-8") if isinstance(raw_bytes, bytes) else str(raw_bytes)
+                    val_res = validate_mcp_code_statically(code_text, file_path=fp)
+                    if not val_res.is_valid:
+                        static_errors.extend(val_res.errors)
+                    static_warnings.extend(val_res.warnings)
+                    discovered_tools.extend(val_res.tool_names)
+                except Exception as e:
+                    logger.warning("static_validation_download_failed", file_path=fp, error=str(e))
+
+        static_result = StaticValidationResult(
+            is_valid=len(static_errors) == 0,
+            ast_syntax_valid=all("SyntaxError" not in e for e in static_errors),
+            mcp_contract_valid=len(static_errors) == 0,
+            tool_count=len(discovered_tools),
+            tool_names=discovered_tools,
+            errors=static_errors,
+            warnings=static_warnings,
+        )
+
         # Generate test fixtures defensively
         if on_activity:
             try:
@@ -893,6 +927,56 @@ async def run_test_agent(
             "duration_ms": total_duration_ms,
         }
 
+        # Build multi-level Verification Report
+        endpoint_meta_list = [
+            {
+                "method": str(ep.get("method") or "GET").upper(),
+                "path": str(ep.get("path") or "/"),
+                "summary": ep.get("summary", ""),
+                "operation_id": ep.get("operation_id") or ep.get("operationId", ""),
+            }
+            for ep in endpoints_to_test
+        ]
+        is_live = state.get("environment") == "live"
+        verification_report = build_verification_report(
+            project_id=str(state.get("project_id") or "default"),
+            static_result=static_result,
+            test_suite_results=test_results,
+            endpoints=endpoint_meta_list,
+            repair_cycles=len(repair_attempts),
+            live_tested=is_live,
+            live_passed=is_live and all_passed,
+        )
+        report_md = render_report_markdown(verification_report)
+        report_json = render_report_json(verification_report)
+
+        # Upload verification report artifacts
+        updated_generated_files = list(generated_files)
+        proj_id_str = str(state.get("project_id") or "default")
+        md_key = f"generated/{proj_id_str}/{uuid.uuid4()}/VERIFICATION_REPORT.md"
+        json_key = f"generated/{proj_id_str}/{uuid.uuid4()}/VERIFICATION_REPORT.json"
+        try:
+            await storage_service.upload(md_key, report_md.encode("utf-8"))
+            await storage_service.upload(json_key, json.dumps(report_json, indent=2).encode("utf-8"))
+            updated_generated_files.append({
+                "file_path": "VERIFICATION_REPORT.md",
+                "content_s3_key": md_key,
+                "language": "docs",
+                "file_type": "report",
+                "size_bytes": len(report_md.encode("utf-8")),
+                "project_id": state.get("project_id"),
+            })
+            updated_generated_files.append({
+                "file_path": "VERIFICATION_REPORT.json",
+                "content_s3_key": json_key,
+                "language": "docs",
+                "file_type": "report",
+                "size_bytes": len(json.dumps(report_json).encode("utf-8")),
+                "project_id": state.get("project_id"),
+            })
+        except Exception as upload_err:
+            logger.warning("verification_report_upload_failed", error=str(upload_err))
+
         if session_factory is not None:
             await record_test_run_results(
                 session_factory,
@@ -908,6 +992,9 @@ async def run_test_agent(
             "test_suite": test_results,
             "test_run_summary": test_run_summary,
             "repair_attempts": repair_attempts,
+            "verification_report": report_json,
+            "verification_report_md": report_md,
+            "generated_files": updated_generated_files,
             "current_node": "test_agent",
             "progress_percent": 85,
             "status": "completed" if all_passed else "completed_with_failures",
