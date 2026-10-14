@@ -32,7 +32,7 @@ from app.models.organization import Organization, OrganizationMember
 from app.models.project import Project, ProjectMember
 from app.models.user import User
 from app.services.qdrant_service import create_qdrant_client
-from app.services.vault_service import create_vault_client
+from app.services.crypto_service import create_vault_client
 from tests.fakes import FakeQdrantClient, FakeVaultClient
 
 TEST_PASSWORD = "correct-horse-battery-staple"
@@ -328,8 +328,6 @@ async def session_factory(
     tables = non_partitioned_tables()
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tables))
-        await conn.execute(text(AGENT_EVENTS_SQLITE_DDL))
-        await conn.execute(text(USAGE_METRICS_SQLITE_DDL))
 
     yield async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 

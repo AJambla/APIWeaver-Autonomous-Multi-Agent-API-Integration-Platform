@@ -99,26 +99,17 @@ class WorkflowCheckpoint(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
 
 class AgentEvent(Base):
-    """High-write agent trace, partitioned monthly by `created_at` (Database.md §3.16).
-
-    The primary key is composite `(id, created_at)`: Postgres requires the partition key
-    to participate in every unique constraint on a partitioned table, so `id` alone
-    cannot be the PK. `id` is still globally unique via the shared sequence.
-
-    Created by migration 0002 (raw DDL) — SQLAlchemy cannot express `PARTITION BY` here.
-    """
+    """High-write agent trace events."""
 
     __tablename__ = "agent_events"
     __table_args__ = (
         Index("idx_agent_events_run_id", "workflow_run_id"),
         Index("idx_agent_events_created_at", "created_at"),
-        {"info": PARTITIONED_TABLE_INFO},
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = bigint_pk()
     created_at: Mapped[datetime.datetime] = mapped_column(
         TZDateTime(),
-        primary_key=True,
         nullable=False,
         server_default=utcnow(),
         default=lambda: datetime.datetime.now(datetime.UTC),
@@ -132,19 +123,15 @@ class AgentEvent(Base):
 
 
 class ToolCall(Base):
-    """Per-tool-invocation trace backing `GET /workflows/{run_id}/tool-calls` (API.md §6.4).
-
-    `agent_event_id` is an indexed BIGINT rather than a foreign key: `agent_events` is
-    partitioned with a composite `(id, created_at)` primary key, so `id` alone is not a
-    valid FK target. Integrity is maintained by the orchestrator, which writes the event
-    and its tool calls in one transaction. See ADDENDUM-Phase1.md §A.4.
-    """
+    """Per-tool-invocation trace backing `GET /workflows/{run_id}/tool-calls` (API.md §6.4)."""
 
     __tablename__ = "tool_calls"
     __table_args__ = (Index("idx_tool_calls_agent_event_id", "agent_event_id"),)
 
     id: Mapped[int] = bigint_pk()
-    agent_event_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    agent_event_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_events.id", ondelete="CASCADE"), nullable=False
+    )
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
     arguments: Mapped[dict[str, Any] | None] = mapped_column(JSONB(), nullable=True)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB(), nullable=True)

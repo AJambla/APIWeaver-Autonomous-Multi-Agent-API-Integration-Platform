@@ -17,7 +17,7 @@ from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.auth_config import AuthConfigRequest, AuthConfigResponse
 from app.services import audit_service
-from app.services.vault_service import VaultClient, create_vault_client
+from app.services.crypto_service import CryptoService, create_crypto_service, VaultClient, create_vault_client
 
 logger = get_logger(__name__)
 
