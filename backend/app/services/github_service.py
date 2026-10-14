@@ -14,7 +14,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
-from app.services.vault_service import VaultClient, create_vault_client
+from app.services.crypto_service import CryptoService, create_crypto_service, VaultClient, create_vault_client
 
 logger = get_logger(__name__)
 

@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from app.core.config import Settings
 from app.services.ingestion_service import sanitize_filename
 from app.services.storage_service import validate_storage_key
-from app.services.vault_service import validate_vault_path
+from app.services.crypto_service import validate_vault_path
 from tests.fakes import FakeVaultClient, InMemoryObjectStorage
 
 

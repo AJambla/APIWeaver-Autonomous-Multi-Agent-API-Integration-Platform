@@ -29,7 +29,7 @@ from app.services.github_service import (
     create_github_app_client,
     create_github_oauth_client,
 )
-from app.services.vault_service import VaultClient, create_vault_client
+from app.services.crypto_service import CryptoService, create_crypto_service, VaultClient, create_vault_client
 
 logger = get_logger(__name__)
 
