@@ -38,12 +38,12 @@
 - Create/Modify: `backend/tests/test_storage_service.py`
 
 **Steps:**
-- [ ] Add `storage_backend` ("s3" or "local") and `storage_local_dir` (default: `./storage`) to `Settings` in `backend/app/core/config.py`.
-- [ ] Implement `LocalFileSystemObjectStorage` in `backend/app/services/storage_service.py` conforming to `ObjectStorage` protocol (`get`, `put`, `delete`, `upload`, `download`).
-- [ ] Update `create_object_storage()` factory to return `LocalFileSystemObjectStorage` if `storage_backend == "local"` or if `aiobotocore` is unavailable.
-- [ ] Write unit tests in `backend/tests/test_storage_service.py` verifying put, get, delete, and directory traversal rejection for `LocalFileSystemObjectStorage`.
-- [ ] Run pytest on `test_storage_service.py`.
-- [ ] Commit: `feat(storage): add local filesystem object storage for development`
+- [x] Add `storage_backend` ("s3" or "local") and `storage_local_dir` (default: `./storage`) to `Settings` in `backend/app/core/config.py`.
+- [x] Implement `LocalFileSystemObjectStorage` in `backend/app/services/storage_service.py` conforming to `ObjectStorage` protocol (`get`, `put`, `delete`, `upload`, `download`).
+- [x] Update `create_object_storage()` factory to return `LocalFileSystemObjectStorage` if `storage_backend == "local"` or if `aiobotocore` is unavailable.
+- [x] Write unit tests in `backend/tests/test_storage_service.py` verifying put, get, delete, and directory traversal rejection for `LocalFileSystemObjectStorage`.
+- [x] Run pytest on `test_storage_service.py`.
+- [x] Commit: `feat(storage): add local filesystem object storage for development`
 
 ---
 
@@ -54,18 +54,18 @@
 - Modify: `backend/tests/test_export.py`
 
 **Steps:**
-- [ ] In `backend/app/workflows/agents/export_agent.py`, delete methods: `_package_sdk`, `_package_client`, `_package_fastapi`, `_package_docker`, `_package_github`, `_package_cicd`.
-- [ ] Update `_export_type` and `run` to default to `mcp` export.
-- [ ] Refine `_package_mcp` to ensure it generates:
+- [x] In `backend/app/workflows/agents/export_agent.py`, delete methods: `_package_sdk`, `_package_client`, `_package_fastapi`, `_package_docker`, `_package_github`, `_package_cicd`.
+- [x] Update `_export_type` and `run` to default to `mcp` export.
+- [x] Refine `_package_mcp` to ensure it generates:
   - `server.py`: FastMCP stdio/SSE server
   - `tools.py`: Tool definitions with `@mcp.tool` and `requires_confirmation` tags
   - `requirements.txt`: Minimal dependencies (`fastmcp>=0.1.0`, `httpx>=0.28.0`, `pydantic>=2.0.0`)
   - `README.md`: Clear setup and configuration guide for Claude Desktop & Cursor
   - `manifest.json`: Machine-readable tool list and safety flags
   - Standalone downloadable zip bundle `apiweaver-mcp.zip`
-- [ ] Update `backend/tests/test_export.py` to remove deleted export tests and assert that `_package_mcp` produces the complete FastMCP bundle.
-- [ ] Run pytest on `backend/tests/test_export.py`.
-- [ ] Commit: `refactor(export): prune non-MCP exporters and elevate FastMCP bundle generator`
+- [x] Update `backend/tests/test_export.py` to remove deleted export tests and assert that `_package_mcp` produces the complete FastMCP bundle.
+- [x] Run pytest on `backend/tests/test_export.py`.
+- [x] Commit: `refactor(export): prune non-MCP exporters and elevate FastMCP bundle generator`
 
 ---
 
@@ -77,15 +77,15 @@
 - Modify: `backend/app/models/export.py`
 
 **Steps:**
-- [ ] In `backend/app/schemas/export.py`:
+- [x] In `backend/app/schemas/export.py`:
   - Deprecate/remove `SDK`, `CLIENT`, `FASTAPI`, `DOCKER`, `GITHUB` from `ExportFormat`.
   - Set default export format to `MCP`.
-- [ ] In `backend/app/api/v1/export.py`:
+- [x] In `backend/app/api/v1/export.py`:
   - Update `trigger_export` to handle MCP as default.
   - Retain `/projects/{id}/export/mcp` as dedicated fast-path.
   - Ensure `/projects/{id}/exports/{export_id}/download` serves the MCP zip bundle cleanly via `storage_service`.
-- [ ] Run pytest on export API tests.
-- [ ] Commit: `refactor(api): streamline export schemas and endpoints for MCP-first delivery`
+- [x] Run pytest on export API tests.
+- [x] Commit: `refactor(api): streamline export schemas and endpoints for MCP-first delivery`
 
 ---
 
@@ -96,16 +96,16 @@
 - Modify: `backend/tests/test_codegen.py`
 
 **Steps:**
-- [ ] In `backend/app/workflows/agents/code_agent.py`:
+- [x] In `backend/app/workflows/agents/code_agent.py`:
   - Update prompt templates and AST builders to synthesize FastMCP `tools.py` and `server.py` instead of multi-file SDK clients (`client.py`, `models.py`, `auth.py`).
   - Add deterministic safety rule tagging in tool decorators:
     - `DELETE` / dangerous keywords → `requires_confirmation=True, risk_level="HIGH"`
     - State-changing `POST`/`PUT`/`PATCH` → `requires_confirmation=False, risk_level="STATE_CHANGING"`
     - Read-only `GET` → `requires_confirmation=False, risk_level="SAFE"`
   - Generate corresponding `test_mcp.py` using `pytest` and `respx` / mock fixtures for sandbox verification.
-- [ ] Update `backend/tests/test_codegen.py` to verify FastMCP code generation.
-- [ ] Run pytest on `backend/tests/test_codegen.py`.
-- [ ] Commit: `feat(codegen): retarget code_agent to synthesize FastMCP tools and test fixtures`
+- [x] Update `backend/tests/test_codegen.py` to verify FastMCP code generation.
+- [x] Run pytest on `backend/tests/test_codegen.py`.
+- [x] Commit: `feat(codegen): retarget code_agent to synthesize FastMCP tools and test fixtures`
 
 ---
 
@@ -116,8 +116,8 @@
 - Modify: `backend/tests/test_workflows_e2e.py`
 
 **Steps:**
-- [ ] Run `test_langgraph_pipeline.py` and `test_workflows_e2e.py` with mock LLM to ensure the LangGraph pipeline smoothly runs:
+- [x] Run `test_langgraph_pipeline.py` and `test_workflows_e2e.py` with mock LLM to ensure the LangGraph pipeline smoothly runs:
   `doc_agent → planner_agent → code_agent (FastMCP) → test_agent → export_agent (MCP Bundle)`.
-- [ ] Fix any contract mismatches or residual SDK assumptions in pipeline reducers.
-- [ ] Run full test suite for Phase 1 components: `pytest backend/tests/test_export.py backend/tests/test_codegen.py backend/tests/test_storage_service.py`.
-- [ ] Commit: `test(e2e): verify end-to-end FastMCP generation and export in workflow pipeline`
+- [x] Fix any contract mismatches or residual SDK assumptions in pipeline reducers.
+- [x] Run full test suite for Phase 1 components: `pytest backend/tests/test_export.py backend/tests/test_codegen.py backend/tests/test_storage_service.py`.
+- [x] Commit: `test(e2e): verify end-to-end FastMCP generation and export in workflow pipeline`
