@@ -16,9 +16,9 @@ class ExportRequest(StrictModel):
     """Request to trigger exports for a project."""
 
     export_types: list[ExportType] = Field(
-        default_factory=lambda: [ExportType(t) for t in DEFAULT_EXPORT_TYPES],
+        default_factory=lambda: [ExportType.MCP],
         min_length=1,
-        description="Artifacts to produce. `github` pushes to a repository and is opt-in.",
+        description="Artifacts to produce (defaults to FastMCP server bundle).",
     )
     # Bounded and character-restricted: these flow into GitHub API URLs, git refs and a
     # Dockerfile, and unbounded strings used to reach them verbatim.

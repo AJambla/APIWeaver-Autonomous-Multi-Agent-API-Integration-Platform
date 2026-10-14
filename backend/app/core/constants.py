@@ -6,9 +6,8 @@ from typing import Literal
 
 DEFAULT_TARGET_LANGUAGES: list[str] = ["python", "node"]
 
-# Everything except `github`: pushing to a repository is outward-facing and must be an
-# explicit choice, never the side effect of a run that named no export types.
-DEFAULT_EXPORT_TYPES: list[str] = ["sdk", "client", "fastapi", "docker", "mcp", "docs", "cicd"]
+# MCP is the primary export format; docs is an optional reference artifact.
+DEFAULT_EXPORT_TYPES: list[str] = ["mcp", "docs"]
 DEFAULT_WORKFLOW_STAGES: list[str] = ["plan", "generate", "test", "export"]
 DEFAULT_BASE_URL: str = "http://localhost:8000"
 
