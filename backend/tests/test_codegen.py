@@ -112,9 +112,31 @@ class TestCodeGeneratorAgent:
 
             result = await run_code_agent(mock_state, phase_number=1)
 
+    @pytest.mark.asyncio
+    async def test_run_code_agent_fastmcp(self, mock_state):
+        """Test FastMCP tool and server generation."""
+        with patch("app.workflows.agents.code_agent.LLMClient") as mock_llm, \
+             patch("app.workflows.agents.code_agent.storage_service") as mock_storage:
+            mock_storage.upload = AsyncMock()
+            mock_storage.download = AsyncMock(return_value=b"content")
+            mock_client = AsyncMock()
+            mock_client.generate_json.return_value = (
+                {
+                    "tools.py": "from fastmcp import FastMCP\n\nmcp = FastMCP('test')\n\n@mcp.tool()\ndef list_users() -> list:\n    return []\n",
+                    "server.py": "from tools import mcp\n\nif __name__ == '__main__':\n    mcp.run()\n",
+                },
+                150,
+            )
+            mock_llm.return_value = mock_client
+
+            result = await run_code_agent(mock_state, phase_number=1)
+
             assert result["status"] == "generated"
-            node_files = [f for f in result["generated_files"] if f["language"] == "node"]
-            assert len(node_files) > 0
+            mcp_files = [f for f in result["generated_files"] if f.get("file_type") == "mcp"]
+            assert len(mcp_files) >= 2
+            paths = [f["file_path"] for f in mcp_files]
+            assert "tools.py" in paths
+            assert "server.py" in paths
 
 
 class TestCodeGeneratorAPI:
