@@ -79,3 +79,10 @@ Desktop.ini
 *~
 **/.idea/
 **/.vscode/
+
+# Documentation and planning artifacts
+docs/
+**/docs/
+.planning/
+**/.planning/
+
