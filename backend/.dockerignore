@@ -123,3 +123,18 @@ infra/terraform/
 *.sqlite3
 *.db
 alembic.db
+
+# Tests and test fixtures (not needed in production API image)
+tests/
+**/tests/
+
+# Storage and uploads
+storage/
+**/storage/
+
+# Documentation and planning artifacts
+docs/
+**/docs/
+.planning/
+**/.planning/
+
