@@ -113,11 +113,13 @@ class ExportAgent:
                 })
                 status = "completed_with_errors"
 
+        overall = artifacts[0].get("overall_status") if artifacts and isinstance(artifacts[0], dict) else None
         return {
             "exports": artifacts,
             "current_node": "export_agent",
             "progress_percent": 100,
             "status": status,
+            "overall_status": overall,
             "total_tokens_used": total_tokens,
         }
 
@@ -485,6 +487,11 @@ Add to `.cursor/mcp.json`:
             zf.writestr("README.md", readme_md)
             zf.writestr("VERIFICATION_REPORT.md", verification_report_md)
             zf.writestr("VERIFICATION_REPORT.json", json.dumps(verification_report_json, indent=2))
+            for gf in generated_files or []:
+                file_path = gf.get("file_path")
+                content = gf.get("content")
+                if file_path and content and file_path not in ("server.py", "manifest.json", "requirements.txt", "README.md"):
+                    zf.writestr(file_path, content)
         zip_bytes = zip_buffer.getvalue()
 
         manifest_key = f"exports/{project_id}/mcp/manifest.json"
@@ -502,6 +509,8 @@ Add to `.cursor/mcp.json`:
         return {
             "type": "mcp",
             "status": "completed",
+            "overall_status": verification_report.overall_status.value,
+            "verification_report": verification_report.to_dict(),
             "s3_key": bundle_key,
             "tools_generated": len(tools),
             "flagged_destructive": flagged_destructive,
