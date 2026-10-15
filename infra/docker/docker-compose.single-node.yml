@@ -3,6 +3,8 @@
 # Launch command:
 #   docker compose -f infra/docker/docker-compose.single-node.yml up -d
 
+name: apiweaver
+
 services:
   init-bootstrap:
     image: python:3.12-slim
