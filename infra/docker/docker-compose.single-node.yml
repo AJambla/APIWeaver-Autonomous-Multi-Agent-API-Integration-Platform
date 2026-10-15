@@ -1,43 +1,113 @@
-# Self-hosted single-node Docker Compose for APIWeaver Phase 6 (Deployment.md §4).
-#
-# This is the full-stack topology for local/self-hosted deployment.
-# For API-only development during Phase 1-4, use docker-compose.dev.yml instead.
-#
-# Credentials are development-only and loaded from the repository root .env.
-# Production deployments should use Vault for secrets (Security.md §7).
+# Self-hosted single-node Docker Compose for APIWeaver
+# Architecture: Blueprint §6 (Zero-Vault AES-256-GCM), §7 (Artifact Storage), §10 (Phase 5)
+# Launch command:
+#   docker compose -f infra/docker/docker-compose.single-node.yml up -d
 
-# Images are pinned to `name:version@digest` (`audit M10`): a floating tag (`:16`,
-# `:latest`) can silently change underneath a running stack, so an image that worked
-# yesterday is not the image you get today. Each digest here was read from the registry
-# with `docker buildx imagetools inspect <ref>` and each version tag was taken from the
-# software the already-running container reports, so the pinned image is the one this
-# stack already uses rather than a new upgrade. Re-pin by looking up the new version's
-# digest when you next intend to upgrade.
 services:
-  web:
-    image: apiweaver/web:latest
-    # The default local workflow runs the frontend with `npm run dev` on the host.
-    # Use `--profile docker-ui` when a containerized frontend is required.
-    profiles: ["docker-ui"]
-    build:
-      # Lowercase, exactly as the git index records it (`audit M10`). The working tree on this
-      # machine is `Frontend`, and Windows does not care, but a Linux checkout materialises the
-      # directory as `frontend` and this context would not exist. `git ls-files` shows 40 files
-      # under `frontend/` and none under `Frontend/`.
-      context: ../../frontend
-      dockerfile: Dockerfile
+  init-bootstrap:
+    image: python:3.12-slim
+    volumes:
+      - ../../secrets:/app/secrets
+      - ../../.env:/app/.env
+      - ../../storage:/app/storage
+      - ../../scripts:/app/scripts
+    working_dir: /app
+    command: >
+      sh -c "pip install --no-cache-dir cryptography && python scripts/bootstrap.py"
+    restart: "no"
+    networks:
+      - apiweaver
+
+  postgres:
+    image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+    container_name: apiweaver-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-apiweaver}
+      POSTGRES_USER: ${POSTGRES_USER:-apiweaver}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apiweaver}
     ports:
-      - "3000:8080"
-    depends_on:
-      api:
-        condition: service_healthy
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     networks:
       - apiweaver
     healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/" ]
-      interval: 30s
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-apiweaver} -d $${POSTGRES_DB:-apiweaver}"]
+      interval: 5s
       timeout: 5s
-      retries: 3
+      retries: 10
+
+  redis:
+    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    container_name: apiweaver-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - apiweaver
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
+    container_name: apiweaver-qdrant
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrantdata:/qdrant/storage
+      - ../../scripts/qdrant-healthcheck.sh:/qdrant-healthcheck.sh:ro
+    networks:
+      - apiweaver
+    healthcheck:
+      test: ["CMD", "/bin/bash", "/qdrant-healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  minio:
+    image: quay.io/minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    container_name: apiweaver-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - miniodata:/data
+    networks:
+      - apiweaver
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: python:3.12-slim
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ../../scripts:/app/scripts:ro
+    working_dir: /app
+    environment:
+      S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      S3_BUCKET_UPLOADS: ${S3_BUCKET_UPLOADS:-apiweaver-uploads}
+      S3_BUCKET_ARTIFACTS: ${S3_BUCKET_ARTIFACTS:-apiweaver-artifacts}
+    networks:
+      - apiweaver
+    command: >
+      sh -c "pip install --no-cache-dir boto3 && python scripts/init_minio.py"
+    restart: "no"
 
   db-migration:
     image: apiweaver/api:latest
@@ -51,10 +121,13 @@ services:
       - path: ../../.env
         required: false
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-apiweaver}:${POSTGRES_PASSWORD:-apiweaver}@postgres:5432/${POSTGRES_DB:-apiweaver}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
+      init-bootstrap:
+        condition: service_completed_successfully
     networks:
       - apiweaver
     restart: "no"
@@ -65,23 +138,21 @@ services:
       context: ../../backend
       dockerfile: Dockerfile
     ports:
-      # Loopback only. `web` (nginx) is the public entry point; an API reachable directly
-      # lets a client choose its own right-most X-Forwarded-For and rotate rate-limit
-      # identities (trusted_proxy_hops=1 assumes nginx is the only hop).
       - "127.0.0.1:8000:8000"
     volumes:
-      # Local-only JWT key mount. Production keys are mounted by the Vault Agent.
       - ../../secrets:/app/secrets:ro
+      - ../../storage:/app/storage
     env_file:
       - path: ../../.env
         required: false
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-apiweaver}:${POSTGRES_PASSWORD:-apiweaver}@postgres:5432/${POSTGRES_DB:-apiweaver}
       REDIS_URL: redis://redis:6379/0
-      # The API publishes workflow tasks by name to the worker's broker.
       CELERY_BROKER_URL: redis://redis:6379/1
       QDRANT_URL: http://qdrant:6333
       S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
       CORS_ALLOWED_ORIGINS: http://localhost:3000
     depends_on:
@@ -98,38 +169,6 @@ services:
     networks:
       - apiweaver
     healthcheck:
-      # `audit M10`. Three problems, one command.
-      #
-      # 1. `urlopen` was called with no timeout, so the check itself could block forever:
-      # /readyz fans out to Postgres and Redis (backend/app/api/v1/health.py:33) and a hung
-      # dependency produced a hung probe that only the daemon's kill would end - and on this
-      # engine that kill is unreliable (see the agent-worker note). `timeout=10` makes the
-      # probe answer for itself. The check stays truthful: `urlopen` raises HTTPError on a
-      # non-2xx (measured - a 404 from the same code exited rc=1), and /readyz answers 503
-      # when a dependency does not answer.
-      #
-      # 2. `localhost` is a wasted connect each poll. Measured in python:3.12.15-slim:
-      # getaddrinfo("localhost") returns ::1 before 127.0.0.1, while uvicorn --host 0.0.0.0
-      # listens on the IPv4 wildcard only (`00000000:1F40` in /proc/net/tcp, nothing in
-      # /proc/net/tcp6). `http.client` does fall back, so the old check passed - unlike the
-      # busybox `wget` used by `web`, which has no fallback and needed 127.0.0.1 (`audit M10c`).
-      #
-      # 3. timeout 5s with no start_period. Measured floor on this machine: an empty
-      # `python -m http.server` in this image took 5.5s to be listening at all. A container
-      # that is still importing the application was therefore counted as unhealthy.
-      #
-      # `python` is the only HTTP client in the image - curl and wget are both absent
-      # (verified with `command -v` against apiweaver/api:latest).
-      #
-      # Run verbatim (parsed out of this file and executed as an argv list) against the API
-      # that was live on 127.0.0.1:8000 while this was written: /healthz -> rc=0 in 4.59s;
-      # nothing listening -> rc=1 (`actively refused`); /readyz -> rc=1, `TimeoutError` at the
-      # 10s bound, three times running at 30.1s, 30.1s and 31.2s. That last one is not this
-      # check's problem to solve: it is /readyz itself awaiting Postgres and Redis with no
-      # deadline of its own (backend/app/api/v1/health.py:44,51 - Postgres answered a raw TCP
-      # connect in 0.011s, so the wait is in the request path). Tracked separately; the 10s here
-      # is a bound, not a tuning to that latency, and it is what turns a hung dependency into a
-      # failed check instead of a check that never finishes.
       test: [ "CMD", "python", "-c", 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/readyz", timeout=10)' ]
       interval: 30s
       timeout: 20s
@@ -142,27 +181,25 @@ services:
       context: ../..
       dockerfile: agent_worker/Dockerfile
     volumes:
-      # Keep the worker's JWT path consistent with the API service in local Compose.
       - ../../secrets:/app/secrets:ro
-      # Docker socket mount for isolated sandbox container execution.
       - /var/run/docker.sock:/var/run/docker.sock
+      - ../../storage:/app/storage
     group_add:
       - "${DOCKER_GID:-999}"
     env_file:
       - path: ../../.env
         required: false
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      # Must match the API's REDIS_URL: run events are Redis Streams, which are per-DB,
-      # and the API's SSE route reads them from db 0. The broker stays on db 1.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-apiweaver}:${POSTGRES_PASSWORD:-apiweaver}@postgres:5432/${POSTGRES_DB:-apiweaver}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       QDRANT_URL: http://qdrant:6333
       S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
       DOCKER_HOST: unix:///var/run/docker.sock
-      # Pipeline metrics, aggregated across prefork children and served on :9808.
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus-multiproc
       WORKER_METRICS_PORT: "9808"
     depends_on:
@@ -179,149 +216,23 @@ services:
     networks:
       - apiweaver
     command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4 -Q celery,dlq
-    # Celery's warm shutdown finishes in-flight tasks; docker's default 10 s then SIGKILLs.
-    # A run killed anyway is failed by the API's lease reaper (workflows/reaper.py), not
-    # left "running" or restarted from scratch by redelivery.
     stop_grace_period: 2m
-    # No healthcheck, deliberately (`audit M10`). The previous one - `celery inspect ping` with
-    # `timeout: 5s` - reported a healthy worker as unhealthy and leaked a process every poll.
-    # Measured against a throwaway container of apiweaver/agent-worker:latest while the stack's
-    # worker was up: `docker top` showed seven `celery inspect ping` processes still alive, the
-    # oldest 5m30s old although it had been started with `-t 2`; the health log recorded every
-    # check as `Health check exceeded timeout (5s)` with exit code -1 (killed by the daemon, not
-    # returned); and the container printed `-> celery@AJ007: OK / pong / 1 node online` the whole
-    # time. A worker that answered correctly was unhealthy.
-    #
-    # It cannot be rescued by wrapping it in `timeout`: celery 5.6.3 does not exit after a
-    # successful `inspect` - it holds the broker connection - so the wrapper would always yield
-    # rc=124, which reads as "unhealthy" whether or not a worker replied. Rewriting the same
-    # call in Python as `Celery(broker=...).control.ping(timeout=2)` is no better: measured on
-    # this machine, `import celery` alone cost 7.4s and the ping did not return inside 80s,
-    # while redis answered a direct PING in 0.001s.
-    #
-    # A check for this service needs the worker to publish its own liveness first (a TTL
-    # heartbeat key written from celery's `worker_ready` / task signals, read back by a short
-    # probe). Nothing in this file gates on agent-worker being healthy, so removing the check
-    # removes no dependency gate - `docker compose ps` now says running or not running, which is
-    # the truth, instead of a permanent false alarm.
 
-  postgres:
-    image: postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
-    container_name: apiweaver-postgres
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  web:
+    image: apiweaver/web:latest
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
     ports:
-      # Datastores are published on loopback only: reachable for local tooling, never
-      # from the network (they use development credentials and Redis has no auth).
-      - "127.0.0.1:5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    networks:
-      - apiweaver
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-    container_name: apiweaver-redis
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - redisdata:/data
-    networks:
-      - apiweaver
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  qdrant:
-    image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
-    container_name: apiweaver-qdrant
-    ports:
-      - "127.0.0.1:6333:6333"
-    volumes:
-      - qdrantdata:/qdrant/storage
-      - ../../scripts/qdrant-healthcheck.sh:/qdrant-healthcheck.sh:ro
-    networks:
-      - apiweaver
-    healthcheck:
-      # Probes Qdrant /readyz HTTP endpoint via dedicated healthcheck script.
-      # Replaces fragile inline shell socket redirections with dedicated mounted probe.
-      test: [ "CMD", "/bin/bash", "/qdrant-healthcheck.sh" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-
-
-  minio:
-    image: quay.io/minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    container_name: apiweaver-minio
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
-    volumes:
-      - miniodata:/data
-    networks:
-      - apiweaver
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  prometheus:
-    image: prom/prometheus:v2.51.0
-    container_name: apiweaver-prometheus
-    profiles: ["monitoring"]
-    volumes:
-      - ../../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ../../monitoring/alert_rules.yaml:/etc/prometheus/alert_rules.yaml:ro
-      - prometheusdata:/prometheus
-    ports:
-      - "127.0.0.1:9090:9090"
-    networks:
-      - apiweaver
-    healthcheck:
-      test: [ "CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/healthy" ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  grafana:
-    image: grafana/grafana:10.4.0
-    container_name: apiweaver-grafana
-    profiles: ["monitoring"]
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-    ports:
-      - "127.0.0.1:3001:3000"
-    volumes:
-      - ../../monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ../../monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ../../monitoring/dashboards:/etc/grafana/provisioning/dashboards/json:ro
-      - grafanadata:/var/lib/grafana
+      - "3000:8080"
     depends_on:
-      prometheus:
+      api:
         condition: service_healthy
     networks:
       - apiweaver
     healthcheck:
-      test: [ "CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health" ]
-      interval: 10s
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/" ]
+      interval: 30s
       timeout: 5s
       retries: 3
 
@@ -334,5 +245,3 @@ volumes:
   redisdata:
   qdrantdata:
   miniodata:
-  prometheusdata:
-  grafanadata:
