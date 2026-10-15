@@ -245,3 +245,63 @@ export interface LlmTestResult {
   error?: string;
 }
 
+export interface McpToolSummary {
+  name: string;
+  description: string;
+  method?: string;
+  path?: string;
+  risk_level?: 'LOW' | 'MEDIUM' | 'HIGH';
+  safety_badge?: '[SAFE]' | '[STATE-CHANGING]' | '[DESTRUCTIVE ⚠]' | string;
+  requires_confirmation?: boolean;
+  parameters?: Record<string, unknown>;
+  input_schema?: Record<string, unknown>;
+}
+
+export interface VerificationToolOutcome {
+  tool_name: string;
+  endpoint_id?: string;
+  method?: string;
+  path?: string;
+  safety_badge?: string;
+  requires_confirmation?: boolean;
+  static_valid?: boolean;
+  sandbox_tested?: boolean;
+  live_tested?: boolean;
+  outcome?: 'passed' | 'failed' | 'skipped' | string;
+  error?: string | null;
+}
+
+export interface VerificationReportData {
+  project_id?: string;
+  timestamp?: string;
+  static_status: 'PASS' | 'FAIL' | string;
+  sandbox_status: 'PASS' | 'FAIL' | 'NOT RUN' | string;
+  live_status: 'PASS' | 'FAIL' | 'NOT RUN' | string;
+  overall_status: 'STATIC VERIFIED' | 'SANDBOX VERIFIED' | 'LIVE VERIFIED' | 'FAILED' | string;
+  total_tools: number;
+  passed_tools: number;
+  failed_tools: number;
+  tools?: VerificationToolOutcome[];
+  repair_cycles_used?: number;
+  repairs_attempted?: number;
+  notes?: string[];
+}
+
+export interface GeneratedFileMeta {
+  id: string;
+  project_id: string;
+  file_path: string;
+  language: string;
+  file_type: string;
+  size_bytes: number;
+  created_at: string | null;
+  code_generation_run_id?: string;
+}
+
+export interface FileContentResult {
+  file_path: string;
+  content: string;
+  language: string;
+  file_type: string;
+}
+
