@@ -180,6 +180,8 @@ services:
       - ./secrets:/app/secrets:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - ./storage:/app/storage
+    group_add:
+      - "${DOCKER_GID:-999}"
     env_file:
       - path: ./.env
         required: false
