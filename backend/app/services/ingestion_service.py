@@ -17,6 +17,7 @@ from app.core.logging import get_logger
 from app.models.document import Document, DocumentVersion
 from app.models.enums import DependencyRelationship, DocumentFormat, HTTPMethod, ParameterLocation
 from app.models.spec import APISpec, Endpoint, EndpointDependency, EndpointParameter
+from app.services.safety_service import classify_safety
 from app.services.spec_normalizer import NormalizedSpec, UnsafeDocumentError, normalize
 from app.services.storage_service import ObjectStorage
 
@@ -276,6 +277,10 @@ async def _persist_endpoints(
                 p for p in parameters if (p["name"], p["location"]) not in known
             )
             continue
+        is_destruct = endpoint.get("is_destructive")
+        if is_destruct is None:
+            is_destruct = classify_safety(method, path).is_destructive
+
         merged[(method, path)] = {
             "method": method,
             "path": path,
@@ -286,6 +291,7 @@ async def _persist_endpoints(
             "request_schema": endpoint.get("request_schema"),
             "response_schemas": endpoint.get("response_schemas") or {},
             "confidence_score": _confidence(endpoint.get("confidence_score"), default_confidence),
+            "is_destructive": bool(is_destruct),
             "parameters": parameters,
         }
 
