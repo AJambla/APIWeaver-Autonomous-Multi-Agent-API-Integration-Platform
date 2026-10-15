@@ -146,6 +146,8 @@ services:
       - ../../secrets:/app/secrets:ro
       # Docker socket mount for isolated sandbox container execution.
       - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-999}"
     env_file:
       - path: ../../.env
         required: false
