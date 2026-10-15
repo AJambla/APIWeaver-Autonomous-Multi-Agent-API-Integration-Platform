@@ -112,8 +112,8 @@ class TZDateTime(TypeDecorator[datetime.datetime]):
     impl = DateTime
     cache_ok = True
 
-    def __init__(self) -> None:
-        super().__init__(timezone=True)
+    def __init__(self, timezone: bool = True, **kw: Any) -> None:
+        super().__init__(timezone=timezone, **kw)
 
     def process_bind_param(
         self, value: datetime.datetime | None, dialect: Any
