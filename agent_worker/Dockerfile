@@ -38,8 +38,11 @@ COPY agent_worker ./agent_worker
 # `agent_worker.tasks.base` cannot import `app` and the worker exits on boot.
 ENV PYTHONPATH=/app/backend:/app
 
-# Create non-root user
-RUN useradd -m appuser && chown -R appuser /app
+# Create non-root user and ensure docker group exists for socket access
+RUN (groupadd -g 999 docker || groupadd docker || true) && \
+    useradd -m -s /bin/bash appuser && \
+    usermod -aG docker appuser && \
+    chown -R appuser:appuser /app
 
 USER appuser
 
