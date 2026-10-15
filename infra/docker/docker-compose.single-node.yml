@@ -82,8 +82,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/1
       QDRANT_URL: http://qdrant:6333
       S3_ENDPOINT_URL: http://minio:9000
-      VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: ${VAULT_TOKEN:-}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
       CORS_ALLOWED_ORIGINS: http://localhost:3000
     depends_on:
       postgres:
@@ -91,8 +90,6 @@ services:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
-      vault:
         condition: service_healthy
       minio:
         condition: service_healthy
@@ -148,7 +145,7 @@ services:
       # Keep the worker's JWT path consistent with the API service in local Compose.
       - ../../secrets:/app/secrets:ro
       # Docker socket mount for isolated sandbox container execution.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - path: ../../.env
         required: false
@@ -161,8 +158,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       QDRANT_URL: http://qdrant:6333
       S3_ENDPOINT_URL: http://minio:9000
-      VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: ${VAULT_TOKEN:-}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
       DOCKER_HOST: unix:///var/run/docker.sock
       # Pipeline metrics, aggregated across prefork children and served on :9808.
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus-multiproc
@@ -173,8 +169,6 @@ services:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
-      vault:
         condition: service_healthy
       minio:
         condition: service_healthy
@@ -264,37 +258,6 @@ services:
       retries: 5
       start_period: 15s
 
-  vault:
-    image: hashicorp/vault:2.1.1@sha256:47f14a6acb98f48d798a07df7c83f23a6e636e1cf724c5f8ff165cb32667a1e2
-    container_name: apiweaver-vault
-    cap_add:
-      - IPC_LOCK
-    environment:
-      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID}
-    ports:
-      - "127.0.0.1:8200:8200"
-    volumes:
-      - vaultdata:/vault/file
-    networks:
-      - apiweaver
-    healthcheck:
-      # The command is correct - `vault status` is in the image and it does fail when the
-      # server is not answering. The timeout was not (`audit M10`). Measured against this
-      # container's own health log while the stack was otherwise idle: five consecutive checks
-      # all recorded `Health check exceeded timeout (5s)` with exit code -1 (killed, not
-      # returned), taking 6.7 s, 7.1 s, 7.1 s, 11.1 s and 16.3 s to complete. Run by hand in
-      # the same window the command returned rc=0 in 1.8 s, 2.0 s and once in 16.1 s.
-      # So Vault answered every request; the check just did not allow the time it took, and the
-      # service sat in `unhealthy` (FailingStreak 21) for no reason. Anything gated on
-      # `condition: service_healthy` inherits that.
-      #
-      # `start_period` keeps the first few polls from counting against `retries` while the
-      # dev server is still coming up.
-      test: [ "CMD", "vault", "status", "-address=http://127.0.0.1:8200" ]
-      interval: 10s
-      timeout: 20s
-      retries: 5
-      start_period: 15s
 
   minio:
     image: quay.io/minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
@@ -368,7 +331,6 @@ volumes:
   pgdata:
   redisdata:
   qdrantdata:
-  vaultdata:
   miniodata:
   prometheusdata:
   grafanadata:
