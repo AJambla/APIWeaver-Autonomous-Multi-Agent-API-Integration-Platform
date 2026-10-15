@@ -7,33 +7,33 @@ import { relativeTime } from '../lib/format';
 import { btnGhost, cardCls, ErrorBanner, PageHeader, Skeleton, StatusBadge } from '../components/ui';
 import { FileUp, Network, Code2, FlaskConical, PackageOpen, ChevronDown, Sparkles } from 'lucide-react';
 
-/* The pipeline mirrors the real agent_worker task modules:
-   document_tasks → planner_tasks → codegen_tasks → testing_tasks → export_tasks */
+/* The 5-stage pipeline mirrors the outcome-driven FastMCP architecture:
+   Document Ingestion → Topological DAG Planning → FastMCP Code Synthesis → Sandbox Verification → MCP Bundle & Distribution */
 const PIPELINE = [
   {
-    name: 'Document Ingestion',
+    name: '1. Ingest',
     icon: FileUp,
-    description: 'Parses uploaded OpenAPI/Swagger documents and raw documentation into a normalized operation model.',
+    description: 'Deterministic OpenAPI/Swagger parser with RAG semantic fallback for unstructured markdown/PDF API documentation.',
   },
   {
-    name: 'Planning Agent',
+    name: '2. Dependencies',
     icon: Network,
-    description: 'Builds the topological DAG of operations with dependency ordering and rollback points.',
+    description: 'Builds topological DAG of API operations, parameter propagation, resource clusters, and authentication scheme.',
   },
   {
-    name: 'Code Generation',
+    name: '3. FastMCP Tools',
     icon: Code2,
-    description: 'Generates client code for each DAG node across the selected target languages.',
+    description: 'Synthesizes typed Python FastMCP tools with deterministic safety badges ([SAFE], [STATE-CHANGING], [DESTRUCTIVE ⚠]).',
   },
   {
-    name: 'Testing Agent',
+    name: '4. Verification',
     icon: FlaskConical,
-    description: 'Executes the generated test suite; failures trigger bounded self-healing repair loops.',
+    description: 'Executes pytest test suites in ephemeral Docker sandboxes; supports credentialed live testing with self-healing repairs.',
   },
   {
-    name: 'Export Agent',
+    name: '5. MCP Result',
     icon: PackageOpen,
-    description: 'Compiles validated output into SDKs, Docker services, GitHub repos, or MCP servers.',
+    description: 'Packages certified FastMCP server bundle (apiweaver-mcp.zip), multi-tier audit report, and Claude Desktop config.',
   },
 ];
 
