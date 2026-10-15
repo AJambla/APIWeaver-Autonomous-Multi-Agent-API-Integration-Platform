@@ -23,10 +23,10 @@ COPY --from=builder /app/requirements.txt .
 # swapped on the index for a pinned version fails this build instead of being installed.
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
-# Copy application code
-COPY . .
+RUN useradd -m appuser
 
-RUN useradd -m appuser && chown -R appuser /app
+# Copy application code with pre-assigned ownership (zero layer duplication)
+COPY --chown=appuser:appuser . .
 
 USER appuser
 
