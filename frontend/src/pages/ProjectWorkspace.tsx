@@ -73,6 +73,7 @@ import { DependenciesTab, MethodChip } from './workspace/DependenciesTab';
 import { McpToolsTab } from './workspace/McpToolsTab';
 import { VerifyTab } from './workspace/VerifyTab';
 import { LiveTestModal } from './workspace/LiveTestModal';
+import { McpResultTab } from './workspace/McpResultTab';
 
 type TabId = 'ingest' | 'dependencies' | 'tools' | 'verify' | 'result' | 'logs' | 'settings';
 
@@ -1249,98 +1250,21 @@ export const ProjectWorkspace: React.FC = () => {
 
         {/* ============================== STAGE 5: MCP RESULT ============================== */}
         {activeTab === 'result' && (
-          <div className="space-y-6">
-            <div>
-              <h2 className="text-lg font-medium tracking-tight">Export Integration</h2>
-              <p className="text-xs text-neutral-500">Generate artifacts from the built integration. Export status is tracked below.</p>
-            </div>
-
-            {exportError && <ErrorBanner message={exportError} onDismiss={() => setExportError('')} />}
-            {exportNote && (
-              <div className={`${cardCls} flex items-center gap-3 p-4 text-sm text-emerald-300`}>
-                <CheckCircle2 className="h-4 w-4 shrink-0" /> {exportNote}
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {[
-                { type: 'sdk', title: 'Python SDK', desc: 'Generated client package with typed models and async support.' },
-                { type: 'client', title: 'TypeScript Client', desc: 'Typed client library generated from the normalized specification.' },
-                { type: 'docker', title: 'Dockerfile & Compose', desc: 'Containerized deployment bundle for the generated service.' },
-                { type: 'mcp', title: 'MCP Tools', desc: 'Export the integration as Model Context Protocol tools.' },
-                { type: 'docs', title: 'API Documentation', desc: 'Rendered documentation for the integrated API.' },
-                { type: 'cicd', title: 'CI/CD Pipelines', desc: 'Pipeline definitions for building and testing the integration.' },
-              ].map(target => (
-                <div key={target.type} className={`${cardCls} flex flex-col p-5 transition-colors hover:border-white/25`}>
-                  <h3 className="mb-1 text-sm font-medium">{target.title}</h3>
-                  <p className="mb-4 flex-1 text-xs leading-relaxed text-neutral-500">{target.desc}</p>
-                  <button
-                    onClick={() => triggerExport(target.type)}
-                    disabled={exportBusy !== null}
-                    className={`${btnGhost} h-9 px-4 text-xs disabled:opacity-40 disabled:cursor-not-allowed`}
-                  >
-                    {exportBusy === target.type ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Boxes className="h-3.5 w-3.5" />}
-                    {exportBusy === target.type ? 'Generating...' : 'Generate'}
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            <div className={`${cardCls} overflow-hidden`}>
-              <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
-                <h3 className="text-sm font-medium">Recent exports</h3>
-                <button
-                  onClick={async () => {
-                    if (!id) return;
-                    const rows = await apiFetch<ExportRecord[]>(`/projects/${id}/exports`).catch(() => [] as ExportRecord[]);
-                    setExports(Array.isArray(rows) ? rows : []);
-                  }}
-                  className="rounded-lg p-1.5 text-neutral-400 hover:bg-white/5 hover:text-white"
-                  title="Refresh"
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                </button>
-              </div>
-              {exports.length === 0 ? (
-                <p className="px-5 py-8 text-center text-sm text-neutral-500">No exports generated yet.</p>
-              ) : (
-                <table className={tableCls}>
-                  <thead>
-                    <tr className="border-b border-white/10 text-left">
-                      <Th>Type</Th>
-                      <Th>Status</Th>
-                      <Th>Created</Th>
-                      <Th>Artifact</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {exports.map(row => (
-                      <tr key={row.id} className="border-b border-white/5 hover:bg-white/[0.02]">
-                        <Td><span className="font-mono text-xs">{formatExportType(row.export_type)}</span></Td>
-                        <Td><StatusBadge status={row.status} /></Td>
-                        <Td><span className="text-xs text-neutral-500">{relativeTime(row.created_at)}</span></Td>
-                        <Td>
-                          {row.download_url ? (
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadExport(row)}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium text-white hover:bg-white/10 transition-colors"
-                              title="Download artifact archive"
-                            >
-                              <Download className="h-3 w-3 text-neutral-400" />
-                              Download
-                            </button>
-                          ) : (
-                            <span className="text-xs text-neutral-500">—</span>
-                          )}
-                        </Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
+          <McpResultTab
+            projectId={id || ''}
+            project={project}
+            spec={spec}
+            endpoints={endpoints}
+            testSummary={testSummary}
+            exports={exports}
+            exportBusy={exportBusy}
+            exportError={exportError}
+            exportNote={exportNote}
+            onDismissExportError={() => setExportError('')}
+            onTriggerExport={triggerExport}
+            onDownloadExport={handleDownloadExport}
+            onGoToVerify={() => setActiveTab('verify')}
+          />
         )}
 
         {/* =============================== LOGS =============================== */}

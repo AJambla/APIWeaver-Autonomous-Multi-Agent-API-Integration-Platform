@@ -172,6 +172,7 @@ export interface TestRunSummary {
   summary: { total?: number; passed?: number; failed?: number; skipped?: number };
   results: TestResultItem[];
   errors?: string[];
+  repairs?: Array<{ id: string; attempt_number: number; outcome?: string }>;
 }
 
 export interface ExportRecord {
@@ -258,13 +259,16 @@ export interface McpToolSummary {
 }
 
 export interface VerificationToolOutcome {
-  tool_name: string;
+  tool_name?: string;
+  name?: string;
   endpoint_id?: string;
   method?: string;
   path?: string;
   safety_badge?: string;
+  safety_tier?: string;
   requires_confirmation?: boolean;
   static_valid?: boolean;
+  static_check?: boolean;
   sandbox_tested?: boolean;
   live_tested?: boolean;
   outcome?: 'passed' | 'failed' | 'skipped' | string;
@@ -279,9 +283,11 @@ export interface VerificationReportData {
   live_status: 'PASS' | 'FAIL' | 'NOT RUN' | string;
   overall_status: 'STATIC VERIFIED' | 'SANDBOX VERIFIED' | 'LIVE VERIFIED' | 'FAILED' | string;
   total_tools: number;
-  passed_tools: number;
-  failed_tools: number;
+  passed_tools?: number;
+  failed_tools?: number;
+  verified_tools?: number;
   tools?: VerificationToolOutcome[];
+  repair_cycles?: number;
   repair_cycles_used?: number;
   repairs_attempted?: number;
   notes?: string[];
