@@ -156,3 +156,9 @@ CLAUDE.md
 .github/*-context.md
 gen-context.config.json
 .contextignore
+
+# Documentation & Project Docs
+docs/
+Project-docs/
+project-docs/
+
