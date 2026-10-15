@@ -152,3 +152,17 @@ qdrantdata/
 *.dev
 *.tmp
 *.bak
+
+# Storage and uploads
+storage/
+**/storage/
+
+# Documentation and planning artifacts
+docs/
+**/docs/
+.planning/
+**/.planning/
+
+# Tests (not needed in production agent_worker or backend images)
+backend/tests/
+**/tests/
