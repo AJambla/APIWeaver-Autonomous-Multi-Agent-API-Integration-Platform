@@ -1,28 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { asUuid } from '../lib/ids';
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  ArrowDown,
   Boxes,
   Check,
   CheckCircle2,
-  Clipboard,
   Clock,
   Copy,
   Download,
   FileCode2,
-  FileJson,
-  FileText,
-  FileType,
   FlaskConical,
   GitBranch,
   History,
   Link2,
   Loader2,
-  Maximize2,
   Network,
   Play,
   RefreshCw,
@@ -74,10 +68,10 @@ import {
 } from '../components/ui';
 import { LogsTab } from './workspace/LogsTab';
 import { SettingsTab } from './workspace/SettingsTab';
+import { IngestTab, UploadMode, UploadPhase } from './workspace/IngestTab';
+import { DependenciesTab, MethodChip } from './workspace/DependenciesTab';
 
-type TabId = 'upload' | 'plan' | 'build' | 'test' | 'export' | 'logs' | 'settings';
-type UploadMode = 'file' | 'paste' | 'url';
-type UploadPhase = 'idle' | 'working' | 'success' | 'error';
+type TabId = 'ingest' | 'dependencies' | 'tools' | 'verify' | 'result' | 'logs' | 'settings';
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : 'Something went wrong.');
 
@@ -89,11 +83,11 @@ const TERMINAL_TEST_STATUSES = ['completed', 'completed_with_failures', 'failed'
 const OPEN_EXPORT_STATUSES = ['queued', 'pending', 'running'];
 
 const CORE_STEPS: Array<{ id: TabId; n: number; label: string; desc: string }> = [
-  { id: 'upload', n: 1, label: 'Upload Spec', desc: 'Import API documentation' },
-  { id: 'plan', n: 2, label: 'Topological Plan', desc: 'Analyze API structure' },
-  { id: 'build', n: 3, label: 'Build & Agents', desc: 'Configure and run agents' },
-  { id: 'test', n: 4, label: 'Test Suite', desc: 'Validate integration' },
-  { id: 'export', n: 5, label: 'Export Wizard', desc: 'Generate SDK/client' },
+  { id: 'ingest', n: 1, label: 'Ingest Spec', desc: 'Import API documentation' },
+  { id: 'dependencies', n: 2, label: 'Dependencies', desc: 'Topological dependency graph' },
+  { id: 'tools', n: 3, label: 'MCP Tools', desc: 'Synthesized FastMCP tools & code' },
+  { id: 'verify', n: 4, label: 'Verify', desc: 'Docker sandbox & live testing' },
+  { id: 'result', n: 5, label: 'MCP Result', desc: 'Verified bundle & Claude config' },
 ];
 
 const SUPPORTING_STEPS: Array<{ id: TabId; label: string; icon: React.ElementType }> = [
@@ -101,40 +95,7 @@ const SUPPORTING_STEPS: Array<{ id: TabId; label: string; icon: React.ElementTyp
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
 
-const FORMAT_CHIPS = [
-  { label: 'OpenAPI', ext: '.yaml / .json', icon: FileJson },
-  { label: 'Swagger', ext: '.yaml / .json', icon: FileCode2 },
-  { label: 'Postman', ext: '.json', icon: FileJson },
-  { label: 'Markdown', ext: '.md', icon: FileText },
-  { label: 'PDF', ext: '.pdf', icon: FileType },
-];
-
-const NEXT_STAGES = [
-  { title: 'Parse & Validate', desc: 'Parse the specification and validate its format.' },
-  { title: 'Analyze', desc: 'Extract endpoints, schemas, authentication and parameters.' },
-  { title: 'Build Plan', desc: 'Generate API topology and integration plan.' },
-  { title: 'Continue', desc: 'Move to the Topological Plan.' },
-];
-
 const DEFAULT_SPEC = 'openapi: 3.0.0\ninfo:\n  title: API Specification\n  version: 1.0.0\npaths: {}';
-
-const METHOD_STYLES: Record<string, string> = {
-  GET: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
-  POST: 'bg-sky-500/10 text-sky-400 border-sky-500/30',
-  PUT: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-  PATCH: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-  DELETE: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
-};
-
-const MethodChip: React.FC<{ method: string }> = ({ method }) => (
-  <span
-    className={`inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[10px] font-bold ${
-      METHOD_STYLES[method.toUpperCase()] || 'bg-white/5 text-neutral-400 border-white/15'
-    }`}
-  >
-    {method.toUpperCase()}
-  </span>
-);
 
 /* Stepper ------------------------------------------------------------------- */
 
@@ -194,136 +155,6 @@ const WorkflowStepper: React.FC<{
     })}
   </div>
 );
-
-/* Upload dropzone ------------------------------------------------------------ */
-
-const UploadDropzone: React.FC<{
-  file: File | null;
-  onFile: (f: File | null) => void;
-  disabled: boolean;
-}> = ({ file, onFile, disabled }) => {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [dragOver, setDragOver] = useState(false);
-
-  return (
-    <div
-      onDragOver={e => {
-        e.preventDefault();
-        if (!disabled) setDragOver(true);
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={e => {
-        e.preventDefault();
-        setDragOver(false);
-        const dropped = e.dataTransfer.files?.[0];
-        if (dropped && !disabled) onFile(dropped);
-      }}
-      onClick={() => !disabled && inputRef.current?.click()}
-      className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border border-dashed px-6 py-10 text-center transition-colors ${
-        dragOver ? 'border-white/70 bg-white/[0.06]' : 'border-white/15 bg-white/[0.02] hover:border-white/35'
-      }`}
-    >
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".yaml,.yml,.json,.md,.pdf"
-        className="hidden"
-        onChange={e => onFile(e.target.files?.[0] ?? null)}
-      />
-      <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/5">
-        <Upload className="h-5 w-5 text-neutral-300" />
-      </span>
-      {file ? (
-        <div>
-          <div className="text-sm font-medium">{file.name}</div>
-          <div className="text-xs text-neutral-500">
-            {(file.size / 1024).toFixed(1)} KB · click to choose a different file
-          </div>
-        </div>
-      ) : (
-        <div>
-          <div className="text-sm font-medium">Drop your API specification here</div>
-          <div className="text-xs text-neutral-500">or click to browse files</div>
-        </div>
-      )}
-      <span className={`${btnGhost} pointer-events-none`}>
-        <Clipboard className="h-4 w-4" /> Browse Files
-      </span>
-      <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5">
-        {FORMAT_CHIPS.map(f => {
-          const Icon = f.icon;
-          return (
-            <span key={f.label} className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-[10px] text-neutral-400">
-              <Icon className="h-3 w-3" />
-              <span className="font-medium text-neutral-300">{f.label}</span>
-              {f.ext}
-            </span>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
-/* Analysis panel ------------------------------------------------------------- */
-
-const AnalysisPanel: React.FC<{ spec: ApiSpec; endpoints: SpecEndpoint[] }> = ({ spec, endpoints }) => {
-  const raw = (spec.raw_normalized ?? {}) as NormalizedSpec;
-  const schemasObj = raw.components?.schemas ?? raw.definitions ?? {};
-  const schemaCount = Object.keys(schemasObj).length;
-  const authSchemesObj = raw.components?.securitySchemes ?? raw.securityDefinitions ?? {};
-  const authSchemes = Object.keys(authSchemesObj);
-  const deprecated = endpoints.filter(e => e.deprecated).length;
-  const missingSummary = endpoints.filter(e => !e.summary).length;
-  const lowConfidence = endpoints.filter(e => e.confidence_score !== null && e.confidence_score < 0.6).length;
-  const validation = validationState(spec.confidence_score);
-
-  const findings = [
-    { text: `${specFormat(raw)} detected`, ok: true },
-    { text: `${endpoints.length} endpoint${endpoints.length === 1 ? '' : 's'} discovered`, ok: true },
-    { text: `${schemaCount} schema${schemaCount === 1 ? '' : 's'} discovered`, ok: true },
-    { text: authSchemes.length > 0 ? `Authentication detected (${authSchemes.join(', ')})` : 'No authentication schemes declared', ok: authSchemes.length > 0 },
-  ];
-  const warnings = [
-    deprecated > 0 ? `${deprecated} deprecated endpoint${deprecated === 1 ? '' : 's'}` : null,
-    missingSummary > 0 ? `${missingSummary} endpoint${missingSummary === 1 ? '' : 's'} without summary` : null,
-    lowConfidence > 0 ? `${lowConfidence} low-confidence extraction${lowConfidence === 1 ? '' : 's'}` : null,
-  ].filter((w): w is string => w !== null);
-
-  return (
-    <div className={`${cardCls} p-5`}>
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-medium">Specification Analysis</h3>
-        <StatusBadge status={validation.status} label={validation.label} />
-      </div>
-      <ul className="space-y-2">
-        {findings.map(f => (
-          <li key={f.text} className="flex items-center gap-2.5 text-sm">
-            {f.ok ? (
-              <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-            ) : (
-              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-            )}
-            <span className="text-neutral-300">{f.text}</span>
-          </li>
-        ))}
-      </ul>
-      {warnings.length > 0 && (
-        <div className="mt-4 border-t border-white/5 pt-3">
-          <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Warnings</div>
-          <ul className="space-y-1.5">
-            {warnings.map(w => (
-              <li key={w} className="flex items-center gap-2.5 text-sm text-neutral-400">
-                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-                {w}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-};
 
 /* Event log helpers ----------------------------------------------------------- */
 
@@ -405,8 +236,31 @@ export const ProjectWorkspace: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  /* --- upload tab --- */
-  const [activeTab, setActiveTab] = useState<TabId>('upload');
+  /* --- workspace stage navigation --- */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get('tab');
+
+  const normalizedInitialTab: TabId = useMemo(() => {
+    if (rawTab === 'upload' || rawTab === 'ingest') return 'ingest';
+    if (rawTab === 'plan' || rawTab === 'dependencies') return 'dependencies';
+    if (rawTab === 'build' || rawTab === 'tools') return 'tools';
+    if (rawTab === 'test' || rawTab === 'verify') return 'verify';
+    if (rawTab === 'export' || rawTab === 'result') return 'result';
+    if (rawTab === 'logs') return 'logs';
+    if (rawTab === 'settings') return 'settings';
+    return 'ingest';
+  }, [rawTab]);
+
+  const [activeTab, setActiveTabState] = useState<TabId>(normalizedInitialTab);
+
+  const setActiveTab = useCallback((tab: TabId) => {
+    setActiveTabState(tab);
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', tab);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
   const [mode, setMode] = useState<UploadMode>('file');
   const [file, setFile] = useState<File | null>(null);
   const [specContent, setSpecContent] = useState(DEFAULT_SPEC);
@@ -694,19 +548,17 @@ export const ProjectWorkspace: React.FC = () => {
     }
   }, [liveThoughts, autoScroll]);
 
-  /* Resume watching a run that is still in flight when the build tab opens. */
+  /* Resume watching a run that is still in flight when the tools tab opens. */
   useEffect(() => {
-    if (activeTab !== 'build' || activeRunId || !latestRun) return;
+    if (activeTab !== 'tools' || activeRunId || !latestRun) return;
     if (['queued', 'running', 'paused_for_approval'].includes(latestRun.status)) {
       setActiveRunId(latestRun.workflow_run_id);
     }
   }, [activeTab, activeRunId, latestRun]);
 
-  /* Load the dependency graph when the Plan tab opens, once per project.
-     Keyed on a ref, not on `graph`: a project with no dependencies legitimately has
-     zero edges, and re-fetching "until there are edges" looped until rate limited. */
+  /* Load the dependency graph when the Dependencies tab opens, once per project. */
   useEffect(() => {
-    if (activeTab === 'plan' && id && graphFetchedFor.current !== id) {
+    if (activeTab === 'dependencies' && id && graphFetchedFor.current !== id) {
       graphFetchedFor.current = id;
       apiFetch<DependencyGraph>(`/projects/${id}/dependency-graph`)
         .then(g => {
@@ -724,9 +576,9 @@ export const ProjectWorkspace: React.FC = () => {
     }
   }, [activeTab, id]);
 
-  /* Refresh test summary when Test tab opens if missing */
+  /* Refresh test summary when Verify tab opens if missing */
   useEffect(() => {
-    if (activeTab === 'test' && id && !testSummary) {
+    if (activeTab === 'verify' && id && !testSummary) {
       apiFetch<TestRunSummary>(`/projects/${id}/test-runs/latest`)
         .then(ts => { if (ts) setTestSummary(ts); })
         .catch(err => {
@@ -736,18 +588,21 @@ export const ProjectWorkspace: React.FC = () => {
   }, [activeTab, id, testSummary]);
 
   const stepCompleted = useMemo<Record<TabId, boolean>>(() => {
-    const uploadDone = spec !== null;
-    const runDone = project?.last_run_status === 'completed';
+    const ingestDone = spec !== null;
+    const depsDone = ingestDone && Boolean(graph && graph.nodes.length > 0);
+    const toolsDone = Boolean(activeRun?.status === 'completed' || project?.last_run_status === 'completed');
+    const verifyDone = Boolean(testSummary && (testSummary.summary.total ?? 0) > 0);
+    const resultDone = Boolean(exports.some(e => e.status === 'completed'));
     return {
-      upload: uploadDone,
-      plan: uploadDone && runDone,
-      build: uploadDone && runDone,
-      test: uploadDone && runDone,
-      export: uploadDone && runDone,
+      ingest: ingestDone,
+      dependencies: depsDone,
+      tools: toolsDone,
+      verify: verifyDone,
+      result: resultDone,
       logs: false,
       settings: false,
     };
-  }, [spec, project]);
+  }, [spec, graph, activeRun, project, testSummary, exports]);
 
   // URL mode uploads nothing directly: Import fetches the document into the editor
   // (switching to paste mode) so it can be reviewed first.
@@ -1241,329 +1096,57 @@ export const ProjectWorkspace: React.FC = () => {
       )}
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6">
-        {/* ============================== UPLOAD ============================== */}
-        {activeTab === 'upload' && (
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-white/[0.02] p-1">
-              {([
-                { id: 'file', label: 'Upload File', icon: Upload },
-                { id: 'paste', label: 'Paste Specification', icon: Clipboard },
-                { id: 'url', label: 'Import from URL', icon: Link2 },
-              ] as const).map(m => {
-                const Icon = m.icon;
-                return (
-                  <button
-                    key={m.id}
-                    onClick={() => setMode(m.id)}
-                    className={`flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm transition-colors ${
-                      mode === m.id ? 'bg-white text-black font-medium' : 'text-neutral-400 hover:bg-white/5 hover:text-white'
-                    }`}
-                  >
-                    <Icon className="h-4 w-4" /> {m.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
-              <div className="space-y-4 lg:col-span-3">
-                {mode === 'file' && <UploadDropzone file={file} onFile={f => { setFile(f); setPhase('idle'); }} disabled={phase === 'working'} />}
-
-                {mode === 'paste' && (
-                  <div className={`${cardCls} overflow-hidden`}>
-                    <div className="flex items-center justify-between border-b border-white/5 px-4 py-2.5">
-                      <span className="text-xs uppercase tracking-wider text-neutral-500">Specification source</span>
-                    </div>
-                    <div className="h-[320px]">
-                      <Editor
-                        height="100%"
-                        defaultLanguage="yaml"
-                        theme="vs-dark"
-                        value={specContent}
-                        onChange={val => setSpecContent(val || '')}
-                        options={{ minimap: { enabled: false }, fontSize: 13, scrollBeyondLastLine: false }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {mode === 'url' && (
-                  <div className={`${cardCls} p-5`}>
-                    <label htmlFor="spec-url" className="mb-1.5 block text-xs uppercase tracking-wider text-neutral-500">
-                      API Specification URL
-                    </label>
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      <input
-                        id="spec-url"
-                        type="url"
-                        value={urlValue}
-                        onChange={e => setUrlValue(e.target.value)}
-                        placeholder="https://petstore3.swagger.io/api/v3/openapi.json"
-                        className={`${inputCls} flex-1`}
-                        disabled={phase === 'working'}
-                      />
-                      <button
-                        onClick={handleUrlImport}
-                        disabled={!urlValue.trim() || phase === 'working'}
-                        className={btnPrimary}
-                      >
-                        {phase === 'working' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />} Import
-                      </button>
-                    </div>
-                    <p className="mt-2 text-[11px] text-neutral-500">
-                      Fetches the document in your browser and loads it into the editor for review before ingestion.
-                    </p>
-                    {urlNote && <p className="mt-2 text-xs text-emerald-300">{urlNote}</p>}
-                  </div>
-                )}
-
-                {phase === 'working' && (
-                  <div className={`${cardCls} flex items-center gap-3 p-4 text-sm text-neutral-300`}>
-                    <Loader2 className="h-4 w-4 animate-spin text-white" />
-                    Uploading & parsing specification…
-                  </div>
-                )}
-                {phase === 'error' && <ErrorBanner message={uploadError || 'Unable to process specification.'} onDismiss={() => setPhase('idle')} />}
-                {phase === 'success' && uploadedMeta && (
-                  <div className={`${cardCls} flex flex-wrap items-center gap-x-6 gap-y-2 p-4`}>
-                    {uploadResult && uploadResult.endpoints_discovered === 0 && !spec ? (
-                      <>
-                        <AlertTriangle className="h-5 w-5 text-amber-400" />
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium text-amber-300">Document uploaded · Background AI extraction queued</div>
-                          <div className="truncate text-xs text-neutral-400">
-                            {uploadedMeta.name} · 0 endpoints discovered deterministically. The AI doc agent is processing freeform content.
-                          </div>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle2 className="h-5 w-5 text-emerald-400" />
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium">Specification uploaded successfully</div>
-                          <div className="truncate text-xs text-neutral-500">
-                            {uploadedMeta.name}
-                            {file ? ` · ${(file.size / 1024).toFixed(1)} KB` : ''} · {uploadedMeta.format}
-                            {uploadResult ? ` · ${uploadResult.endpoints_discovered} endpoint${uploadResult.endpoints_discovered === 1 ? '' : 's'}` : ''}
-                          </div>
-                        </div>
-                        <StatusBadge status={validationState(spec?.confidence_score).status} label={validationState(spec?.confidence_score).label} />
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className={`${cardCls} flex min-w-0 flex-col lg:col-span-2`}>
-                <div className="flex items-center justify-between border-b border-white/5 px-4 py-2.5">
-                  <span className="text-sm font-medium">Specification Preview</span>
-                  <div className="flex items-center gap-2">
-                    <span className="rounded-md border border-white/10 px-1.5 py-0.5 text-[10px] uppercase text-neutral-500">
-                      {language}
-                    </span>
-                    <button
-                      onClick={() => setPreviewExpanded(true)}
-                      className="rounded-lg p-1.5 text-neutral-400 hover:bg-white/5 hover:text-white transition-colors"
-                      title="Expand preview"
-                    >
-                      <Maximize2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-                <div className="h-[360px] min-h-0">
-                  <Editor
-                    height="100%"
-                    language={language}
-                    theme="vs-dark"
-                    value={editorValue || '# Nothing to preview yet'}
-                    options={{
-                      readOnly: true,
-                      minimap: { enabled: false },
-                      fontSize: 12,
-                      lineNumbers: 'on',
-                      scrollBeyondLastLine: false,
-                      renderLineHighlight: 'none',
-                    }}
-                  />
-                </div>
-                {file?.name.toLowerCase().endsWith('.pdf') && (
-                  <div className="border-t border-white/5 px-4 py-2 text-[11px] text-neutral-500">
-                    PDF documents are parsed server-side; no text preview available.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {showAnalysis && <AnalysisPanel spec={spec} endpoints={endpoints} />}
-
-            <div>
-              <h3 className="mb-3 text-sm font-medium uppercase tracking-wider text-neutral-400">What happens next?</h3>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                {NEXT_STAGES.map((stage, i) => (
-                  <div key={stage.title} className={`${cardCls} relative p-4`}>
-                    <div className="mb-1.5 flex items-center gap-2">
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/5 text-[10px] font-medium text-neutral-400">
-                        {i + 1}
-                      </span>
-                      <span className="text-sm font-medium">{stage.title}</span>
-                    </div>
-                    <p className="text-xs leading-relaxed text-neutral-500">{stage.desc}</p>
-                    {i < NEXT_STAGES.length - 1 && (
-                      <ArrowRight className="absolute -right-3 top-1/2 hidden h-4 w-4 -translate-y-1/2 text-neutral-700 xl:block" />
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/5 pt-5">
-              <button onClick={resetUpload} className={btnGhost} disabled={phase === 'working'}>
-                <RotateCcw className="h-4 w-4" /> Reset
-              </button>
-              {phase === 'success' ? (
-                <button onClick={() => setActiveTab('plan')} className={btnPrimary}>
-                  Continue to Topological Plan <ArrowRight className="h-4 w-4" />
-                </button>
-              ) : (
-                <button
-                  onClick={handleUpload}
-                  disabled={!hasValidInput || phase === 'working'}
-                  className={btnPrimary}
-                >
-                  {phase === 'working' ? (
-                    <><Loader2 className="h-4 w-4 animate-spin" /> Analyzing…</>
-                  ) : (
-                    <>Upload & Analyze <ArrowRight className="h-4 w-4" /></>
-                  )}
-                </button>
-              )}
-            </div>
-          </div>
+        {/* ============================== STAGE 1: INGEST ============================== */}
+        {activeTab === 'ingest' && (
+          <IngestTab
+            file={file}
+            setFile={setFile}
+            mode={mode}
+            setMode={setMode}
+            specContent={specContent}
+            setSpecContent={setSpecContent}
+            urlValue={urlValue}
+            setUrlValue={setUrlValue}
+            urlNote={urlNote}
+            phase={phase}
+            setPhase={setPhase}
+            uploadError={uploadError}
+            uploadedMeta={uploadedMeta}
+            uploadResult={uploadResult}
+            spec={spec}
+            endpoints={endpoints}
+            showAnalysis={showAnalysis}
+            editorValue={editorValue}
+            language={language}
+            hasValidInput={hasValidInput}
+            onUrlImport={handleUrlImport}
+            onUpload={handleUpload}
+            onReset={resetUpload}
+            onContinue={() => setActiveTab('dependencies')}
+            onPreviewExpand={() => setPreviewExpanded(true)}
+          />
         )}
 
-        {/* =============================== PLAN =============================== */}
-        {activeTab === 'plan' && (
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-medium tracking-tight">API Topology & Integration Plan</h2>
-                <p className="text-xs text-neutral-500">
-                  {graph && graph.nodes.length > 0
-                    ? `${graph.nodes.length} endpoint${graph.nodes.length === 1 ? '' : 's'} · ${graph.edges.length} ${graph.edges.length === 1 ? 'dependency' : 'dependencies'} extracted from the specification`
-                    : 'Generated from the uploaded specification'}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => setPlanDocOpen(true)} className={btnGhost}>
-                  <FileText className="h-4 w-4" /> View Full Document
-                </button>
-                <button
-                  onClick={approvePlan}
-                  disabled={planBusy || planApproved || !pausedRunId}
-                  className={`flex items-center gap-2 rounded-full px-5 h-10 text-sm font-medium transition-colors ${
-                    planApproved
-                      ? 'border border-emerald-500/30 bg-emerald-500/15 text-emerald-300'
-                      : btnPrimary
-                  }`}
-                >
-                  {planBusy ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : planApproved ? (
-                    <Check className="h-4 w-4" />
-                  ) : (
-                    <CheckCircle2 className="h-4 w-4" />
-                  )}
-                  {planApproved ? 'Plan Approved' : 'Approve Plan'}
-                </button>
-              </div>
-            </div>
-
-            {planError && <ErrorBanner message={planError} onDismiss={() => setPlanError('')} />}
-            {!pausedRunId && !planApproved && (
-              <p className="text-xs text-neutral-500">
-                Nothing is waiting for approval. Start a build — it pauses here so you can review the plan first.
-              </p>
-            )}
-
-            {resourceGroups.length === 0 ? (
-              <EmptyState
-                icon={<Network className="h-6 w-6" />}
-                title="No topology available yet"
-                description={spec
-                  ? 'This specification did not yield any endpoints, so there is nothing to plan. Upload a richer specification to build the graph.'
-                  : 'Upload an API specification to generate the endpoint topology and integration plan.'}
-                action={
-                  <button onClick={() => setActiveTab('upload')} className={btnPrimary}>
-                    Go to Upload <ArrowRight className="h-4 w-4" />
-                  </button>
-                }
-              />
-            ) : (
-              <div className="flex items-stretch gap-3 overflow-x-auto pb-2">
-                {resourceGroups.map(group => (
-                  <div key={group.resource} className={`${cardCls} w-64 shrink-0 p-4 hover:bg-white/[0.04]`}>
-                    <div className="mb-3 flex items-center justify-between">
-                      <span className="truncate text-sm font-medium capitalize">{group.resource}</span>
-                      <span className="ml-2 shrink-0 rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-neutral-400">
-                        {group.nodes.length}
-                      </span>
-                    </div>
-                    <div className="space-y-2">
-                      {group.nodes.map(node => {
-                        const deps = group.edgeCounts.get(node.id);
-                        return (
-                          <div key={node.id} className="rounded-xl border border-white/10 bg-white/[0.02] p-2.5">
-                            <div className="flex items-center gap-2">
-                              <MethodChip method={node.method} />
-                              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-300" title={node.path}>
-                                {node.path}
-                              </span>
-                              {node.is_destructive && (
-                                <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-rose-400" aria-label="Destructive operation" />
-                              )}
-                            </div>
-                            {node.label && node.label !== `${node.method} ${node.path}` && (
-                              <div className="mt-1 truncate text-[11px] text-neutral-500" title={node.label}>{node.label}</div>
-                            )}
-                            {deps && deps.out > 0 && (
-                              <div className="mt-1.5 flex items-start gap-1.5 text-[10px] text-neutral-500">
-                                <ArrowDown className="mt-0.5 h-3 w-3 shrink-0" />
-                                <span className="min-w-0">
-                                  depends on {deps.out} endpoint{deps.out === 1 ? '' : 's'}
-                                  {deps.targets.length > 0 && ` (${deps.targets.join(', ')}${deps.out > deps.targets.length ? ', …' : ''})`}
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className={`${cardCls} p-5 flex flex-wrap items-center justify-between gap-3`}>
-              <div>
-                <h3 className="mb-1 text-sm font-medium">Execution schedule</h3>
-                <p className="text-xs text-neutral-500">
-                  Review or edit the generated plan document. Agents execute it in the Build step.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => setPlanDocOpen(true)} className={btnGhost}>
-                  <FileCode2 className="h-4 w-4" /> Open plan document
-                </button>
-                <button onClick={() => setActiveTab('build')} className={btnPrimary}>
-                  Continue to Build & Agents <ArrowRight className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          </div>
+        {/* ============================== STAGE 2: DEPENDENCIES ============================== */}
+        {activeTab === 'dependencies' && (
+          <DependenciesTab
+            graph={graph}
+            resourceGroups={resourceGroups}
+            spec={spec}
+            planBusy={planBusy}
+            planApproved={planApproved}
+            planError={planError}
+            pausedRunId={pausedRunId}
+            onApprovePlan={approvePlan}
+            onViewPlanDoc={() => setPlanDocOpen(true)}
+            onGoToIngest={() => setActiveTab('ingest')}
+            onContinueToTools={() => setActiveTab('tools')}
+            onDismissError={() => setPlanError('')}
+          />
         )}
 
-        {/* =============================== BUILD ============================== */}
-        {activeTab === 'build' && (
+        {/* =============================== STAGE 3: MCP TOOLS & BUILD ============================== */}
+        {activeTab === 'tools' && (
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
@@ -1601,7 +1184,7 @@ export const ProjectWorkspace: React.FC = () => {
                   })}
                 </div>
                 <button
-                  onClick={activeRun?.status === 'paused_for_approval' ? () => setActiveTab('plan') : runBuild}
+                  onClick={activeRun?.status === 'paused_for_approval' ? () => setActiveTab('dependencies') : runBuild}
                   disabled={(runIsLive && activeRun?.status !== 'paused_for_approval') || !project}
                   className={btnPrimary}
                 >
@@ -1815,8 +1398,8 @@ export const ProjectWorkspace: React.FC = () => {
           </div>
         )}
 
-        {/* =============================== TEST =============================== */}
-        {activeTab === 'test' && (
+        {/* =============================== STAGE 4: VERIFY =============================== */}
+        {activeTab === 'verify' && (
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
@@ -1940,8 +1523,8 @@ export const ProjectWorkspace: React.FC = () => {
           </div>
         )}
 
-        {/* ============================== EXPORT ============================== */}
-        {activeTab === 'export' && (
+        {/* ============================== STAGE 5: MCP RESULT ============================== */}
+        {activeTab === 'result' && (
           <div className="space-y-6">
             <div>
               <h2 className="text-lg font-medium tracking-tight">Export Integration</h2>
