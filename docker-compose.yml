@@ -89,20 +89,23 @@ services:
       retries: 5
 
   minio-init:
-    image: minio/mc:latest
+    image: python:3.12-slim
     depends_on:
       minio:
         condition: service_healthy
+    volumes:
+      - ./scripts:/app/scripts:ro
+    working_dir: /app
+    environment:
+      S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      S3_BUCKET_UPLOADS: ${S3_BUCKET_UPLOADS:-apiweaver-uploads}
+      S3_BUCKET_ARTIFACTS: ${S3_BUCKET_ARTIFACTS:-apiweaver-artifacts}
     networks:
       - apiweaver
-    entrypoint: /bin/sh
     command: >
-      -c "
-      mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin123} &&
-      mc mb myminio/${S3_BUCKET_UPLOADS:-apiweaver-uploads} --ignore-existing &&
-      mc mb myminio/${S3_BUCKET_ARTIFACTS:-apiweaver-artifacts} --ignore-existing &&
-      echo 'MinIO buckets initialized successfully.'
-      "
+      sh -c "pip install --no-cache-dir boto3 && python scripts/init_minio.py"
     restart: "no"
 
   db-migration:
