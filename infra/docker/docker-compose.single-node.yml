@@ -202,6 +202,7 @@ services:
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
       DOCKER_HOST: unix:///var/run/docker.sock
+      PYTHONPATH: /app/backend:/app
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus-multiproc
       WORKER_METRICS_PORT: "9808"
     depends_on:
