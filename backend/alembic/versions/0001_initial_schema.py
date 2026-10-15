@@ -123,7 +123,7 @@ def upgrade() -> None:
         sa.Column("github_username", sa.String(255), nullable=False),
         sa.Column("access_token_vault_path", sa.String(500), nullable=True),
         sa.Column("refresh_token_vault_path", sa.String(500), nullable=True),
-        sa.Column("scopes_granted", JSONB(), server_default=sa.text("'\'{}'\'"), nullable=False),
+        sa.Column("scopes_granted", JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=utcnow(), nullable=False
@@ -254,7 +254,7 @@ def upgrade() -> None:
             "retryable_status_codes",
             JSONB(),
             nullable=False,
-            server_default=sa.text("'\'[429, 500, 502, 503, 504]'\'"),
+            server_default=sa.text("'[429, 500, 502, 503, 504]'::jsonb"),
         ),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=utcnow(), nullable=False
@@ -740,7 +740,7 @@ def upgrade() -> None:
         sa.Column("project_id", UUID(), nullable=False),
         sa.Column("workflow_run_id", UUID(), nullable=True),
         sa.Column("environment", sa.String(20), nullable=False),
-        sa.Column("status", sa.String(50), nullable=False, server_default=sa.text("'\'pending'\'")),
+        sa.Column("status", sa.String(50), nullable=False, server_default=sa.text("'pending'")),
         sa.Column("summary", JSONB(), nullable=True),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
