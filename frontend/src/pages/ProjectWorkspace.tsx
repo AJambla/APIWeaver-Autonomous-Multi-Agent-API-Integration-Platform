@@ -70,6 +70,7 @@ import { LogsTab } from './workspace/LogsTab';
 import { SettingsTab } from './workspace/SettingsTab';
 import { IngestTab, UploadMode, UploadPhase } from './workspace/IngestTab';
 import { DependenciesTab, MethodChip } from './workspace/DependenciesTab';
+import { McpToolsTab } from './workspace/McpToolsTab';
 
 type TabId = 'ingest' | 'dependencies' | 'tools' | 'verify' | 'result' | 'logs' | 'settings';
 
@@ -1145,257 +1146,19 @@ export const ProjectWorkspace: React.FC = () => {
           />
         )}
 
-        {/* =============================== STAGE 3: MCP TOOLS & BUILD ============================== */}
+        {/* =============================== STAGE 3: MCP TOOLS & CODE ============================== */}
         {activeTab === 'tools' && (
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-medium tracking-tight">Agent Build & Execution</h2>
-                <p className="text-xs text-neutral-500">Trigger the multi-agent pipeline and monitor each agent's event stream.</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 p-1 text-xs">
-                  <span className="px-2 text-neutral-400 font-mono text-[11px]">Targets:</span>
-                  {(['python', 'node'] as const).map(lang => {
-                    const isSelected = targetLanguages.includes(lang);
-                    return (
-                      <button
-                        key={lang}
-                        type="button"
-                        onClick={() => {
-                          setTargetLanguages(prev => {
-                            if (isSelected) {
-                              if (prev.length <= 1) return prev; // Keep at least one
-                              return prev.filter(l => l !== lang);
-                            } else {
-                              return [...prev, lang];
-                            }
-                          });
-                        }}
-                        className={`rounded px-2.5 py-1 font-mono uppercase transition-colors ${
-                          isSelected
-                            ? 'bg-blue-600/40 text-blue-200 border border-blue-500/30'
-                            : 'text-neutral-500 hover:text-neutral-300'
-                        }`}
-                      >
-                        {lang}
-                      </button>
-                    );
-                  })}
-                </div>
-                <button
-                  onClick={activeRun?.status === 'paused_for_approval' ? () => setActiveTab('dependencies') : runBuild}
-                  disabled={(runIsLive && activeRun?.status !== 'paused_for_approval') || !project}
-                  className={btnPrimary}
-                >
-                  {activeRun?.status === 'paused_for_approval' ? (
-                    <CheckCircle2 className="h-4 w-4 text-amber-400" />
-                  ) : runIsLive ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Play className="h-4 w-4" />
-                  )}
-                  {activeRun?.status === 'paused_for_approval'
-                    ? 'Review Plan (Approval Required)'
-                    : runIsLive
-                    ? 'Pipeline Running…'
-                    : 'Run Build Pipeline'}
-                </button>
-              </div>
-            </div>
-
-            {buildError && <ErrorBanner message={buildError} onDismiss={() => setBuildError('')} />}
-
-            {activeRun && (
-              <div className={`${cardCls} p-5`}>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <StatusBadge status={activeRun.status} />
-                    {activeRun.current_node && (
-                      <span className="font-mono text-xs text-neutral-400">node: {activeRun.current_node}</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-4 text-xs text-neutral-500">
-                    <span className="flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" /> started {relativeTime(activeRun.started_at)}</span>
-                    <span>{activeRun.total_tokens_used.toLocaleString()} tokens</span>
-                  </div>
-                </div>
-                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
-                  <div
-                    className={`h-full rounded-full transition-all duration-700 ${
-                      activeRun.status === 'failed' ? 'bg-red-500/60' : activeRun.status === 'completed' ? 'bg-emerald-500' : 'bg-blue-500'
-                    }`}
-                    style={{ width: `${Math.max(4, activeRun.progress_percent)}%` }}
-                  />
-                </div>
-                <div className="mt-1.5 text-right text-[11px] text-neutral-500">{activeRun.progress_percent}%</div>
-              </div>
-            )}
-
-            {/* Live Agent Activity & Terminal Console */}
-            <div className={`${cardCls} overflow-hidden`}>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-3 bg-white/[0.02]">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-500/10 text-blue-400">
-                    <TerminalIcon className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-medium">Live Agent Activity & Thought Stream</h3>
-                      {runIsLive && (
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
-                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                          Live Stream
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-neutral-500">
-                      Real-time LangGraph agent thoughts, DAG transitions, and execution telemetry.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {runIsLive && (
-                    <span className="rounded-lg border border-blue-500/20 bg-blue-500/10 px-2.5 py-1 text-xs text-blue-300 font-mono">
-                      Active: {activeAgentName}
-                    </span>
-                  )}
-                  <label className="flex items-center gap-1.5 text-xs text-neutral-400 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={autoScroll}
-                      onChange={e => setAutoScroll(e.target.checked)}
-                      className="rounded border-white/20 bg-white/5 text-blue-500 focus:ring-0"
-                    />
-                    Auto-scroll
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const text = liveThoughts.map(t => `[${formatEventTime(t.timestamp)}] [${t.agent}] ${t.message}`).join('\n');
-                      navigator.clipboard.writeText(text);
-                    }}
-                    disabled={liveThoughts.length === 0}
-                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1 text-xs text-neutral-400 hover:bg-white/5 hover:text-white transition-colors disabled:opacity-40"
-                    title="Copy terminal logs"
-                  >
-                    <Copy className="h-3 w-3" />
-                    Copy
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLiveThoughts([])}
-                    disabled={liveThoughts.length === 0}
-                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-xs text-neutral-500 hover:bg-white/5 hover:text-neutral-300 transition-colors disabled:opacity-40"
-                    title="Clear console"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-
-              {/* Terminal body */}
-              <div className="max-h-[380px] min-h-[160px] overflow-y-auto bg-neutral-950 p-4 font-mono text-xs select-text">
-                {liveThoughts.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-12 text-center text-neutral-500">
-                    <TerminalIcon className="h-8 w-8 mb-2 stroke-[1.5] text-neutral-600" />
-                    <p className="text-xs">No active thought stream recorded yet.</p>
-                    <p className="text-[11px] text-neutral-600 mt-1">
-                      Trigger "Run Build Pipeline" above to stream live agent decisions and sandbox telemetry.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-1.5">
-                    {liveThoughts.map(thought => (
-                      <div key={thought.id} className="flex items-start gap-2.5 leading-relaxed hover:bg-white/[0.02] rounded px-1.5 py-0.5 transition-colors">
-                        <span className="shrink-0 text-neutral-500 text-[11px]">
-                          [{formatEventTime(thought.timestamp)}]
-                        </span>
-                        <span className={`shrink-0 rounded px-1.5 py-0.2 text-[10px] font-medium uppercase tracking-wider ${agentBadgeColor(thought.agent)}`}>
-                          {thought.agent.replace(/_/g, ' ')}
-                        </span>
-                        {thought.action && (
-                          <span className="shrink-0 rounded bg-white/5 px-1.5 py-0.2 text-[10px] text-neutral-400">
-                            {thought.action}
-                          </span>
-                        )}
-                        {thought.step !== undefined && thought.total_steps !== undefined && (
-                          <span className="shrink-0 text-neutral-400 text-[11px]">
-                            [{thought.step}/{thought.total_steps}]
-                          </span>
-                        )}
-                        <span className={`min-w-0 flex-1 break-words ${thoughtColor(thought.level)}`}>
-                          {thought.message}
-                        </span>
-                      </div>
-                    ))}
-                    {runIsLive && (
-                      <div className="flex items-center gap-2 pt-1 text-blue-400/80 animate-pulse">
-                        <span className="inline-block h-2 w-2 rounded-full bg-blue-400" />
-                        <span className="text-neutral-400">[{activeAgentName}] executing stage...</span>
-                      </div>
-                    )}
-                    <div ref={terminalEndRef} />
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {agentStreams.length === 0 ? (
-              <EmptyState
-                icon={<Boxes className="h-6 w-6" />}
-                title="No agent activity yet"
-                description="Run the build pipeline to see per-agent execution streams here. Each agent's events will appear as they are emitted."
-              />
-            ) : (
-              <div className={`${cardCls} overflow-hidden`}>
-                <div className="border-b border-white/5 px-5 py-3">
-                  <h3 className="text-sm font-medium">Agent Execution Streams</h3>
-                </div>
-                <table className={tableCls}>
-                  <thead>
-                    <tr className="border-b border-white/10 text-left">
-                      <Th>Agent</Th>
-                      <Th>Latest event</Th>
-                      <Th>Status</Th>
-                      <Th>Activity</Th>
-                      <Th>Updated</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {agentStreams.map(stream => (
-                      <tr key={stream.agent} className="border-b border-white/5 hover:bg-white/[0.02]">
-                        <Td>
-                          <span className="flex items-center gap-2.5">
-                            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/5">
-                              <Boxes className="h-3.5 w-3.5 text-neutral-400" />
-                            </span>
-                            <span className="text-sm font-medium">{stream.agent}</span>
-                          </span>
-                        </Td>
-                        <Td>
-                          <span className="block max-w-[320px] truncate font-mono text-xs text-neutral-400" title={eventMessage(stream.latest?.payload ?? null)}>
-                            {stream.latest?.event_type?.replace(/_/g, ' ') || '—'}
-                            {eventMessage(stream.latest?.payload ?? null) ? ` — ${eventMessage(stream.latest?.payload ?? null)}` : ''}
-                          </span>
-                        </Td>
-                        <Td><StatusBadge status={stream.latest?.event_type} /></Td>
-                        <Td>
-                          <span className="rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-neutral-400">
-                            {stream.events} event{stream.events === 1 ? '' : 's'}
-                          </span>
-                        </Td>
-                        <Td>
-                          <span className="text-xs text-neutral-500">{relativeTime(stream.latest?.created_at)}</span>
-                        </Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+          <McpToolsTab
+            projectId={id || ''}
+            project={project}
+            spec={spec}
+            endpoints={endpoints}
+            activeRun={activeRun}
+            runIsLive={runIsLive}
+            onRunBuild={runBuild}
+            onContinueToVerify={() => setActiveTab('verify')}
+            onGoToIngest={() => setActiveTab('ingest')}
+          />
         )}
 
         {/* =============================== STAGE 4: VERIFY =============================== */}
