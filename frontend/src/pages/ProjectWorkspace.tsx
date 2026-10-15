@@ -71,6 +71,8 @@ import { SettingsTab } from './workspace/SettingsTab';
 import { IngestTab, UploadMode, UploadPhase } from './workspace/IngestTab';
 import { DependenciesTab, MethodChip } from './workspace/DependenciesTab';
 import { McpToolsTab } from './workspace/McpToolsTab';
+import { VerifyTab } from './workspace/VerifyTab';
+import { LiveTestModal } from './workspace/LiveTestModal';
 
 type TabId = 'ingest' | 'dependencies' | 'tools' | 'verify' | 'result' | 'logs' | 'settings';
 
@@ -305,6 +307,7 @@ export const ProjectWorkspace: React.FC = () => {
   const [testBusy, setTestBusy] = useState(false);
   const [testSummary, setTestSummary] = useState<TestRunSummary | null>(null);
   const [testError, setTestError] = useState('');
+  const [liveModalOpen, setLiveModalOpen] = useState(false);
 
   /* --- export tab --- */
   const [exportBusy, setExportBusy] = useState<string | null>(null);
@@ -766,6 +769,13 @@ export const ProjectWorkspace: React.FC = () => {
 
   /* --- test actions --- */
 
+  const hasDestructiveEndpoints = useMemo(() => {
+    return endpoints.some(ep => {
+      const m = ep.method.toUpperCase();
+      return m === 'DELETE' || m === 'POST' || m === 'PUT' || m === 'PATCH';
+    });
+  }, [endpoints]);
+
   const runTests = async () => {
     if (!id) return;
     setTestBusy(true);
@@ -778,6 +788,56 @@ export const ProjectWorkspace: React.FC = () => {
       });
       let summary: TestRunSummary | null = null;
       for (let attempt = 0; attempt < 20; attempt += 1) {
+        await sleep(attempt === 0 ? 1500 : 3000);
+        if (!mountedRef.current) return;
+        summary = await apiFetch<TestRunSummary>(`/projects/${id}/test-runs/${trigger.test_run_id}`).catch(() => summary);
+        if (summary && (summary.results.length > 0 || TERMINAL_TEST_STATUSES.includes(summary.status))) break;
+      }
+      if (mountedRef.current) setTestSummary(summary);
+    } catch (err) {
+      if (mountedRef.current) setTestError(errorMessage(err));
+    } finally {
+      if (mountedRef.current) setTestBusy(false);
+    }
+  };
+
+  const handleLiveTestSubmit = async (params: { baseUrl: string; authType: string; headerName: string; secretValue: string }) => {
+    if (!id) return;
+    setLiveModalOpen(false);
+    setTestBusy(true);
+    setTestError('');
+    setTestSummary(null);
+    try {
+      if (params.authType !== 'none' && params.secretValue) {
+        let scheme = 'none';
+        const credentials: Record<string, string> = {};
+        const configJson: Record<string, string> = { base_url: params.baseUrl };
+        if (params.authType === 'bearer') {
+          scheme = 'bearer';
+          credentials.token = params.secretValue;
+        } else if (params.authType === 'apikey') {
+          scheme = 'api_key';
+          configJson.header_name = params.headerName || 'X-API-Key';
+          credentials.api_key = params.secretValue;
+        } else if (params.authType === 'basic') {
+          scheme = 'basic';
+          credentials.username = 'api';
+          credentials.password = params.secretValue;
+        }
+        await apiFetch(`/projects/${id}/auth`, {
+          method: 'PUT',
+          body: JSON.stringify({ scheme, config_json: configJson, credentials }),
+        }).catch(() => {
+          // If auth saving fails (e.g. Vault not running in local dev), proceed with testing
+        });
+      }
+
+      const trigger = await apiFetch<TestRunTriggerResponse>(`/projects/${id}/test`, {
+        method: 'POST',
+        body: JSON.stringify({ environment: 'live' }),
+      });
+      let summary: TestRunSummary | null = null;
+      for (let attempt = 0; attempt < 25; attempt += 1) {
         await sleep(attempt === 0 ? 1500 : 3000);
         if (!mountedRef.current) return;
         summary = await apiFetch<TestRunSummary>(`/projects/${id}/test-runs/${trigger.test_run_id}`).catch(() => summary);
@@ -1163,127 +1223,28 @@ export const ProjectWorkspace: React.FC = () => {
 
         {/* =============================== STAGE 4: VERIFY =============================== */}
         {activeTab === 'verify' && (
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-medium tracking-tight">Test Suite & Self-Healing Telemetry</h2>
-                <p className="text-xs text-neutral-500">Execute generated tests against {testEnv === 'live' ? 'the live API' : 'a sandbox'} and inspect per-endpoint results.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <FilterSelect
-                  value={testEnv}
-                  onChange={setTestEnv}
-                  options={[
-                    { value: 'sandbox', label: 'Sandbox' },
-                    { value: 'live', label: 'Live' },
-                  ]}
-                />
-                <button onClick={runTests} disabled={testBusy || endpoints.length === 0} className={btnPrimary}>
-                  {testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FlaskConical className="h-4 w-4" />}
-                  {testBusy ? 'Running…' : 'Run Test Suite'}
-                </button>
-              </div>
-            </div>
-
-            {testError && <ErrorBanner message={testError} onDismiss={() => setTestError('')} />}
-
-            {endpoints.length === 0 && (
-              <p className="text-xs text-amber-300">
-                No endpoints discovered for this project — upload a specification with paths before running tests.
-              </p>
-            )}
-
-            {testSummary && testSummary.results.length > 0 ? (
-              <>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
-                  <StatCard icon={<FlaskConical className="h-4 w-4" />} label="Total tests" value={String(testTotal)} />
-                  <StatCard icon={<CheckCircle2 className="h-4 w-4 text-emerald-400" />} label="Passed" value={String(testSummary.summary.passed ?? 0)} />
-                  <StatCard icon={<XCircle className="h-4 w-4 text-red-400" />} label="Failed" value={String(testSummary.summary.failed ?? 0)} />
-                  <StatCard icon={<Clock className="h-4 w-4" />} label="Skipped" value={String(testSummary.summary.skipped ?? 0)} />
-                  <StatCard icon={<CheckCircle2 className="h-4 w-4" />} label="Success rate" value={successRate} />
-                </div>
-
-                <div className={`${cardCls} overflow-hidden`}>
-                  <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
-                    <h3 className="text-sm font-medium">Test results</h3>
-                    <span className="font-mono text-[11px] text-neutral-500">run {shortId(testSummary.test_run_id)}</span>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className={tableCls}>
-                      <thead>
-                        <tr className="border-b border-white/10 text-left">
-                          <Th>Endpoint</Th>
-                          <Th>Status</Th>
-                          <Th>HTTP code</Th>
-                          <Th>Latency</Th>
-                          <Th>Notes</Th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {testSummary.results.map(result => {
-                          const ep = result.endpoint_id ? endpointById.get(result.endpoint_id) : undefined;
-                          return (
-                            <tr key={result.id} className="border-b border-white/5 hover:bg-white/[0.02]">
-                              <Td>
-                                <span className="flex items-center gap-2.5">
-                                  {ep ? <MethodChip method={ep.method} /> : null}
-                                  <span className="max-w-[320px] truncate font-mono text-xs text-neutral-200">
-                                    {ep ? ep.path : result.endpoint_id ? shortId(result.endpoint_id) : '—'}
-                                  </span>
-                                </span>
-                              </Td>
-                              <Td><StatusBadge status={result.status === 'passed' ? 'completed' : result.status === 'failed' ? 'failed' : result.status} label={result.status} /></Td>
-                              <Td><span className="font-mono text-xs text-neutral-400">{result.status_code ?? '—'}</span></Td>
-                              <Td><span className="font-mono text-xs text-neutral-400">{result.latency_ms !== null ? `${result.latency_ms} ms` : '—'}</span></Td>
-                              <Td>
-                                <span className="block max-w-[280px] truncate text-xs text-neutral-500" title={result.error || undefined}>
-                                  {result.error || ''}
-                                </span>
-                              </Td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </>
-            ) : testSummary && TERMINAL_TEST_STATUSES.includes(testSummary.status) ? (
-              <div
-                className={
-                  testSummary.status === 'failed'
-                    ? 'rounded-xl border border-red-500/25 bg-red-950/20 p-4'
-                    : 'rounded-xl border border-amber-500/25 bg-amber-950/20 p-4'
-                }
-              >
-                <p className={`flex items-center gap-2 text-sm ${testSummary.status === 'failed' ? 'text-red-300' : 'text-amber-300'}`}>
-                  <XCircle className="h-4 w-4 shrink-0" />
-                  Test run {shortId(testSummary.test_run_id)} ended as “{testSummary.status}” without running any tests.
-                </p>
-                <ul className="mt-2 space-y-1 text-xs text-neutral-400">
-                  {(testSummary.errors && testSummary.errors.length > 0
-                    ? testSummary.errors
-                    : ['The testing agent reported no per-endpoint results.']
-                  ).map(reason => (
-                    <li key={reason} className="flex gap-2">
-                      <span aria-hidden="true">•</span>
-                      <span>{reason}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : testBusy ? (
-              <div className={`${cardCls} flex items-center gap-3 p-5 text-sm text-neutral-300`}>
-                <Loader2 className="h-4 w-4 animate-spin" /> Executing tests… results appear as each endpoint completes.
-              </div>
-            ) : (
-              <EmptyState
-                icon={<FlaskConical className="h-6 w-6" />}
-                title="No test run yet"
-                description="Run the test suite to validate generated integration code. Pass/fail counts, status codes and latency will appear here."
-              />
-            )}
-          </div>
+          <VerifyTab
+            testEnv={testEnv}
+            setTestEnv={setTestEnv}
+            testBusy={testBusy}
+            onRunTests={runTests}
+            onOpenLiveModal={() => setLiveModalOpen(true)}
+            endpoints={endpoints}
+            testSummary={testSummary}
+            testTotal={testTotal}
+            successRate={successRate}
+            endpointById={endpointById}
+            testError={testError}
+            onDismissTestError={() => setTestError('')}
+            liveThoughts={liveThoughts}
+            runIsLive={runIsLive}
+            activeAgentName={activeAgentName}
+            autoScroll={autoScroll}
+            setAutoScroll={setAutoScroll}
+            onClearThoughts={() => setLiveThoughts([])}
+            terminalEndRef={terminalEndRef}
+            onContinueToResult={() => setActiveTab('result')}
+          />
         )}
 
         {/* ============================== STAGE 5: MCP RESULT ============================== */}
@@ -1441,6 +1402,15 @@ export const ProjectWorkspace: React.FC = () => {
           </div>
         </Modal>
       )}
+
+      {/* Live test credentials modal */}
+      <LiveTestModal
+        isOpen={liveModalOpen}
+        onClose={() => setLiveModalOpen(false)}
+        onSubmit={handleLiveTestSubmit}
+        hasDestructiveEndpoints={hasDestructiveEndpoints}
+        busy={testBusy}
+      />
     </div>
   );
 };
