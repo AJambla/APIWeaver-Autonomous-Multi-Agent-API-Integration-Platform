@@ -317,7 +317,7 @@ class Settings(BaseSettings):
         it is a test-only opt-in; a production or staging deployment that asks for it is a
         misconfiguration, not a supported mode.
         """
-        if self.sandbox_backend != "docker":
+        if self.app_env in ("production", "staging") and self.sandbox_backend != "docker":
             raise ValueError(
                 f"SANDBOX_BACKEND={self.sandbox_backend} cannot be used in "
                 f"{self.app_env} mode. A real Docker daemon is strictly required."
@@ -413,14 +413,20 @@ def validate_startup_environment(settings: Settings) -> None:
 
 
 # Values that ship in .env.example / docker-compose for local use only.
-_PLACEHOLDER_SECRETS = frozenset({"prod_scrape_token_local_test", "minioadmin", "root", "dev"})
+_PLACEHOLDER_SECRETS = frozenset({
+    "prod_scrape_token_local_test",
+    "minioadmin",
+    "root",
+    "dev",
+    "apiweaver-default-insecure-dev-encryption-key",
+})
 
 
 def production_config_problems(settings: Settings) -> list[str]:
     """Every development default that must not reach production, reported together.
 
-    Only the LLM key used to be checked. CORS `*` with credentials, the example metrics
-    token, a dev-mode Vault root token and MinIO's default keys all started silently.
+    CORS `*` with credentials, the example metrics token, default encryption keys,
+    and MinIO's default keys are flagged.
     """
     problems: list[str] = []
     for origin in settings.cors_origins:
@@ -434,10 +440,8 @@ def production_config_problems(settings: Settings) -> list[str]:
     token = settings.metrics_token
     if token is not None and (len(token) < 24 or token in _PLACEHOLDER_SECRETS):
         problems.append("METRICS_TOKEN is a placeholder or shorter than 24 characters.")
-    if not settings.vault_token or settings.vault_token in _PLACEHOLDER_SECRETS:
-        problems.append("VAULT_TOKEN is unset or a development root token.")
-    if not settings.vault_addr.startswith("https://"):
-        problems.append("VAULT_ADDR is not https; secrets would cross the network in clear.")
+    if not settings.app_encryption_key or settings.app_encryption_key in _PLACEHOLDER_SECRETS:
+        problems.append("APP_ENCRYPTION_KEY is unset or a development placeholder.")
     if settings.aws_access_key_id in _PLACEHOLDER_SECRETS:
         problems.append("AWS_ACCESS_KEY_ID is the MinIO default credential.")
     return problems
