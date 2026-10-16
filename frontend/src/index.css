@@ -54,6 +54,31 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+.dot-grid {
+  background-color: #070709;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.glow-green {
+  box-shadow: 0 0 25px -4px rgba(16, 185, 129, 0.25);
+}
+
+.glow-running {
+  box-shadow: 0 0 25px -4px rgba(245, 158, 11, 0.3);
+}
+
+@keyframes pulse-dash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.connector-running {
+  stroke-dasharray: 6 4;
+  animation: pulse-dash 1s linear infinite;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -68,3 +93,4 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.4);
 }
+
