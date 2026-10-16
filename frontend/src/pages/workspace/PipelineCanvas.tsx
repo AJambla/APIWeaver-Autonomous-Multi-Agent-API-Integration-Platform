@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Check,
   CheckCircle2,
@@ -11,6 +11,9 @@ import {
   ShieldAlert,
   Sparkles,
   Terminal,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
 } from 'lucide-react';
 import {
   ApiSpec,
@@ -145,14 +148,26 @@ export const PipelineCanvas: React.FC<PipelineCanvasProps> = ({
     );
   };
 
+  const [canvasScale, setCanvasScale] = useState(1);
+
+  const handleWheel = (e: React.WheelEvent) => {
+    // Scroll wheel zooms in/out smoothly
+    const delta = -e.deltaY * 0.0015;
+    setCanvasScale(prev => Math.min(1.6, Math.max(0.65, Number((prev + delta).toFixed(2)))));
+  };
+
+  const handleZoomIn = () => setCanvasScale(prev => Math.min(1.6, Number((prev + 0.1).toFixed(2))));
+  const handleZoomOut = () => setCanvasScale(prev => Math.max(0.65, Number((prev - 0.1).toFixed(2))));
+  const handleResetZoom = () => setCanvasScale(1);
+
   const connectorProps = (isVerified: boolean, isRunning: boolean) => {
     if (isRunning) {
-      return { stroke: '#f59e0b', strokeWidth: 2, className: 'connector-running' };
+      return { stroke: '#f59e0b', strokeWidth: 2.5, strokeDasharray: '6 4', className: 'connector-running animate-pulse' };
     }
     if (isVerified) {
-      return { stroke: '#10b981', strokeWidth: 2, filter: 'url(#glow)' };
+      return { stroke: '#10b981', strokeWidth: 2.5, filter: 'url(#glow)' };
     }
-    return { stroke: '#27272a', strokeWidth: 2 };
+    return { stroke: '#3f3f46', strokeWidth: 1.5, strokeDasharray: '4 4' };
   };
 
   return (
@@ -184,26 +199,79 @@ export const PipelineCanvas: React.FC<PipelineCanvasProps> = ({
         </div>
       </div>
 
-      {/* Canvas Workspace Area */}
-      <div className="flex-1 relative p-6 flex flex-col justify-center items-center overflow-auto">
-        <div className="relative w-[860px] h-[480px]">
-          {/* SVG Connectors */}
+      {/* Canvas Workspace Area with Scroll-Wheel Resizing */}
+      <div
+        onWheel={handleWheel}
+        className="flex-1 relative p-6 flex flex-col justify-center items-center overflow-hidden cursor-grab active:cursor-grabbing"
+      >
+        {/* Floating Zoom Control HUD */}
+        <div className="absolute top-4 right-4 z-20 flex items-center gap-1.5 rounded-xl border border-white/10 bg-[#0c0d14]/85 backdrop-blur-md px-2.5 py-1.5 shadow-xl text-xs">
+          <button
+            type="button"
+            onClick={handleZoomOut}
+            className="h-6 w-6 flex items-center justify-center rounded-lg hover:bg-white/10 text-neutral-300 transition-colors"
+            title="Zoom Out (Scroll Down)"
+          >
+            <ZoomOut className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={handleResetZoom}
+            className="px-2 py-0.5 rounded text-[11px] font-mono font-medium text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+            title="Reset Zoom to 100%"
+          >
+            {Math.round(canvasScale * 100)}%
+          </button>
+          <button
+            type="button"
+            onClick={handleZoomIn}
+            className="h-6 w-6 flex items-center justify-center rounded-lg hover:bg-white/10 text-neutral-300 transition-colors"
+            title="Zoom In (Scroll Up)"
+          >
+            <ZoomIn className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* Scalable Canvas Inner Container */}
+        <div
+          className="relative w-[860px] h-[480px] transition-transform duration-75 origin-center"
+          style={{ transform: `scale(${canvasScale})` }}
+        >
+          {/* Continuous Pipeline SVG Rail & Connectors */}
           <svg className="absolute inset-0 w-full h-full pointer-events-none z-0" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-                <feGaussianBlur stdDeviation="3" result="blur" />
+                <feGaussianBlur stdDeviation="3.5" result="blur" />
                 <feComposite in="SourceGraphic" in2="blur" operator="over" />
               </filter>
+              <linearGradient id="pipelineRailGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="#10b981" stopOpacity="0.8" />
+                <stop offset="50%" stopColor="#06b6d4" stopOpacity="0.8" />
+                <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.8" />
+              </linearGradient>
             </defs>
 
-            {/* 1 -> 2 */}
+            {/* Background Structural Rail connecting all stages */}
+            <path d="M 230 80 L 320 80" fill="none" stroke="#1c1d24" strokeWidth="4" />
+            <path d="M 540 80 L 630 80" fill="none" stroke="#1c1d24" strokeWidth="4" />
+            <path d="M 740 155 C 740 230, 200 230, 200 310" fill="none" stroke="#1c1d24" strokeWidth="4" />
+            <path d="M 310 385 L 420 385" fill="none" stroke="#1c1d24" strokeWidth="4" />
+
+            {/* Active / Verified Connecting Flow Lines */}
+            {/* Stage 01 -> Stage 02 */}
             <path d="M 230 80 L 320 80" fill="none" {...connectorProps(stage1Verified, stage1Running)} />
-            {/* 2 -> 3 */}
+            {/* Stage 02 -> Stage 03 */}
             <path d="M 540 80 L 630 80" fill="none" {...connectorProps(stage2Verified, stage2Running)} />
-            {/* 3 -> 4 */}
+            {/* Stage 03 -> Stage 04 (Return loop) */}
             <path d="M 740 155 C 740 230, 200 230, 200 310" fill="none" {...connectorProps(stage3Verified, stage3Running)} />
-            {/* 4 -> 5 */}
+            {/* Stage 04 -> Stage 05 */}
             <path d="M 310 385 L 420 385" fill="none" {...connectorProps(stage4Verified, stage4Running)} />
+
+            {/* Node Step Indicators along the lines */}
+            <circle cx="275" cy="80" r="3" fill={stage1Verified ? '#10b981' : '#3f3f46'} />
+            <circle cx="585" cy="80" r="3" fill={stage2Verified ? '#10b981' : '#3f3f46'} />
+            <circle cx="470" cy="230" r="3.5" fill={stage3Verified ? '#10b981' : '#3f3f46'} />
+            <circle cx="365" cy="385" r="3" fill={stage4Verified ? '#10b981' : '#3f3f46'} />
           </svg>
 
           {/* STAGE 01 CARD: INGEST */}
