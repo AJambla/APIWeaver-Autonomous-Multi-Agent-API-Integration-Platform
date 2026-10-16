@@ -18,6 +18,7 @@ import {
   Link2,
   Loader2,
   Network,
+  Package,
   Play,
   RefreshCw,
   RotateCcw,
@@ -74,6 +75,8 @@ import { McpToolsTab } from './workspace/McpToolsTab';
 import { VerifyTab } from './workspace/VerifyTab';
 import { LiveTestModal } from './workspace/LiveTestModal';
 import { McpResultTab } from './workspace/McpResultTab';
+import { PipelineCanvas } from './workspace/PipelineCanvas';
+import { TelemetryDock } from './workspace/TelemetryDock';
 
 type TabId = 'ingest' | 'dependencies' | 'tools' | 'verify' | 'result' | 'logs' | 'settings';
 
@@ -86,79 +89,7 @@ const TERMINAL_TEST_STATUSES = ['completed', 'completed_with_failures', 'failed'
 // An export row still waiting on the pipeline; anything else has a real status.
 const OPEN_EXPORT_STATUSES = ['queued', 'pending', 'running'];
 
-const CORE_STEPS: Array<{ id: TabId; n: number; label: string; desc: string }> = [
-  { id: 'ingest', n: 1, label: 'Ingest Spec', desc: 'Import API documentation' },
-  { id: 'dependencies', n: 2, label: 'Dependencies', desc: 'Topological dependency graph' },
-  { id: 'tools', n: 3, label: 'MCP Tools', desc: 'Synthesized FastMCP tools & code' },
-  { id: 'verify', n: 4, label: 'Verify', desc: 'Docker sandbox & live testing' },
-  { id: 'result', n: 5, label: 'MCP Result', desc: 'Verified bundle & Claude config' },
-];
-
-const SUPPORTING_STEPS: Array<{ id: TabId; label: string; icon: React.ElementType }> = [
-  { id: 'logs', label: 'Event Logs', icon: TerminalIcon },
-  { id: 'settings', label: 'Settings', icon: SettingsIcon },
-];
-
 const DEFAULT_SPEC = 'openapi: 3.0.0\ninfo:\n  title: API Specification\n  version: 1.0.0\npaths: {}';
-
-/* Stepper ------------------------------------------------------------------- */
-
-const WorkflowStepper: React.FC<{
-  active: TabId;
-  onSelect: (id: TabId) => void;
-  completed: Record<TabId, boolean>;
-}> = ({ active, onSelect, completed }) => (
-  <div className="flex items-start gap-1 overflow-x-auto pb-1">
-    {CORE_STEPS.map((step, i) => {
-      const isActive = active === step.id;
-      const isDone = completed[step.id];
-      return (
-        <React.Fragment key={step.id}>
-          <button
-            onClick={() => onSelect(step.id)}
-            className="group flex w-[128px] shrink-0 flex-col items-center gap-1.5 text-center"
-          >
-            <span
-              className={`flex h-7 w-7 items-center justify-center rounded-full border text-xs font-medium transition-colors ${
-                isActive
-                  ? 'border-white bg-white text-black'
-                  : isDone
-                    ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-400'
-                    : 'border-white/15 bg-white/[0.03] text-neutral-500 group-hover:border-white/40 group-hover:text-neutral-300'
-              }`}
-            >
-              {isDone && !isActive ? <Check className="h-3.5 w-3.5" /> : step.n}
-            </span>
-            <span className={`text-xs leading-tight ${isActive ? 'font-medium text-white' : isDone ? 'text-neutral-300' : 'text-neutral-500'}`}>
-              {step.label}
-            </span>
-            <span className="text-[10px] leading-tight text-neutral-600">{step.desc}</span>
-          </button>
-          {i < CORE_STEPS.length - 1 && (
-            <span className={`mt-3.5 h-px w-6 shrink-0 sm:w-10 ${completed[CORE_STEPS[i].id] ? 'bg-emerald-500/40' : 'bg-white/10'}`} />
-          )}
-        </React.Fragment>
-      );
-    })}
-    <span className="mx-3 mt-1.5 h-5 w-px shrink-0 bg-white/10" />
-    {SUPPORTING_STEPS.map(step => {
-      const Icon = step.icon;
-      const isActive = active === step.id;
-      return (
-        <button
-          key={step.id}
-          onClick={() => onSelect(step.id)}
-          className={`flex w-[92px] shrink-0 flex-col items-center gap-1.5 ${isActive ? 'text-white' : 'text-neutral-500 hover:text-neutral-300'}`}
-        >
-          <span className={`flex h-7 w-7 items-center justify-center rounded-full border ${isActive ? 'border-white/60 bg-white/10' : 'border-white/15'}`}>
-            <Icon className="h-3.5 w-3.5" />
-          </span>
-          <span className="text-xs leading-tight">{step.label}</span>
-        </button>
-      );
-    })}
-  </div>
-);
 
 /* Event log helpers ----------------------------------------------------------- */
 
@@ -265,6 +196,44 @@ export const ProjectWorkspace: React.FC = () => {
       return next;
     }, { replace: true });
   }, [setSearchParams]);
+  const [autoFollow, setAutoFollow] = useState(true);
+
+  /* --- Resizable Drawer Width --- */
+  const [drawerWidth, setDrawerWidth] = useState<number>(() => {
+    const saved = localStorage.getItem('aw_drawer_width');
+    return saved ? Math.max(380, Math.min(1000, parseInt(saved, 10))) : 560;
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  const startResizing = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = window.innerWidth - e.clientX;
+      const minW = 380;
+      const maxW = Math.max(minW, Math.min(window.innerWidth * 0.75, 1050));
+      const clamped = Math.max(minW, Math.min(maxW, newWidth));
+      setDrawerWidth(clamped);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      localStorage.setItem('aw_drawer_width', String(drawerWidth));
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing, drawerWidth]);
+
   const [mode, setMode] = useState<UploadMode>('file');
   const [file, setFile] = useState<File | null>(null);
   const [specContent, setSpecContent] = useState(DEFAULT_SPEC);
@@ -424,10 +393,23 @@ export const ProjectWorkspace: React.FC = () => {
       return prev;
     });
 
+    if (autoFollow) {
+      if (isPaused) {
+        setActiveTab('dependencies');
+      } else if (payload.current_node) {
+        const node = String(payload.current_node);
+        if (node === 'doc_agent') setActiveTab('ingest');
+        else if (node === 'planner_agent' || node === 'approval_gate') setActiveTab('dependencies');
+        else if (node === 'code_agent') setActiveTab('tools');
+        else if (node === 'test_agent' || node === 'repair_agent') setActiveTab('verify');
+        else if (node === 'export_agent') setActiveTab('result');
+      }
+    }
+
     if (isPaused) {
       loadProjectData();
     }
-  }, [runEvents, activeRunId, loadProjectData]);
+  }, [runEvents, activeRunId, loadProjectData, autoFollow, setActiveTab]);
 
   /* A terminal stream event ends the watch: reconcile from REST, then detach. */
   useEffect(() => {
@@ -926,7 +908,14 @@ export const ProjectWorkspace: React.FC = () => {
     if (mode === 'file' && file && !file.name.toLowerCase().endsWith('.pdf')) {
       let cancelled = false;
       file.text().then(text => {
-        if (!cancelled) setFilePreview(text);
+        if (!cancelled) {
+          try {
+            const parsed = JSON.parse(text);
+            setFilePreview(JSON.stringify(parsed, null, 2));
+          } catch {
+            setFilePreview(text);
+          }
+        }
       });
       return () => {
         cancelled = true;
@@ -1074,226 +1063,340 @@ export const ProjectWorkspace: React.FC = () => {
   const successRate = testTotal > 0 ? `${((testPassed / testTotal) * 100).toFixed(1)}%` : '—';
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col selection:bg-white selection:text-black">
-      {/* Project header */}
-      <header className="border-b border-white/10 bg-black/60 backdrop-blur-xl sticky top-0 z-40">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 pt-4">
-          <div className="flex items-center gap-3">
-            <Link
-              to="/dashboard"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-neutral-400 hover:bg-white/5 hover:text-white transition-colors"
-              title="Back to projects"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
-            <nav className="min-w-0 flex-1 truncate text-xs text-neutral-500">
-              <Link to="/dashboard" className="hover:text-white transition-colors">Projects</Link>
-              <span className="mx-1.5">/</span>
-              <span className="text-neutral-300">{project.name}</span>
-            </nav>
-            <StatusBadge status={project.status} />
-            <OptionsMenu
-              items={[
-                {
-                  label: menuCopied ? 'Copied!' : 'Copy project ID',
-                  onSelect: () => {
-                    navigator.clipboard.writeText(project.id);
-                    setMenuCopied(true);
-                    setTimeout(() => setMenuCopied(false), 1500);
-                  },
-                },
-                ...(latestRun
-                  ? [{ label: 'Open latest run', onSelect: () => navigate(`/dashboard/runs/${latestRun.workflow_run_id}?project=${project.id}`) }]
-                  : []),
-              ]}
-            />
-          </div>
-          <div className="mt-2 flex flex-wrap items-end justify-between gap-x-6 gap-y-1 pb-4">
-            <div className="min-w-0 max-w-3xl">
-              <h1 className="truncate text-xl font-semibold tracking-tight">{project.name}</h1>
-              <p className="truncate text-sm text-neutral-400" title={projectDescription}>{projectDescription}</p>
-              <p className="text-xs text-neutral-500">
-                {project.endpoint_count} endpoint{project.endpoint_count === 1 ? '' : 's'} · created {relativeTime(project.created_at)} · updated {relativeTime(project.updated_at)}
-              </p>
+    <div className="h-screen bg-[#070709] text-white flex flex-col selection:bg-white selection:text-black overflow-hidden">
+      {/* Top Command Header */}
+      <header className="h-14 border-b border-white/10 bg-[#0a0a0f] px-4 flex items-center justify-between shrink-0 z-30">
+        <div className="flex items-center gap-3">
+          <Link
+            to="/dashboard"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-neutral-400 hover:bg-white/5 hover:text-white transition-colors"
+            title="Back to projects"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 font-mono text-xs font-bold text-emerald-400">
+              AW
             </div>
-            {(activeRun?.status || latestRun?.status || project.last_run_status) && (
-              <div className="flex items-center gap-2 text-xs text-neutral-500">
-                <History className="h-3.5 w-3.5" />
-                {activeRun && ['queued', 'running', 'paused_for_approval'].includes(activeRun.status)
-                  ? 'current run:'
-                  : 'last run:'}{' '}
-                <StatusBadge
-                  status={
-                    activeRun && ['queued', 'running', 'paused_for_approval'].includes(activeRun.status)
-                      ? activeRun.status
-                      : (latestRun?.status || project.last_run_status!)
-                  }
-                />
-                {activeRun && ['queued', 'running', 'paused_for_approval'].includes(activeRun.status) && (
-                  <button
-                    type="button"
-                    onClick={cancelWorkflow}
-                    disabled={cancelBusy}
-                    className="ml-2 inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-400 hover:bg-red-500/20 disabled:opacity-50 transition-colors"
-                    title="Cancel active workflow immediately"
-                  >
-                    <XCircle className="h-3.5 w-3.5" />
-                    {cancelBusy ? 'Cancelling...' : 'Cancel Run'}
-                  </button>
-                )}
-              </div>
-            )}
+            <div className="flex items-center gap-2 text-sm">
+              <Link to="/dashboard" className="text-neutral-500 hover:text-white transition-colors">
+                Projects
+              </Link>
+              <span className="text-neutral-600">/</span>
+              <span className="font-medium text-white">{project.name}</span>
+            </div>
           </div>
-          {/* Workflow stepper */}
-          <div className="border-t border-white/5 py-4">
-            <WorkflowStepper active={activeTab} onSelect={setActiveTab} completed={stepCompleted} />
-          </div>
+          <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] font-mono text-neutral-400">
+            {project.endpoint_count} endpoint{project.endpoint_count === 1 ? '' : 's'}
+          </span>
+          {/* Dynamic Global Pipeline Status Pill */}
+          {activeRun && ['queued', 'running', 'paused_for_approval'].includes(activeRun.status) ? (
+            <span className="px-2.5 py-0.5 rounded-full bg-amber-500/10 text-[11px] font-medium text-amber-400 border border-amber-500/30 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              <span>
+                {activeRun.status === 'paused_for_approval'
+                  ? 'Paused for Approval'
+                  : `Running: ${activeAgentName} (${activeRun.progress_percent || 0}%)`}
+              </span>
+            </span>
+          ) : stepCompleted.result && testSummary && testSummary.summary.failed === 0 ? (
+            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-[11px] font-medium text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              <span>All 5 Stages Verified</span>
+            </span>
+          ) : spec ? (
+            <span className="px-2.5 py-0.5 rounded-full bg-blue-500/10 text-[11px] font-medium text-blue-400 border border-blue-500/30 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+              <span>Spec Ready</span>
+            </span>
+          ) : (
+            <span className="px-2.5 py-0.5 rounded-full bg-neutral-800 text-[11px] font-medium text-neutral-400 border border-white/10 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-neutral-500" />
+              <span>Standby (Needs Ingest)</span>
+            </span>
+          )}
+        </div>
+
+        {/* Right Controls */}
+        <div className="flex items-center gap-3">
+          {/* Auto-Follow Stream Toggle */}
+          <label className="flex items-center gap-2 text-xs text-neutral-400 cursor-pointer hover:text-neutral-200 transition-colors">
+            <input
+              type="checkbox"
+              checked={autoFollow}
+              onChange={e => setAutoFollow(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-0"
+            />
+            <span>Auto-Follow Stream</span>
+          </label>
+
+          {/* Trigger Live Weave button */}
+          <button
+            onClick={runBuild}
+            disabled={cancelBusy || runIsLive}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-xs transition-colors shadow-sm disabled:opacity-50"
+            title="Trigger full multi-agent weave pipeline"
+          >
+            <Play className="h-3.5 w-3.5 fill-current" />
+            <span>{runIsLive ? 'Weaving...' : 'Trigger Live Weave'}</span>
+          </button>
+
+          {/* Get Claude Config button */}
+          <button
+            onClick={() => setActiveTab('result')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+              activeTab === 'result'
+                ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                : 'bg-white/5 hover:bg-white/10 text-neutral-300 border-white/10'
+            }`}
+          >
+            <Package className="h-3.5 w-3.5" />
+            <span>Get Claude Config</span>
+          </button>
+
+          {/* Settings button */}
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+              activeTab === 'settings'
+                ? 'bg-white/15 border-white/30 text-white'
+                : 'bg-white/5 hover:bg-white/10 text-neutral-400 hover:text-neutral-200 border-white/10'
+            }`}
+            title="Project Settings"
+          >
+            <SettingsIcon className="h-3.5 w-3.5" />
+            <span>Settings</span>
+          </button>
+
+          {/* Options Menu & Cancel */}
+          {activeRun && ['queued', 'running', 'paused_for_approval'].includes(activeRun.status) && (
+            <button
+              type="button"
+              onClick={cancelWorkflow}
+              disabled={cancelBusy}
+              className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-400 hover:bg-red-500/20 disabled:opacity-50 transition-colors"
+              title="Cancel active workflow immediately"
+            >
+              <XCircle className="h-3.5 w-3.5" />
+              <span>{cancelBusy ? 'Cancelling...' : 'Cancel'}</span>
+            </button>
+          )}
+
+          <OptionsMenu
+            items={[
+              {
+                label: menuCopied ? 'Copied!' : 'Copy project ID',
+                onSelect: () => {
+                  navigator.clipboard.writeText(project.id);
+                  setMenuCopied(true);
+                  setTimeout(() => setMenuCopied(false), 1500);
+                },
+              },
+              ...(latestRun
+                ? [{ label: 'Open latest run', onSelect: () => navigate(`/dashboard/runs/${latestRun.workflow_run_id}?project=${project.id}`) }]
+                : []),
+            ]}
+          />
         </div>
       </header>
 
       {error && (
-        <div className="mx-auto mt-6 w-full max-w-7xl px-4 sm:px-6">
+        <div className="mx-auto w-full px-4 pt-2">
           <ErrorBanner message={error} onDismiss={() => setError('')} />
         </div>
       )}
 
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6">
-        {/* ============================== STAGE 1: INGEST ============================== */}
-        {activeTab === 'ingest' && (
-          <IngestTab
-            file={file}
-            setFile={setFile}
-            mode={mode}
-            setMode={setMode}
-            specContent={specContent}
-            setSpecContent={setSpecContent}
-            urlValue={urlValue}
-            setUrlValue={setUrlValue}
-            urlNote={urlNote}
-            phase={phase}
-            setPhase={setPhase}
-            uploadError={uploadError}
-            uploadedMeta={uploadedMeta}
-            uploadResult={uploadResult}
-            spec={spec}
-            endpoints={endpoints}
-            showAnalysis={showAnalysis}
-            editorValue={editorValue}
-            language={language}
-            hasValidInput={hasValidInput}
-            onUrlImport={handleUrlImport}
-            onUpload={handleUpload}
-            onReset={resetUpload}
-            onContinue={() => setActiveTab('dependencies')}
-            onPreviewExpand={() => setPreviewExpanded(true)}
-          />
-        )}
+      {/* Main Workspace: Left Dot-Grid Canvas + Right Contextual Inspector Studio */}
+      <main className={`flex-1 flex overflow-hidden relative ${isResizing ? 'select-none' : ''}`}>
+        {/* Left Pane: Interactive Dot-Grid Pipeline Canvas */}
+        <PipelineCanvas
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
+          spec={spec}
+          endpoints={endpoints}
+          graph={graph}
+          testSummary={testSummary}
+          exports={exports}
+          activeRun={activeRun}
+          project={project}
+          stepCompleted={stepCompleted}
+        />
 
-        {/* ============================== STAGE 2: DEPENDENCIES ============================== */}
-        {activeTab === 'dependencies' && (
-          <DependenciesTab
-            graph={graph}
-            resourceGroups={resourceGroups}
-            spec={spec}
-            planBusy={planBusy}
-            planApproved={planApproved}
-            planError={planError}
-            pausedRunId={pausedRunId}
-            onApprovePlan={approvePlan}
-            onViewPlanDoc={() => setPlanDocOpen(true)}
-            onGoToIngest={() => setActiveTab('ingest')}
-            onContinueToTools={() => setActiveTab('tools')}
-            onDismissError={() => setPlanError('')}
+        {/* Vertical Draggable Resize Handle / Divider */}
+        <div
+          onMouseDown={startResizing}
+          className={`group relative z-30 flex w-2.5 cursor-col-resize shrink-0 items-center justify-center select-none transition-colors ${
+            isResizing ? 'bg-emerald-500/25' : 'bg-transparent hover:bg-emerald-500/15'
+          }`}
+          title="Drag to resize inspector studio"
+        >
+          {/* Vertical divider border line */}
+          <div
+            className={`h-full w-px transition-colors ${
+              isResizing ? 'bg-emerald-400' : 'bg-white/10 group-hover:bg-emerald-400/80'
+            }`}
           />
-        )}
+          {/* Draggable grip indicator dots */}
+          <div
+            className={`absolute flex h-8 w-1 flex-col items-center justify-center gap-1 rounded-full transition-opacity ${
+              isResizing ? 'bg-emerald-400 opacity-100' : 'bg-neutral-500 opacity-0 group-hover:opacity-100'
+            }`}
+          >
+            <span className="h-0.5 w-0.5 rounded-full bg-white" />
+            <span className="h-0.5 w-0.5 rounded-full bg-white" />
+          </div>
+        </div>
 
-        {/* =============================== STAGE 3: MCP TOOLS & CODE ============================== */}
-        {activeTab === 'tools' && (
-          <McpToolsTab
-            projectId={id || ''}
-            project={project}
-            spec={spec}
-            endpoints={endpoints}
-            activeRun={activeRun}
-            runIsLive={runIsLive}
-            onRunBuild={runBuild}
-            onContinueToVerify={() => setActiveTab('verify')}
-            onGoToIngest={() => setActiveTab('ingest')}
-          />
-        )}
+        {/* Right Pane: Contextual Inspector Workbench + Persistent Telemetry Dock */}
+        <aside
+          style={{ width: `${drawerWidth}px` }}
+          className="border-l border-white/10 bg-[#0c0d12] flex flex-col shrink-0 z-20 transition-[width] duration-75"
+        >
+          {/* Top Workbench Area */}
+          <div className={`flex-1 min-h-0 flex flex-col ${['ingest', 'dependencies'].includes(activeTab) ? 'overflow-hidden' : 'overflow-y-auto p-5'}`}>
+            {activeTab === 'ingest' && (
+              <IngestTab
+                file={file}
+                setFile={setFile}
+                setFilePreview={setFilePreview}
+                mode={mode}
+                setMode={setMode}
+                specContent={specContent}
+                setSpecContent={setSpecContent}
+                urlValue={urlValue}
+                setUrlValue={setUrlValue}
+                urlNote={urlNote}
+                phase={phase}
+                setPhase={setPhase}
+                uploadError={uploadError}
+                uploadedMeta={uploadedMeta}
+                uploadResult={uploadResult}
+                spec={spec}
+                endpoints={endpoints}
+                showAnalysis={showAnalysis}
+                editorValue={editorValue}
+                language={language}
+                hasValidInput={hasValidInput}
+                onUrlImport={handleUrlImport}
+                onUpload={handleUpload}
+                onReset={resetUpload}
+                onContinue={() => setActiveTab('dependencies')}
+                onPreviewExpand={() => setPreviewExpanded(true)}
+              />
+            )}
 
-        {/* =============================== STAGE 4: VERIFY =============================== */}
-        {activeTab === 'verify' && (
-          <VerifyTab
-            testEnv={testEnv}
-            setTestEnv={setTestEnv}
-            testBusy={testBusy}
-            onRunTests={runTests}
-            onOpenLiveModal={() => setLiveModalOpen(true)}
-            endpoints={endpoints}
-            testSummary={testSummary}
-            testTotal={testTotal}
-            successRate={successRate}
-            endpointById={endpointById}
-            testError={testError}
-            onDismissTestError={() => setTestError('')}
+            {activeTab === 'dependencies' && (
+              <DependenciesTab
+                graph={graph}
+                resourceGroups={resourceGroups}
+                spec={spec}
+                endpoints={endpoints}
+                planBusy={planBusy}
+                planApproved={planApproved}
+                planError={planError}
+                pausedRunId={pausedRunId}
+                onApprovePlan={approvePlan}
+                onViewPlanDoc={() => setPlanDocOpen(true)}
+                onGoToIngest={() => setActiveTab('ingest')}
+                onContinueToTools={() => setActiveTab('tools')}
+                onDismissError={() => setPlanError('')}
+              />
+            )}
+
+            {activeTab === 'tools' && (
+              <McpToolsTab
+                projectId={id || ''}
+                project={project}
+                spec={spec}
+                endpoints={endpoints}
+                activeRun={activeRun}
+                runIsLive={runIsLive}
+                onRunBuild={runBuild}
+                onContinueToVerify={() => setActiveTab('verify')}
+                onGoToIngest={() => setActiveTab('ingest')}
+              />
+            )}
+
+            {activeTab === 'verify' && (
+              <VerifyTab
+                testEnv={testEnv}
+                setTestEnv={setTestEnv}
+                testBusy={testBusy}
+                onRunTests={runTests}
+                onOpenLiveModal={() => setLiveModalOpen(true)}
+                endpoints={endpoints}
+                testSummary={testSummary}
+                testTotal={testTotal}
+                successRate={successRate}
+                endpointById={endpointById}
+                testError={testError}
+                onDismissTestError={() => setTestError('')}
+                liveThoughts={liveThoughts}
+                runIsLive={runIsLive}
+                activeAgentName={activeAgentName}
+                autoScroll={autoScroll}
+                setAutoScroll={setAutoScroll}
+                onClearThoughts={() => setLiveThoughts([])}
+                terminalEndRef={terminalEndRef}
+                onContinueToResult={() => setActiveTab('result')}
+              />
+            )}
+
+            {activeTab === 'result' && (
+              <McpResultTab
+                projectId={id || ''}
+                project={project}
+                spec={spec}
+                endpoints={endpoints}
+                testSummary={testSummary}
+                exports={exports}
+                exportBusy={exportBusy}
+                exportError={exportError}
+                exportNote={exportNote}
+                onDismissExportError={() => setExportError('')}
+                onTriggerExport={triggerExport}
+                onDownloadExport={handleDownloadExport}
+                onGoToVerify={() => setActiveTab('verify')}
+              />
+            )}
+
+            {activeTab === 'logs' && (
+              <LogsTab
+                logs={logs}
+                visibleLogs={visibleLogs}
+                logQuery={logQuery}
+                setLogQuery={setLogQuery}
+                logAgent={logAgent}
+                setLogAgent={setLogAgent}
+                logType={logType}
+                setLogType={setLogType}
+                agentNames={agentNames}
+                eventTypes={eventTypes}
+                loadProjectData={loadProjectData}
+                formatEventTime={formatEventTime}
+                eventMessage={eventMessage}
+              />
+            )}
+
+            {activeTab === 'settings' && (
+              <SettingsTab
+                project={project}
+                spec={spec}
+                rawSpec={rawSpec}
+              />
+            )}
+          </div>
+
+          {/* Bottom Persistent Telemetry Dock */}
+          <TelemetryDock
             liveThoughts={liveThoughts}
-            runIsLive={runIsLive}
-            activeAgentName={activeAgentName}
             autoScroll={autoScroll}
             setAutoScroll={setAutoScroll}
-            onClearThoughts={() => setLiveThoughts([])}
+            onClear={() => setLiveThoughts([])}
             terminalEndRef={terminalEndRef}
-            onContinueToResult={() => setActiveTab('result')}
+            isLive={runIsLive}
           />
-        )}
-
-        {/* ============================== STAGE 5: MCP RESULT ============================== */}
-        {activeTab === 'result' && (
-          <McpResultTab
-            projectId={id || ''}
-            project={project}
-            spec={spec}
-            endpoints={endpoints}
-            testSummary={testSummary}
-            exports={exports}
-            exportBusy={exportBusy}
-            exportError={exportError}
-            exportNote={exportNote}
-            onDismissExportError={() => setExportError('')}
-            onTriggerExport={triggerExport}
-            onDownloadExport={handleDownloadExport}
-            onGoToVerify={() => setActiveTab('verify')}
-          />
-        )}
-
-        {/* =============================== LOGS =============================== */}
-        {activeTab === 'logs' && (
-          <LogsTab
-            logs={logs}
-            visibleLogs={visibleLogs}
-            logQuery={logQuery}
-            setLogQuery={setLogQuery}
-            logAgent={logAgent}
-            setLogAgent={setLogAgent}
-            logType={logType}
-            setLogType={setLogType}
-            agentNames={agentNames}
-            eventTypes={eventTypes}
-            loadProjectData={loadProjectData}
-            formatEventTime={formatEventTime}
-            eventMessage={eventMessage}
-          />
-        )}
-
-        {/* ============================= SETTINGS ============================= */}
-        {activeTab === 'settings' && (
-          <SettingsTab
-            project={project}
-            spec={spec}
-            rawSpec={rawSpec}
-          />
-        )}
+        </aside>
       </main>
 
       {/* Fullscreen preview modal */}
