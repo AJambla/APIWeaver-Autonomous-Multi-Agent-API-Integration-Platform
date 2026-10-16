@@ -20,8 +20,13 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
-_MAX_RETRY_DELAY_SECONDS = 8.0
-_MAX_RETRY_AFTER_SECONDS = 10.0
+_MAX_RETRY_DELAY_SECONDS = 30.0
+_MAX_RETRY_AFTER_SECONDS = 60.0
+
+# Request pacing across concurrent coroutines to enforce max ~17 requests/min per provider (avoids 429 bursts)
+_PROVIDER_LOCKS: dict[str, asyncio.Lock] = {}
+_LAST_REQUEST_TIME: dict[str, float] = {}
+_MIN_REQUEST_INTERVAL_SECONDS = 3.5
 
 
 class LLMResponseTruncatedError(DependencyUnavailableError):
@@ -168,18 +173,28 @@ class LLMClient:
                 raise DependencyUnavailableError(
                     f"{provider} circuit breaker is open; retry in {cooldown - elapsed:.0f}s"
                 )
+            # Cooldown passed: reset circuit for half-open trial
+            circuit.opened_at = None
+            circuit.failures = 0
 
         _raise_if_open()
         last_error: Exception | None = None
+        lock = _PROVIDER_LOCKS.setdefault(provider, asyncio.Lock())
+
         for attempt in range(self.settings.llm_max_retries + 1):
             try:
+                # Pace requests to this provider to prevent burst rate limit violations (e.g. 15 RPM limits)
+                async with lock:
+                    last_time = _LAST_REQUEST_TIME.get(provider, 0.0)
+                    now = time.monotonic()
+                    wait_time = _MIN_REQUEST_INTERVAL_SECONDS - (now - last_time)
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                    _LAST_REQUEST_TIME[provider] = time.monotonic()
+
                 result = await send()
             except _TransientProviderError as exc:
                 last_error = exc
-                circuit.failures += 1
-                if circuit.failures >= self.settings.llm_circuit_failure_threshold:
-                    circuit.opened_at = time.monotonic()
-                    _raise_if_open()
                 if attempt >= self.settings.llm_max_retries:
                     break
                 max_retry_delay = getattr(self.settings, "llm_max_retry_delay_seconds", _MAX_RETRY_DELAY_SECONDS)
@@ -191,6 +206,9 @@ class LLMClient:
                 if getattr(self.settings, "llm_retry_jitter", False):
                     # Full jitter: random between 0.5 * delay and 1.5 * delay
                     delay = random.uniform(delay * 0.5, delay * 1.5)
+                # Rate limits (429) need a higher floor (12s) to let provider per-minute windows clear
+                if exc.status_code == 429:
+                    delay = max(delay, 12.0)
                 if exc.retry_after is not None:
                     delay = max(delay, min(exc.retry_after, max_retry_after))
                 logger.warning(
@@ -201,11 +219,15 @@ class LLMClient:
                     retry_in_seconds=round(delay, 2),
                 )
                 await asyncio.sleep(delay)
-                _raise_if_open()
             else:
                 circuit.failures = 0
                 circuit.opened_at = None
                 return result
+
+        # Only increment circuit failures after ALL retries for this request have been exhausted
+        circuit.failures += 1
+        if circuit.failures >= self.settings.llm_circuit_failure_threshold:
+            circuit.opened_at = time.monotonic()
         raise DependencyUnavailableError(
             f"{provider} unavailable after {self.settings.llm_max_retries + 1} attempts: "
             f"{last_error}"
@@ -266,28 +288,60 @@ class LLMClient:
             "response_format": {"type": "json_object"},
             "temperature": self.settings.llm_temperature,
         }
+        model_candidates = [self.settings.llm_model]
+        if "googleapis.com" in (self.settings.openai_api_base_url or ""):
+            for fallback in ("gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemma-4-26b-a4b-it"):
+                if fallback not in model_candidates:
+                    model_candidates.append(fallback)
+
         async def send() -> tuple[dict[str, Any], int]:
-            try:
-                async with httpx.AsyncClient(timeout=self.settings.llm_request_timeout) as client:
-                    res = await client.post(url, json=payload, headers=headers)
-                    if res.status_code == 400 and "response_format" in payload:
-                        # Fallback ONLY for OpenAI-compatible providers that reject 'response_format'
-                        err_text = res.text.lower()
-                        if any(term in err_text for term in ("response_format", "json_object", "unsupported parameter", "extra parameter")):
-                            del payload["response_format"]
-                            res = await client.post(url, json=payload, headers=headers)
-                    res.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code
-                if status in TRANSIENT_STATUS_CODES:
+            last_resp = None
+            for model_name in model_candidates:
+                payload["model"] = model_name
+                try:
+                    async with httpx.AsyncClient(timeout=self.settings.llm_request_timeout) as client:
+                        res = await client.post(url, json=payload, headers=headers)
+                        if res.status_code == 400 and "response_format" in payload:
+                            # Fallback ONLY for OpenAI-compatible providers that reject 'response_format'
+                            err_text = res.text.lower()
+                            if any(term in err_text for term in ("response_format", "json_object", "unsupported parameter", "extra parameter")):
+                                del payload["response_format"]
+                                res = await client.post(url, json=payload, headers=headers)
+
+                        # If a specific model's daily free tier quota is exhausted, cascade to next candidate model
+                        if res.status_code == 429:
+                            err_lower = res.text.lower()
+                            if any(marker in err_lower for marker in ("perday", "daily", "resource_exhausted", "quota exceeded")):
+                                logger.warning(
+                                    "llm_model_daily_quota_exhausted_fallback",
+                                    exhausted_model=model_name,
+                                    error_preview=res.text[:150],
+                                )
+                                last_resp = res
+                                continue
+
+                        res.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    status = exc.response.status_code
+                    if status in TRANSIENT_STATUS_CODES:
+                        raise _TransientProviderError(
+                            f"openai returned HTTP {status}",
+                            status_code=status,
+                            retry_after=_retry_after_seconds(exc.response),
+                        ) from exc
+                    raise
+                except httpx.TransportError as exc:
+                    raise _TransientProviderError(f"openai transport error: {exc}") from exc
+
+                # If successful, exit candidate loop
+                break
+            else:
+                if last_resp is not None:
                     raise _TransientProviderError(
-                        f"openai returned HTTP {status}",
-                        status_code=status,
-                        retry_after=_retry_after_seconds(exc.response),
-                    ) from exc
-                raise
-            except httpx.TransportError as exc:
-                raise _TransientProviderError(f"openai transport error: {exc}") from exc
+                        f"openai returned HTTP 429: candidate models exhausted daily quota: {last_resp.text[:200]}",
+                        status_code=429,
+                        retry_after=_retry_after_seconds(last_resp),
+                    )
             data = res.json()
             choice = data["choices"][0]
             content = choice["message"]["content"]

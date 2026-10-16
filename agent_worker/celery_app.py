@@ -5,6 +5,14 @@ from __future__ import annotations
 import os
 from typing import Any
 
+# Ensure prometheus multiproc dir exists early before any tasks or metrics load
+_multiproc_dir = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
+if _multiproc_dir:
+    try:
+        os.makedirs(_multiproc_dir, exist_ok=True)
+    except OSError:
+        pass
+
 from celery import Celery, signals
 
 BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/1")
