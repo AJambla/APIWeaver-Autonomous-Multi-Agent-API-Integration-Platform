@@ -761,3 +761,45 @@ async def test_hermetic_run_never_receives_the_real_credential():
 def test_the_deprecated_network_flag_does_not_network_an_executor():
     settings = _make_settings(sandbox_network_enabled=True)
     assert DockerSandboxExecutor(settings).network_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_mock_sandbox_executor_success():
+    from app.services.sandbox_service import MockSandboxExecutor
+
+    executor = MockSandboxExecutor(_make_settings())
+    await executor.load(
+        project_id="proj-mock",
+        files={"tools.py": "def add(a: int, b: int) -> int:\n    return a + b\n"},
+        base_url="https://api.mock.test",
+        api_key="mock-key",
+    )
+    result = await executor.execute("GET", "/items", expected_status=200)
+    assert result["status"] == "passed"
+    assert result["status_code"] == 200
+    assert result["response_snapshot"]["mock"] is True
+    await executor.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_mock_sandbox_executor_syntax_error():
+    from app.services.sandbox_service import MockSandboxExecutor
+
+    executor = MockSandboxExecutor(_make_settings())
+    await executor.load(
+        project_id="proj-mock",
+        files={"broken.py": "def syntax_error(\n"},
+    )
+    result = await executor.execute("GET", "/broken")
+    assert result["status"] == "failed"
+    assert "SyntaxError" in result["error"]
+    await executor.cleanup()
+
+
+def test_build_sandbox_executor_with_mock_backend():
+    from app.workflows.agents.test_agent import _build_sandbox_executor
+    from app.services.sandbox_service import MockSandboxExecutor
+
+    settings = _make_settings(sandbox_backend="mock")
+    executor = _build_sandbox_executor(settings, network_enabled=False)
+    assert isinstance(executor, MockSandboxExecutor)

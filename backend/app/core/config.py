@@ -317,7 +317,7 @@ class Settings(BaseSettings):
         it is a test-only opt-in; a production or staging deployment that asks for it is a
         misconfiguration, not a supported mode.
         """
-        if self.sandbox_backend != "docker":
+        if self.app_env in ("production", "staging") and self.sandbox_backend != "docker":
             raise ValueError(
                 f"SANDBOX_BACKEND={self.sandbox_backend} cannot be used in "
                 f"{self.app_env} mode. A real Docker daemon is strictly required."
