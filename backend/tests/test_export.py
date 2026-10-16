@@ -216,6 +216,39 @@ class TestExportAgent:
             types = [e["type"] for e in result["exports"]]
             assert "mcp" in types
 
+    @pytest.mark.asyncio
+    async def test_package_mcp_bundle_includes_s3_files(self, mock_state):
+        """Test that generated files with only content_s3_key are downloaded and included in ZIP."""
+        uploaded_files = {}
+
+        async def capture_upload(key: str, data: bytes):
+            uploaded_files[key] = data
+
+        async def fake_download(key: str) -> bytes:
+            if key == "s3://generated/tools.py":
+                return b"# FastMCP generated tools\ndef test_tool(): pass\n"
+            raise FileNotFoundError(key)
+
+        with patch("app.workflows.agents.export_agent.storage_service") as mock_storage:
+            mock_storage.upload = AsyncMock(side_effect=capture_upload)
+            mock_storage.download = AsyncMock(side_effect=fake_download)
+
+            agent = ExportAgent()
+            result = await agent._package_mcp(
+                project_id="test-project",
+                normalized_spec=mock_state["normalized_spec"],
+                test_run_summary=mock_state["test_run_summary"],
+                generated_files=[
+                    {"file_path": "tools.py", "content_s3_key": "s3://generated/tools.py"}
+                ],
+            )
+
+            bundle_key = "exports/test-project/mcp/apiweaver-mcp.zip"
+            assert bundle_key in uploaded_files
+            with zipfile.ZipFile(io.BytesIO(uploaded_files[bundle_key])) as zf:
+                assert "tools.py" in zf.namelist()
+                assert b"FastMCP generated tools" in zf.read("tools.py")
+
 
 OPENAPI_SPEC = b'''openapi: 3.0.3
 info:
