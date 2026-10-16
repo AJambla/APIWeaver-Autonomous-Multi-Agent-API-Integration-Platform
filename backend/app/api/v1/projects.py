@@ -227,17 +227,34 @@ async def get_project(
 @router.delete(
     "/{id}",
     response_model=ProjectResponse,
-    summary="Archive a project (soft delete)",
+    summary="Archive or permanently delete a project",
 )
 async def archive_project(
     request: Request,
+    permanent: bool = Query(default=False),
     project: Project = Depends(require_project_permission(Permission.PROJECT_ARCHIVE)),
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> ProjectResponse:
-    """Soft-deletes per `API.md §6.1`. Idempotent: archiving an archived project returns
-    it unchanged rather than erroring, so a retried request is harmless."""
+    """Soft-deletes per `API.md §6.1`, or permanently deletes when `permanent=true`."""
+    res = ProjectResponse.model_validate(project)
+    if permanent:
+        await audit_service.record(
+            session,
+            action=AuditAction.PROJECT_ARCHIVED,
+            actor_type=ActorType.SYSTEM if principal.is_api_key else ActorType.USER,
+            organization_id=project.organization_id,
+            actor_user_id=principal.user_id,
+            resource_type="project",
+            resource_id=str(project.id),
+            ip_address=client_ip(request, settings),
+            user_agent=request.headers.get("user-agent"),
+        )
+        await session.delete(project)
+        await session.flush()
+        return res
+
     if project.archived_at is None:
         project.archived_at = utc_now()
         project.status = ProjectStatus.ARCHIVED

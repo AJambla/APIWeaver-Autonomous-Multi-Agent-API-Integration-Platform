@@ -20,6 +20,16 @@ Metrics:
 
 from __future__ import annotations
 
+import os
+
+# Ensure the multiprocess directory exists before any metrics are instantiated.
+multiproc_dir = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
+if multiproc_dir:
+    try:
+        os.makedirs(multiproc_dir, exist_ok=True)
+    except OSError:
+        pass
+
 from prometheus_client import Counter, Histogram
 from prometheus_client.registry import CollectorRegistry
 

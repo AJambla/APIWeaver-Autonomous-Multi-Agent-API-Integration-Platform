@@ -66,6 +66,92 @@ Output JSON matching this schema:
 """
 
 
+def _generate_deterministic_plan(spec: dict[str, Any]) -> dict[str, Any]:
+    """Generates a topological execution plan and DAG algorithmically if LLM is unavailable."""
+    endpoints = spec.get("endpoints", [])
+    title = spec.get("title", "API")
+
+    resource_map: dict[str, list[str]] = {}
+    phase1_eps: list[str] = []
+    phase2_eps: list[str] = []
+    phase3_eps: list[str] = []
+    nodes: list[dict[str, str]] = []
+    edges: list[dict[str, str]] = []
+    destructive: list[dict[str, Any]] = []
+
+    for idx, ep in enumerate(endpoints):
+        method = str(ep.get("method", "GET")).upper()
+        path = str(ep.get("path", "/"))
+        ep_str = f"{method} {path}"
+        ep_id = f"ep_{idx}"
+        nodes.append({"id": ep_id, "label": ep_str})
+
+        parts = [p for p in path.split("/") if p and not p.startswith("{")]
+        resource = parts[0].capitalize() if parts else "Core"
+        resource_map.setdefault(resource, []).append(ep_str)
+
+        if method == "DELETE":
+            destructive.append({"method": method, "path": path, "auto_test_safe": False})
+            phase3_eps.append(ep_str)
+        elif method in ("POST", "PUT") and any(k in path.lower() for k in ("auth", "token", "login")):
+            phase1_eps.insert(0, ep_str)
+        elif method in ("POST", "PUT"):
+            phase1_eps.append(ep_str)
+        elif method == "GET":
+            phase2_eps.append(ep_str)
+        else:
+            phase3_eps.append(ep_str)
+
+    post_nodes = {n["label"].split()[1]: n["id"] for n in nodes if n["label"].startswith("POST")}
+    for n in nodes:
+        method, _, path = n["label"].partition(" ")
+        if method in ("GET", "DELETE") and path in post_nodes:
+            edges.append({
+                "from": post_nodes[path],
+                "to": n["id"],
+                "relationship": "requires_created_resource" if method == "GET" else "cleans_up_resource"
+            })
+
+    phases = []
+    if phase1_eps:
+        phases.append({
+            "phase_number": 1,
+            "name": "Core Resources & Creation",
+            "endpoints": phase1_eps,
+        })
+    if phase2_eps:
+        phases.append({
+            "phase_number": len(phases) + 1,
+            "name": "Resource Operations & Queries",
+            "endpoints": phase2_eps,
+        })
+    if phase3_eps:
+        phases.append({
+            "phase_number": len(phases) + 1,
+            "name": "Destructive & Cleanup Operations",
+            "endpoints": phase3_eps,
+        })
+    if not phases:
+        phases.append({
+            "phase_number": 1,
+            "name": "All Endpoints",
+            "endpoints": [n["label"] for n in nodes],
+        })
+
+    resource_groups = [{"name": name, "endpoints": eps} for name, eps in resource_map.items()]
+
+    return {
+        "summary": f"Deterministic execution and DAG plan for {title} (algorithmic fallback)",
+        "resource_groups": resource_groups,
+        "phases": phases,
+        "dependency_graph": {
+            "nodes": nodes,
+            "edges": edges,
+        },
+        "destructive_endpoints": destructive,
+    }
+
+
 async def run_planner_agent(
     state: WorkflowState,
     llm_client: LLMClient | None = None,
@@ -84,26 +170,21 @@ async def run_planner_agent(
             "errors": ["Cannot plan without a normalized API spec."],
         }
 
-    endpoints = spec.get("endpoints", [])
-
-    # Algorithmic baseline clustering & dependency extraction
-    nodes: list[dict[str, Any]] = []
-    destructive: list[dict[str, Any]] = []
-
-    for idx, ep in enumerate(endpoints):
-        method = ep.get("method", "GET").upper()
-        path = ep.get("path", "/")
-        ep_id = f"ep_{idx}"
-        nodes.append({"id": ep_id, "label": f"{method} {path}"})
-        if method == "DELETE":
-            destructive.append({"method": method, "path": path, "auto_test_safe": False})
-
-    user_prompt = fence_untrusted("SPEC DATA", json.dumps(spec, indent=2)[:100000])
-    plan_json, tokens = await client.generate_json(
-        system_prompt=PLANNER_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-    )
-    total_tokens += tokens
+    plan_json: dict[str, Any]
+    try:
+        user_prompt = fence_untrusted("SPEC DATA", json.dumps(spec, indent=2)[:100000])
+        plan_json, tokens = await client.generate_json(
+            system_prompt=PLANNER_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+        )
+        total_tokens += tokens
+    except Exception as exc:
+        logger.warning(
+            "planner_llm_failed_using_deterministic_baseline",
+            error=str(exc),
+            workflow_run_id=state.get("workflow_run_id"),
+        )
+        plan_json = _generate_deterministic_plan(spec)
 
     return {
         "execution_plan": plan_json,

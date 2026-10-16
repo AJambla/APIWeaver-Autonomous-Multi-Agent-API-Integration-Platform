@@ -31,7 +31,10 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 # Create non-root user and ensure docker group exists for socket access
 RUN (groupadd -g 999 docker || groupadd docker || true) && \
     useradd -m -s /bin/bash appuser && \
-    usermod -aG docker appuser
+    usermod -aG docker appuser && \
+    mkdir -p /tmp/prometheus-multiproc && \
+    chown -R appuser:appuser /tmp/prometheus-multiproc && \
+    chmod 777 /tmp/prometheus-multiproc
 
 # Copy application code with pre-assigned ownership (zero layer duplication)
 COPY --chown=appuser:appuser backend ./backend
