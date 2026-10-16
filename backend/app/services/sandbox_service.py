@@ -754,3 +754,79 @@ class DockerSandboxExecutor:
         if self._workspace is not None:
             workspace, self._workspace = self._workspace, None
             await asyncio.to_thread(shutil.rmtree, workspace, True)
+
+
+class MockSandboxExecutor:
+    """In-process mock sandbox for offline testing and local development without Docker."""
+
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        network_enabled: bool = False,
+    ) -> None:
+        self._settings = settings
+        self.network_enabled = network_enabled
+        self._workspace: Path | None = None
+        self._files: dict[str, str] = {}
+        self._language: str = "python"
+        self._base_url: str | None = None
+        self._api_key: str | None = None
+
+    async def load(
+        self,
+        project_id: Any = None,
+        files: dict[str, str] | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        language: str = "python",
+    ) -> None:
+        self._files = files or {}
+        self._language = language
+        self._base_url = base_url
+        self._api_key = api_key
+
+    async def execute(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+        body: Any | None = None,
+        headers: dict[str, str] | None = None,
+        expected_status: int | None = None,
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        result: dict[str, Any] = {
+            "status": "passed",
+            "status_code": expected_status or (204 if method.upper() == "DELETE" else 200),
+            "latency_ms": 10,
+            "response_snapshot": {
+                "mock": True,
+                "method": method,
+                "path": path,
+                "params": params or {},
+                "body": body,
+            },
+            "error": None,
+            "stack_trace": None,
+        }
+
+        # Check Python files for syntax errors
+        for fp, content in self._files.items():
+            if (fp.endswith(".py") or self._language == "python") and isinstance(content, str):
+                try:
+                    import ast
+
+                    ast.parse(content)
+                except SyntaxError as syn_err:
+                    result["status"] = "failed"
+                    result["status_code"] = 500
+                    result["error"] = f"SyntaxError in {fp}: {syn_err.msg} at line {syn_err.lineno}"
+                    result["stack_trace"] = traceback.format_exc()
+                    break
+
+        result["latency_ms"] = int((time.perf_counter() - started) * 1000) or 5
+        return result
+
+    async def cleanup(self, *, project_id: Any = None) -> None:
+        self._files.clear()

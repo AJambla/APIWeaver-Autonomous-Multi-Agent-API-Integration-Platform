@@ -204,8 +204,7 @@ class TestStartupEnvironmentValidation:
 SAFE_PRODUCTION = {
     "app_env": "production",
     "cors_allowed_origins": "https://app.apiweaver.example",
-    "vault_addr": "https://vault.internal:8200",
-    "vault_token": "hvs.CAESIJ-not-a-dev-token",
+    "app_encryption_key": "prod-master-encryption-key-for-test-32bytes!",
     "metrics_token": "m" * 32,
     "aws_access_key_id": None,
 }
@@ -217,9 +216,8 @@ SAFE_PRODUCTION = {
         ({"cors_allowed_origins": "*"}, "contains '*'"),
         ({"cors_allowed_origins": "http://app.example"}, "is not https"),
         ({"metrics_token": "prod_scrape_token_local_test"}, "METRICS_TOKEN"),
-        ({"vault_token": "root"}, "VAULT_TOKEN"),
-        ({"vault_token": None}, "VAULT_TOKEN"),
-        ({"vault_addr": "http://vault:8200"}, "VAULT_ADDR"),
+        ({"app_encryption_key": "apiweaver-default-insecure-dev-encryption-key"}, "APP_ENCRYPTION_KEY"),
+        ({"app_encryption_key": None}, "APP_ENCRYPTION_KEY"),
         ({"aws_access_key_id": "minioadmin"}, "MinIO default"),
     ],
 )

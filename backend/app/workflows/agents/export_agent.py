@@ -488,9 +488,17 @@ Add to `.cursor/mcp.json`:
             zf.writestr("VERIFICATION_REPORT.md", verification_report_md)
             zf.writestr("VERIFICATION_REPORT.json", json.dumps(verification_report_json, indent=2))
             for gf in generated_files or []:
-                file_path = gf.get("file_path")
+                file_path = gf.get("file_path") or gf.get("path")
+                if not file_path or file_path in ("server.py", "manifest.json", "requirements.txt", "README.md", "VERIFICATION_REPORT.md", "VERIFICATION_REPORT.json"):
+                    continue
                 content = gf.get("content")
-                if file_path and content and file_path not in ("server.py", "manifest.json", "requirements.txt", "README.md"):
+                if content is None and gf.get("content_s3_key"):
+                    try:
+                        raw = await storage_service.download(gf["content_s3_key"])
+                        content = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+                    except Exception as exc:
+                        logger.warning("mcp_bundle_download_failed", file_path=file_path, error=str(exc))
+                if content:
                     zf.writestr(file_path, content)
         zip_bytes = zip_buffer.getvalue()
 

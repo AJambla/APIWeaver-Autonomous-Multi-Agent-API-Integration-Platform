@@ -56,6 +56,10 @@ class CryptoService:
         if key is None:
             # Deterministic dev fallback key if not provided
             key = hashlib.sha256(b"apiweaver-default-insecure-dev-encryption-key").digest()
+            logger.warning(
+                "using_insecure_dev_encryption_key",
+                message="APP_ENCRYPTION_KEY is not set. Using insecure default development key.",
+            )
         elif len(key) != 32:
             # Derive 32-byte key via SHA-256
             key = hashlib.sha256(key).digest()
