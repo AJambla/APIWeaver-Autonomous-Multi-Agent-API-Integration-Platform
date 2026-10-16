@@ -21,7 +21,7 @@ from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
 from app.models.auth_config import AuthConfig, SecretRef
 from app.models.enums import AuthScheme
-from app.services.sandbox_service import DockerSandboxExecutor, assert_public_target
+from app.services.sandbox_service import DockerSandboxExecutor, MockSandboxExecutor, assert_public_target
 from app.services.storage_service import storage_service
 from app.services.test_run_service import record_test_run_results
 from app.services.crypto_service import create_crypto_service as create_vault_client
@@ -573,8 +573,31 @@ async def _create_sandbox(
         raise
 
 
+def _build_sandbox_executor(settings: Any, network_enabled: bool) -> Any:
+    backend = str(getattr(settings, "sandbox_backend", "docker") or "docker").lower()
+    if backend == "mock":
+        return MockSandboxExecutor(settings, network_enabled=network_enabled)
+    try:
+        executor = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+        try:
+            executor._get_docker_client().ping()
+        except Exception as ping_err:
+            is_prod = getattr(settings, "is_production", lambda: False)
+            if not (is_prod() if callable(is_prod) else is_prod):
+                logger.warning("docker_daemon_unavailable_using_mock_sandbox", error=str(ping_err))
+                return MockSandboxExecutor(settings, network_enabled=network_enabled)
+            raise
+        return executor
+    except Exception as exc:
+        is_prod = getattr(settings, "is_production", lambda: False)
+        if not (is_prod() if callable(is_prod) else is_prod):
+            logger.warning("docker_init_failed_using_mock_sandbox", error=str(exc))
+            return MockSandboxExecutor(settings, network_enabled=network_enabled)
+        raise
+
+
 async def _load_executors(
-    executors: dict[str, DockerSandboxExecutor],
+    executors: dict[str, Any],
     settings: Any,
     state: WorkflowState,
     spec_dict: dict[str, Any],
@@ -583,9 +606,9 @@ async def _load_executors(
     python_files: dict[str, str],
     node_files: dict[str, str],
     network_enabled: bool,
-) -> DockerSandboxExecutor | MultiLanguageSandboxExecutor:
+) -> Any:
     if "python" in target_languages and python_files:
-        exec_py = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+        exec_py = _build_sandbox_executor(settings, network_enabled=network_enabled)
         executors["python"] = exec_py
         load_kw: dict[str, Any] = {
             "project_id": state.get("project_id"),
@@ -598,7 +621,7 @@ async def _load_executors(
         await exec_py.load(**load_kw)
 
     if "node" in target_languages and node_files:
-        exec_node = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+        exec_node = _build_sandbox_executor(settings, network_enabled=network_enabled)
         executors["node"] = exec_node
         load_kw_node: dict[str, Any] = {
             "project_id": state.get("project_id"),
@@ -612,7 +635,7 @@ async def _load_executors(
 
     if not executors:
         all_files = {**python_files, **node_files}
-        single = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+        single = _build_sandbox_executor(settings, network_enabled=network_enabled)
         executors["default"] = single
         await single.load(
             project_id=state.get("project_id"),
