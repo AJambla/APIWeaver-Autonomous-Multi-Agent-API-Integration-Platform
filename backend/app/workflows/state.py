@@ -29,10 +29,10 @@ def merge_generated_files(
         return list(right)
     by_path: dict[str, dict[str, Any]] = {}
     for f in left:
-        path = str(f.get("path") or f.get("filename") or id(f))
+        path = str(f.get("file_path") or f.get("path") or f.get("filename") or id(f))
         by_path[path] = f
     for f in right:
-        path = str(f.get("path") or f.get("filename") or id(f))
+        path = str(f.get("file_path") or f.get("path") or f.get("filename") or id(f))
         by_path[path] = f
     return list(by_path.values())
 
@@ -66,10 +66,24 @@ def merge_test_suite(
         return list(right)
     by_name: dict[str, dict[str, Any]] = {}
     for t in left:
-        key = str(t.get("name") or t.get("test_name") or id(t))
+        key = str(
+            t.get("name")
+            or t.get("test_name")
+            or t.get("test_id")
+            or (f"{t.get('method')}:{t.get('path')}" if t.get("method") and t.get("path") else None)
+            or t.get("endpoint")
+            or id(t)
+        )
         by_name[key] = t
     for t in right:
-        key = str(t.get("name") or t.get("test_name") or id(t))
+        key = str(
+            t.get("name")
+            or t.get("test_name")
+            or t.get("test_id")
+            or (f"{t.get('method')}:{t.get('path')}" if t.get("method") and t.get("path") else None)
+            or t.get("endpoint")
+            or id(t)
+        )
         by_name[key] = t
     return list(by_name.values())
 
@@ -85,10 +99,10 @@ def merge_exports(
         return list(right)
     by_type: dict[str, dict[str, Any]] = {}
     for exp in left:
-        key = str(exp.get("type") or id(exp))
+        key = str(exp.get("type") or exp.get("export_type") or exp.get("format") or id(exp))
         by_type[key] = exp
     for exp in right:
-        key = str(exp.get("type") or id(exp))
+        key = str(exp.get("type") or exp.get("export_type") or exp.get("format") or id(exp))
         by_type[key] = exp
     return list(by_type.values())
 
