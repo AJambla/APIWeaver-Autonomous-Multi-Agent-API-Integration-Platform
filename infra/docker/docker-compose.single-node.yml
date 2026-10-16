@@ -119,6 +119,7 @@ services:
     command: ["alembic", "upgrade", "head"]
     volumes:
       - ../../secrets:/app/secrets:ro
+      - ../../backend:/app
     env_file:
       - path: ../../.env
         required: false
@@ -186,6 +187,8 @@ services:
       - ../../secrets:/app/secrets:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - ../../storage:/app/storage
+      - ../../backend:/app/backend
+      - ../../agent_worker:/app/agent_worker
     group_add:
       - "${DOCKER_GID:-999}"
     env_file:
@@ -218,7 +221,7 @@ services:
         condition: service_completed_successfully
     networks:
       - apiweaver
-    command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=4 -Q celery,dlq
+    command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=2 -Q celery,dlq
     stop_grace_period: 2m
 
   web:

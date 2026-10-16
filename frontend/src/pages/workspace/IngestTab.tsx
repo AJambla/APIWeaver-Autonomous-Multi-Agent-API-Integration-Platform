@@ -101,6 +101,13 @@ export const IngestTab: React.FC<IngestTabProps> = ({
     setFormattedOverride(null);
   }, [file, specContent, mode, editorValue]);
 
+  // Automatically activate Specification Analysis view once upload succeeds or analysis is available
+  React.useEffect(() => {
+    if (uploadResult || (showAnalysis && phase === 'success')) {
+      setSubTab('analysis');
+    }
+  }, [uploadResult, showAnalysis, phase]);
+
   const activeCode = formattedOverride ?? editorValue;
 
   /* Spec Analysis Metrics */
@@ -620,6 +627,19 @@ export const IngestTab: React.FC<IngestTabProps> = ({
                   </ul>
                 </div>
               )}
+              <div className="mt-5 flex items-center justify-between border-t border-white/5 pt-4">
+                <span className="text-xs text-neutral-400">
+                  Ready to construct topological execution plan
+                </span>
+                <button
+                  type="button"
+                  onClick={onContinue}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-xs transition-colors"
+                >
+                  <span>Continue to Dependency Graph</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
           </div>
         )}

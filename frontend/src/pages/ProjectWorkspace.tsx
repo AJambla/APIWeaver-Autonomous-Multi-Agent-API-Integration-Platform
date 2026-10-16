@@ -700,6 +700,10 @@ export const ProjectWorkspace: React.FC = () => {
       setPhase('success');
       if (result.workflow_run_id) setActiveRunId(result.workflow_run_id);
       await loadProjectData();
+      // Auto-transition to Dependency Graph (Stage 02) after viewing Specification Analysis
+      setTimeout(() => {
+        setActiveTab('dependencies');
+      }, 2500);
     } catch (err) {
       setPhase('error');
       setUploadError(errorMessage(err));
@@ -766,6 +770,7 @@ export const ProjectWorkspace: React.FC = () => {
       setActiveRun(prev => (prev ? { ...prev, status: 'running' } : null));
       setApprovedRunId(pausedRunId);
       await loadProjectData();
+      setActiveTab('tools');
     } catch (err) {
       setPlanError(errorMessage(err));
     } finally {
@@ -1211,15 +1216,26 @@ export const ProjectWorkspace: React.FC = () => {
             </kbd>
           </button>
 
-          {/* Trigger Live Weave button */}
+          {/* Real-Time Agent Logs Button */}
           <button
-            onClick={runBuild}
-            disabled={cancelBusy || runIsLive}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-xs transition-colors shadow-sm disabled:opacity-50"
-            title="Trigger full multi-agent weave pipeline"
+            type="button"
+            onClick={() => setActiveTab('logs')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border font-medium transition-all ${
+              activeTab === 'logs'
+                ? 'bg-blue-600/30 text-blue-200 border-blue-500/50 shadow-[0_0_12px_rgba(59,130,246,0.35)]'
+                : 'bg-white/5 hover:bg-white/10 text-neutral-300 border-white/10'
+            }`}
+            title="View real-time event logs for all agents (errors & success)"
           >
-            <Play className="h-3.5 w-3.5 fill-current" />
-            <span>{runIsLive ? 'Weaving...' : 'Trigger Live Weave'}</span>
+            <TerminalIcon className="h-3.5 w-3.5 text-blue-400" />
+            <span>Agent Logs</span>
+            {logs.some(l => l.event_type?.toLowerCase().includes('error') || (l.payload as Record<string, unknown>)?.error) ? (
+              <span className="flex h-2 w-2 rounded-full bg-rose-500" title="Errors reported" />
+            ) : runIsLive ? (
+              <span className="flex h-2 w-2 rounded-full bg-amber-400 animate-pulse" title="Agents streaming" />
+            ) : (
+              <span className="flex h-1.5 w-1.5 rounded-full bg-emerald-400" title="Success / Operational" />
+            )}
           </button>
 
           {/* Get Claude Config button */}
@@ -1381,6 +1397,7 @@ export const ProjectWorkspace: React.FC = () => {
                 onGoToIngest={() => setActiveTab('ingest')}
                 onContinueToTools={() => setActiveTab('tools')}
                 onDismissError={() => setPlanError('')}
+                onAskWeaver={handleAskWeaver}
               />
             )}
 

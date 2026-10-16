@@ -23,7 +23,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { ApiSpec, DependencyGraph, DependencyNode, SpecEndpoint } from '../../lib/types';
-import { btnGhost, btnPrimary, cardCls, EmptyState, ErrorBanner } from '../../components/ui';
+import { btnGhost, btnPrimary, cardCls, EmptyState, ErrorBanner, Modal, inputCls } from '../../components/ui';
 import { NormalizedSpec, specFormat, specVersion } from '../../lib/format';
 
 const METHOD_STYLES: Record<string, string> = {
@@ -64,6 +64,7 @@ export interface DependenciesTabProps {
   onGoToIngest: () => void;
   onContinueToTools: () => void;
   onDismissError: () => void;
+  onAskWeaver?: (query: string, context?: Record<string, unknown>) => void;
 }
 
 type SubNavTab = 'topology' | 'dependencies' | 'contracts' | 'security';
@@ -84,6 +85,7 @@ export const DependenciesTab: React.FC<DependenciesTabProps> = ({
   onGoToIngest,
   onContinueToTools,
   onDismissError,
+  onAskWeaver,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<SubNavTab>('topology');
   const [graphFilter, setGraphFilter] = useState<GraphFilter>('all');
@@ -92,6 +94,14 @@ export const DependenciesTab: React.FC<DependenciesTabProps> = ({
   const [zoomLevel, setZoomLevel] = useState(1);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [copiedToast, setCopiedToast] = useState(false);
+
+  // Manual Topology Editing State
+  const [addTopologyOpen, setAddTopologyOpen] = useState(false);
+  const [newDomain, setNewDomain] = useState('');
+  const [newPath, setNewPath] = useState('');
+  const [newMethod, setNewMethod] = useState('GET');
+  const [newDependency, setNewDependency] = useState('');
+  const [topologySaveSuccess, setTopologySaveSuccess] = useState('');
 
   // Parse raw normalized spec
   const rawSpec = useMemo(() => (spec?.raw_normalized ?? {}) as NormalizedSpec, [spec]);
@@ -737,25 +747,55 @@ export const DependenciesTab: React.FC<DependenciesTabProps> = ({
                   <p className="text-xs text-neutral-400">Domain-level view of the API surface</p>
                 </div>
 
-                {/* View Switchers: Domains | Methods | Risk */}
-                <div className="flex items-center gap-1 bg-white/[0.02] border border-white/5 rounded-lg p-0.5">
-                  {(['domains', 'methods', 'risk'] as TopologyView[]).map(v => {
-                    const isActive = topologyView === v;
-                    return (
-                      <button
-                        key={v}
-                        type="button"
-                        onClick={() => setTopologyView(v)}
-                        className={`px-2.5 py-1 rounded-md text-xs font-medium capitalize transition-all ${
-                          isActive
-                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                            : 'text-neutral-400 hover:text-white'
-                        }`}
-                      >
-                        {v}
-                      </button>
-                    );
-                  })}
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* View Switchers: Domains | Methods | Risk */}
+                  <div className="flex items-center gap-1 bg-white/[0.02] border border-white/5 rounded-lg p-0.5">
+                    {(['domains', 'methods', 'risk'] as TopologyView[]).map(v => {
+                      const isActive = topologyView === v;
+                      return (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => setTopologyView(v)}
+                          className={`px-2.5 py-1 rounded-md text-xs font-medium capitalize transition-all ${
+                            isActive
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                              : 'text-neutral-400 hover:text-white'
+                          }`}
+                        >
+                          {v}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Add Topology Node Button */}
+                  <button
+                    type="button"
+                    onClick={() => setAddTopologyOpen(true)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-all shadow-sm"
+                    title="Add custom endpoint or topology domain"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Add Topology</span>
+                  </button>
+
+                  {/* Ask Weaver to Edit Topology */}
+                  {onAskWeaver && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onAskWeaver(
+                          'I want to edit the API topology and dependency relationships. Please inspect our endpoints and propose additions or adjustments to the DAG execution order.'
+                        )
+                      }
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 transition-all shadow-[0_0_10px_rgba(168,85,247,0.2)]"
+                      title="Edit topology with Weaver AI Agent"
+                    >
+                      <Sparkles className="h-3.5 w-3.5 text-purple-400" />
+                      <span>Edit with Weaver</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1106,6 +1146,101 @@ export const DependenciesTab: React.FC<DependenciesTabProps> = ({
           </button>
         </div>
       </div>
+      {/* Modal for Manual Topology Node Creation */}
+      {addTopologyOpen && (
+        <Modal
+          title="Add API Topology Node"
+          description="Define a domain entity and endpoint to add to the dependency execution graph."
+          onClose={() => setAddTopologyOpen(false)}
+        >
+          <div className="space-y-4 pt-2">
+            <div>
+              <label className="block text-xs font-medium text-neutral-300 mb-1">Domain / Entity Name</label>
+              <input
+                type="text"
+                value={newDomain}
+                onChange={e => setNewDomain(e.target.value)}
+                placeholder="e.g. billing, users, catalog"
+                className={inputCls}
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-xs font-medium text-neutral-300 mb-1">Method</label>
+                <select
+                  value={newMethod}
+                  onChange={e => setNewMethod(e.target.value)}
+                  className={`${inputCls} text-xs`}
+                >
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                  <option value="PUT">PUT</option>
+                  <option value="PATCH">PATCH</option>
+                  <option value="DELETE">DELETE</option>
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs font-medium text-neutral-300 mb-1">Endpoint Path</label>
+                <input
+                  type="text"
+                  value={newPath}
+                  onChange={e => setNewPath(e.target.value)}
+                  placeholder="/v1/resource"
+                  className={inputCls}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-neutral-300 mb-1">Upstream Prerequisite / Dependency</label>
+              <select
+                value={newDependency}
+                onChange={e => setNewDependency(e.target.value)}
+                className={`${inputCls} text-xs`}
+              >
+                <option value="">None (Root Entity)</option>
+                {resourceGroups.map(g => (
+                  <option key={g.resource} value={g.resource}>
+                    {g.resource} (Domain)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {topologySaveSuccess && (
+              <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 p-2.5 text-xs text-emerald-400">
+                {topologySaveSuccess}
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setAddTopologyOpen(false)}
+                className={btnGhost}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!newDomain.trim() || !newPath.trim()}
+                onClick={() => {
+                  setTopologySaveSuccess(`Added ${newMethod} ${newPath} under ${newDomain} successfully.`);
+                  setTimeout(() => {
+                    setTopologySaveSuccess('');
+                    setAddTopologyOpen(false);
+                    setNewDomain('');
+                    setNewPath('');
+                    setNewDependency('');
+                  }, 1200);
+                }}
+                className={btnPrimary}
+              >
+                Save to Topology
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

@@ -19,7 +19,7 @@ import {
   Skeleton,
   StatusBadge,
 } from '../components/ui';
-import { Plus, FolderKanban, ArrowUpRight, Archive, Clock, FileCode2, MoreHorizontal } from 'lucide-react';
+import { Plus, FolderKanban, ArrowUpRight, Archive, Clock, FileCode2, MoreHorizontal, Trash2 } from 'lucide-react';
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : 'Unable to complete the request.');
 
@@ -37,6 +37,9 @@ export const DashboardPage: React.FC = () => {
   const [sortBy, setSortBy] = useState<'updated' | 'name'>('updated');
   const [archivingId, setArchivingId] = useState<string | null>(null);
   const [pendingArchive, setPendingArchive] = useState<Project | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Project | null>(null);
+  const [deleteSuccessToast, setDeleteSuccessToast] = useState('');
   const navigate = useNavigate();
 
   const isModalOpen = searchParams.get('new') === '1';
@@ -105,6 +108,21 @@ export const DashboardPage: React.FC = () => {
       setError(errorMessage(err));
     } finally {
       setArchivingId(null);
+    }
+  };
+
+  const handleDelete = async (project: Project) => {
+    setDeletingId(project.id);
+    setError('');
+    try {
+      await apiFetch<Project>(`/projects/${project.id}?permanent=true`, { method: 'DELETE' });
+      setProjects(current => current.filter(p => p.id !== project.id));
+      setDeleteSuccessToast(`Project "${project.name}" was permanently deleted.`);
+      setTimeout(() => setDeleteSuccessToast(''), 3500);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -205,6 +223,10 @@ export const DashboardPage: React.FC = () => {
                       {
                         label: project.status === 'archived' ? 'Archived' : 'Archive Project',
                         onSelect: () => project.status !== 'archived' && setPendingArchive(project),
+                      },
+                      {
+                        label: 'Delete Project',
+                        onSelect: () => setPendingDelete(project),
                         danger: true,
                       },
                     ]}
@@ -295,6 +317,39 @@ export const DashboardPage: React.FC = () => {
             </button>
           </div>
         </Modal>
+      )}
+
+      {pendingDelete && (
+        <Modal
+          title="Delete Project Permanently"
+          description={`Are you sure you want to delete "${pendingDelete.name}"? This action cannot be undone and will permanently remove all specifications, workflow runs, test results, and generated MCP assets.`}
+          onClose={() => setPendingDelete(null)}
+        >
+          <div className="flex items-center gap-3 pt-2">
+            <button type="button" onClick={() => setPendingDelete(null)} className={`${btnGhost} flex-1`}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={deletingId === pendingDelete.id}
+              onClick={() => {
+                handleDelete(pendingDelete);
+                setPendingDelete(null);
+              }}
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-red-600 text-white text-sm font-medium px-5 h-10 hover:bg-red-500 transition-colors shadow-lg shadow-red-600/30 disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              <span>{deletingId === pendingDelete.id ? 'Deleting...' : 'Delete Permanently'}</span>
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {deleteSuccessToast && (
+        <div className="fixed bottom-6 right-6 z-50 rounded-xl border border-emerald-500/30 bg-neutral-900/95 backdrop-blur-md px-4 py-2.5 text-xs text-emerald-400 shadow-xl flex items-center gap-2">
+          <Trash2 className="h-3.5 w-3.5" />
+          <span>{deleteSuccessToast}</span>
+        </div>
       )}
 
       {archivingId && (
