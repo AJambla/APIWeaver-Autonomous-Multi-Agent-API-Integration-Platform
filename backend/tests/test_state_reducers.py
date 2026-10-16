@@ -83,3 +83,37 @@ def test_add_errors() -> None:
     right = ["Error 1", "Error 2"]
     merged = add_errors(left, right)
     assert merged == ["Error 1", "Error 2"]
+
+
+def test_merge_generated_files_with_file_path() -> None:
+    left = [
+        {"file_path": "tools.py", "content_s3_key": "s3://bucket/tools_v1.py"},
+        {"file_path": "dependencies.py", "content_s3_key": "s3://bucket/dep.py"},
+    ]
+    right = [
+        {"file_path": "tools.py", "content_s3_key": "s3://bucket/tools_v2.py"},
+        {"file_path": "server.py", "content_s3_key": "s3://bucket/server.py"},
+    ]
+    merged = merge_generated_files(left, right)
+    assert len(merged) == 3
+    by_path = {f.get("file_path") or f.get("path"): f["content_s3_key"] for f in merged}
+    assert by_path["tools.py"] == "s3://bucket/tools_v2.py"
+    assert by_path["dependencies.py"] == "s3://bucket/dep.py"
+    assert by_path["server.py"] == "s3://bucket/server.py"
+
+
+def test_merge_test_suite_endpoint_path() -> None:
+    left = [
+        {"method": "GET", "path": "/users", "status": "failed"},
+        {"method": "POST", "path": "/users", "status": "passed"},
+    ]
+    right = [
+        {"method": "GET", "path": "/users", "status": "passed"},
+        {"method": "DELETE", "path": "/users/{id}", "status": "passed"},
+    ]
+    merged = merge_test_suite(left, right)
+    assert len(merged) == 3
+    by_ep = {f"{t['method']}:{t['path']}": t["status"] for t in merged}
+    assert by_ep["GET:/users"] == "passed"
+    assert by_ep["POST:/users"] == "passed"
+    assert by_ep["DELETE:/users/{id}"] == "passed"
