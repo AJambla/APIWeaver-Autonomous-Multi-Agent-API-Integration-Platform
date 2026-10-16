@@ -24,6 +24,7 @@ import {
   RotateCcw,
   Settings as SettingsIcon,
   ShieldAlert,
+  Sparkles,
   Terminal as TerminalIcon,
   Upload,
   XCircle,
@@ -77,6 +78,7 @@ import { LiveTestModal } from './workspace/LiveTestModal';
 import { McpResultTab } from './workspace/McpResultTab';
 import { PipelineCanvas } from './workspace/PipelineCanvas';
 import { TelemetryDock } from './workspace/TelemetryDock';
+import { WeaverAgentDrawer, WeaverWorkspaceContext } from '../components/WeaverAgentDrawer';
 
 type TabId = 'ingest' | 'dependencies' | 'tools' | 'verify' | 'result' | 'logs' | 'settings';
 
@@ -288,6 +290,64 @@ export const ProjectWorkspace: React.FC = () => {
   const [logQuery, setLogQuery] = useState('');
   const [logAgent, setLogAgent] = useState('all');
   const [logType, setLogType] = useState('all');
+
+  /* --- Weaver AI Agent State --- */
+  const [weaverOpen, setWeaverOpen] = useState(false);
+  const [weaverQuery, setWeaverQuery] = useState<string | null>(null);
+  const [weaverContextOverride, setWeaverContextOverride] = useState<Partial<WeaverWorkspaceContext>>({});
+  const [externalFileUpdate, setExternalFileUpdate] = useState<{ file: string; content: string; timestamp: number } | null>(null);
+
+  // Global keyboard shortcut: Ctrl+K / Cmd+K to toggle Weaver Agent Drawer
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setWeaverQuery(null);
+        setWeaverOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const currentWeaverContext = useMemo<WeaverWorkspaceContext>(() => {
+    const stageNameMap: Record<TabId, string> = {
+      ingest: 'Stage 01 - API Ingestion & Spec Normalization',
+      dependencies: 'Stage 02 - Topological Dependency Graph',
+      tools: 'Stage 03 - FastMCP Synthesizer',
+      verify: 'Stage 04 - Sandbox & Live Verification',
+      result: 'Stage 05 - Artifact Bundles & MCP Manifest',
+      logs: 'Audit & Event Logs',
+      settings: 'Project Settings',
+    };
+
+    return {
+      currentStage: stageNameMap[activeTab] || 'Workspace',
+      selectedFile: activeTab === 'tools' ? 'tools.py' : activeTab === 'ingest' ? 'spec.yaml' : null,
+      selectedEndpoint: endpoints.length > 0 ? endpoints[0].path : null,
+      errorMessage: error || uploadError || planError || buildError || testError || exportError || null,
+      ...weaverContextOverride,
+    };
+  }, [activeTab, endpoints, error, uploadError, planError, buildError, testError, exportError, weaverContextOverride]);
+
+  const handleAskWeaver = useCallback((query: string, ctx?: Partial<WeaverWorkspaceContext>) => {
+    if (ctx) {
+      setWeaverContextOverride(ctx);
+    }
+    setWeaverQuery(query);
+    setWeaverOpen(true);
+  }, []);
+
+  const handleApplyWeaverCode = useCallback((filePath: string, newContent: string) => {
+    const fileName = filePath.split('/').pop() || filePath;
+    if (id) {
+      localStorage.setItem(`aw_mcp_edit_${id}_${fileName}`, newContent);
+    }
+    if (fileName.includes('spec')) {
+      setSpecContent(newContent);
+    }
+    setExternalFileUpdate({ file: fileName, content: newContent, timestamp: Date.now() });
+  }, [id]);
 
   const loadProjectData = useCallback(async () => {
     if (!id) return;
@@ -1130,6 +1190,27 @@ export const ProjectWorkspace: React.FC = () => {
             <span>Auto-Follow Stream</span>
           </label>
 
+          {/* Weaver AI Engineering Agent Button */}
+          <button
+            type="button"
+            onClick={() => {
+              setWeaverQuery(null);
+              setWeaverOpen(prev => !prev);
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border font-medium transition-all ${
+              weaverOpen
+                ? 'bg-purple-600/30 text-purple-200 border-purple-500/50 shadow-[0_0_12px_rgba(168,85,247,0.35)]'
+                : 'bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border-purple-500/30'
+            }`}
+            title="Open Weaver AI Engineering Agent (Ctrl+K)"
+          >
+            <Sparkles className="h-3.5 w-3.5 text-purple-400" />
+            <span>✦ Weaver</span>
+            <kbd className="hidden sm:inline-block px-1 py-0.2 rounded bg-black/40 border border-purple-500/30 text-[10px] text-purple-300 font-mono">
+              ⌘K
+            </kbd>
+          </button>
+
           {/* Trigger Live Weave button */}
           <button
             onClick={runBuild}
@@ -1253,7 +1334,7 @@ export const ProjectWorkspace: React.FC = () => {
           className="border-l border-white/10 bg-[#0c0d12] flex flex-col shrink-0 z-20 transition-[width] duration-75"
         >
           {/* Top Workbench Area */}
-          <div className={`flex-1 min-h-0 flex flex-col ${['ingest', 'dependencies'].includes(activeTab) ? 'overflow-hidden' : 'overflow-y-auto p-5'}`}>
+          <div className={`flex-1 min-h-0 flex flex-col ${['ingest', 'dependencies', 'tools'].includes(activeTab) ? 'overflow-hidden' : 'overflow-y-auto p-5'}`}>
             {activeTab === 'ingest' && (
               <IngestTab
                 file={file}
@@ -1314,6 +1395,8 @@ export const ProjectWorkspace: React.FC = () => {
                 onRunBuild={runBuild}
                 onContinueToVerify={() => setActiveTab('verify')}
                 onGoToIngest={() => setActiveTab('ingest')}
+                onAskWeaver={handleAskWeaver}
+                externalFileUpdate={externalFileUpdate}
               />
             )}
 
@@ -1437,6 +1520,17 @@ export const ProjectWorkspace: React.FC = () => {
         onSubmit={handleLiveTestSubmit}
         hasDestructiveEndpoints={hasDestructiveEndpoints}
         busy={testBusy}
+      />
+
+      {/* Weaver AI Engineering Agent Drawer */}
+      <WeaverAgentDrawer
+        isOpen={weaverOpen}
+        onClose={() => setWeaverOpen(false)}
+        projectId={id || ''}
+        projectName={project.name}
+        context={currentWeaverContext}
+        initialQuery={weaverQuery}
+        onApplyCode={handleApplyWeaverCode}
       />
     </div>
   );
