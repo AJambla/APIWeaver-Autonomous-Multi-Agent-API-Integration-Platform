@@ -21,10 +21,14 @@ from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
 from app.models.auth_config import AuthConfig, SecretRef
 from app.models.enums import AuthScheme
-from app.services.sandbox_service import DockerSandboxExecutor, MockSandboxExecutor, assert_public_target
+from app.services.crypto_service import create_crypto_service as create_vault_client
+from app.services.sandbox_service import (
+    DockerSandboxExecutor,
+    MockSandboxExecutor,
+    assert_public_target,
+)
 from app.services.storage_service import storage_service
 from app.services.test_run_service import record_test_run_results
-from app.services.crypto_service import create_crypto_service as create_vault_client
 from app.services.validation_service import StaticValidationResult, validate_mcp_code_statically
 from app.services.verification_service import (
     build_verification_report,
@@ -578,20 +582,21 @@ def _build_sandbox_executor(settings: Any, network_enabled: bool) -> Any:
     if backend == "mock":
         return MockSandboxExecutor(settings, network_enabled=network_enabled)
     executor = DockerSandboxExecutor(settings, network_enabled=network_enabled)
-    is_prod_val = getattr(settings, "is_production", False)
-    is_prod = is_prod_val() if callable(is_prod_val) else bool(is_prod_val)
-    if not is_prod and hasattr(executor, "_get_docker_client"):
+    if hasattr(executor, "_get_docker_client"):
         try:
             client = executor._get_docker_client()
             if hasattr(client, "ping"):
                 client.ping()
         except Exception as e:
-            logger.warning(
-                "docker_sandbox_unavailable_fallback_to_mock",
+            logger.error(
+                "docker_sandbox_unavailable",
                 error=str(e),
-                hint="Docker daemon is inaccessible (permissions or daemon not running). Falling back to MockSandboxExecutor.",
+                hint="Docker daemon is inaccessible. Verify Docker service and permissions.",
             )
-            return MockSandboxExecutor(settings, network_enabled=network_enabled)
+            from app.core.errors import DependencyUnavailableError
+            raise DependencyUnavailableError(
+                f"Docker sandbox daemon is unavailable: {e}"
+            ) from e
     return executor
 
 
