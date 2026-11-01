@@ -211,13 +211,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(blocked.retry_after), **blocked.headers()},
             )
 
-        anonymous_limit = (
-            ANONYMOUS_REQUESTS_PER_MINUTE
-            if get_settings().is_production
-            else 10_000
-        )
         verdict = await consume(
-            redis_client, _client_identity(request), anonymous_limit
+            redis_client, _client_identity(request), ANONYMOUS_REQUESTS_PER_MINUTE
         )
 
         if not verdict.allowed:

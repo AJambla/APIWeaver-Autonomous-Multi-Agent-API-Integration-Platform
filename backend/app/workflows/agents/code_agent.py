@@ -16,10 +16,10 @@ from typing import Any
 
 from app.core.constants import DEFAULT_TARGET_LANGUAGES
 from app.core.logging import get_logger
-from app.services.safety_service import classify_safety, format_tool_docstring
+from app.services.qdrant_service import QdrantClient
+from app.services.safety_service import classify_safety
 from app.services.storage_service import storage_service
 from app.services.validation_service import validate_mcp_code_statically
-from app.services.qdrant_service import QdrantClient
 from app.workflows.llm import LLMClient, fence_untrusted
 from app.workflows.source_safety import (
     client_class_name,
@@ -190,7 +190,7 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
             if candidates:
                 existing_client_cls = max(
                     candidates,
-                    key=lambda c: len([m for m in c.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]),
+                    key=lambda c: len([m for m in c.body if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef)]),
                 )
 
         for node in tree_new.body:
@@ -612,6 +612,12 @@ async def _run_self_review(
             logger.warning("self_review_download_failed", file=f.get("file_path"), error=str(e))
 
     if not file_contents:
+        if generated_files:
+            return {
+                "self_review_passed": False,
+                "self_review_issues": [{"file": "storage", "issue": "Unable to download generated files for review", "severity": "error"}],
+                "self_review_summary": "Self-review failed: Generated files could not be downloaded from storage.",
+            }
         return {"self_review_passed": True, "self_review_issues": [], "self_review_summary": "No file contents available"}
 
     review_prompt = SELF_REVIEW_SYSTEM_PROMPT.format(

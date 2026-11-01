@@ -12,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.deps import get_current_principal, get_db
-from app.core.errors import ConflictError, ForbiddenError, NotFoundError
+from app.core.errors import (
+    ConflictError,
+    DependencyUnavailableError,
+    ForbiddenError,
+    NotFoundError,
+    UnauthenticatedError,
+)
 from app.core.logging import get_logger
 from app.models.github import GitHubConnection, GitHubOAuthState
 from app.rbac.enforce import require_own_org_permission
@@ -23,13 +29,16 @@ from app.schemas.github import (
     GitHubReposResponse,
     GitHubStatusResponse,
 )
+from app.services.crypto_service import (
+    VaultClient,
+    create_vault_client,
+)
 from app.services.github_service import (
     GitHubAppClient,
     GitHubOAuthClient,
     create_github_app_client,
     create_github_oauth_client,
 )
-from app.services.crypto_service import CryptoService, create_crypto_service, VaultClient, create_vault_client
 
 logger = get_logger(__name__)
 
@@ -318,17 +327,17 @@ async def github_repos(
         token_secret = await vault.read_secret(connection.access_token_vault_path)
     except Exception as exc:
         logger.warning("failed_to_read_github_vault_token", error=str(exc))
-        return GitHubReposResponse(repos=[])
+        raise DependencyUnavailableError("Failed to retrieve GitHub credentials from secret storage.") from exc
 
     if not token_secret or "token" not in token_secret:
-        return GitHubReposResponse(repos=[])
+        raise UnauthenticatedError("GitHub connection credentials are missing or expired. Please reconnect.")
 
     user_token = token_secret["token"]
     try:
         raw_repos = await app_client.get_user_repositories(user_token)
     except Exception as exc:
         logger.warning("failed_to_fetch_github_repos", error=str(exc))
-        return GitHubReposResponse(repos=[])
+        raise DependencyUnavailableError(f"GitHub API request failed: {exc}") from exc
 
     from app.schemas.github import GitHubRepo
 

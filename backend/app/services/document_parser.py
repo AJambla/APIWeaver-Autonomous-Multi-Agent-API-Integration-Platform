@@ -37,12 +37,16 @@ def extract_text(content: bytes, filename: str, content_type: str | None = None)
             suffix,
             str(exc),
         )
+        if suffix == ".pdf":
+            raise ValueError(f"Failed to extract readable text from PDF: {exc}") from exc
 
-    # Fallback: try UTF-8 decode
-    try:
-        return content.decode("utf-8", errors="replace")
-    except Exception:
-        return ""
+    # Fallback: try UTF-8 decode for text documents only
+    if suffix in {".html", ".htm", ".md", ".markdown", ".txt", ".text"}:
+        try:
+            return content.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+    return ""
 
 
 def _extract_pdf(content: bytes) -> str:
