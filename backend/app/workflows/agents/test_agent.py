@@ -577,7 +577,22 @@ def _build_sandbox_executor(settings: Any, network_enabled: bool) -> Any:
     backend = str(getattr(settings, "sandbox_backend", "docker") or "docker").lower()
     if backend == "mock":
         return MockSandboxExecutor(settings, network_enabled=network_enabled)
-    return DockerSandboxExecutor(settings, network_enabled=network_enabled)
+    executor = DockerSandboxExecutor(settings, network_enabled=network_enabled)
+    is_prod_val = getattr(settings, "is_production", False)
+    is_prod = is_prod_val() if callable(is_prod_val) else bool(is_prod_val)
+    if not is_prod:
+        try:
+            client = executor._get_docker_client()
+            if hasattr(client, "ping"):
+                client.ping()
+        except Exception as e:
+            logger.warning(
+                "docker_sandbox_unavailable_fallback_to_mock",
+                error=str(e),
+                hint="Docker daemon is inaccessible (permissions or daemon not running). Falling back to MockSandboxExecutor.",
+            )
+            return MockSandboxExecutor(settings, network_enabled=network_enabled)
+    return executor
 
 
 async def _load_executors(

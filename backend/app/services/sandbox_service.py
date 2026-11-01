@@ -298,10 +298,26 @@ class DockerSandboxExecutor:
         if self._docker_client is None:
             import docker
 
-            if self._settings.docker_host:
-                self._docker_client = docker.DockerClient(base_url=self._settings.docker_host)
-            else:
-                self._docker_client = docker.from_env()
+            try:
+                if self._settings.docker_host:
+                    self._docker_client = docker.DockerClient(base_url=self._settings.docker_host)
+                else:
+                    self._docker_client = docker.from_env()
+            except PermissionError as exc:
+                logger.error(
+                    "docker_socket_permission_denied",
+                    error=str(exc),
+                    docker_host=self._settings.docker_host,
+                    hint="Permission denied on Docker socket. Ensure the worker process has root or docker group permissions.",
+                )
+                raise
+            except Exception as exc:
+                logger.error(
+                    "docker_client_init_failed",
+                    error=str(exc),
+                    docker_host=self._settings.docker_host,
+                )
+                raise
         return self._docker_client
 
     def _is_containerized(self) -> bool:
