@@ -242,14 +242,20 @@ async def download_export(
     candidate_keys = []
     if export.s3_key:
         candidate_keys.append(export.s3_key)
-    candidate_keys.extend([
-        f"exports/{project.id}/mcp/apiweaver-mcp.zip",
-        f"exports/{project.id}/mcp/manifest.json",
-        f"exports/{project.id}/docs/openapi.json",
-        f"exports/{project.id}/docs/reference.md",
-    ])
+
     # Only this export's own type: falling back to another type's key served the wrong
     # artifact (an MCP manifest for a Docker export).
+    exp_type = str(export.export_type or "").lower()
+    if exp_type == "mcp":
+        candidate_keys.extend([
+            f"exports/{project.id}/mcp/apiweaver-mcp.zip",
+            f"exports/{project.id}/mcp/manifest.json",
+        ])
+    elif exp_type in ("docs", "documentation", "openapi", "markdown"):
+        candidate_keys.extend([
+            f"exports/{project.id}/docs/openapi.json",
+            f"exports/{project.id}/docs/reference.md",
+        ])
 
     content: bytes | None = None
     matched_key: str | None = None
