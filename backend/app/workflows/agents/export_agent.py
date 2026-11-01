@@ -28,6 +28,7 @@ from app.services.verification_service import (
 from app.workflows.llm import LLMClient
 from app.workflows.source_safety import (
     derived_operation_id,
+    safe_endpoint,
     to_base_url,
     to_display_name,
     to_http_method,
@@ -542,7 +543,8 @@ Add to `.cursor/mcp.json`:
                         t_env.filters["py_type"] = to_py_type
                         t_env.filters["lit"] = to_literal
                         t_tmpl = t_env.get_template("tools.py.j2")
-                        zf.writestr("tools.py", t_tmpl.render(title=api_title, base_url=base_url_val, endpoints=endpoints))
+                        safe_eps = [safe_endpoint(ep) for ep in endpoints if isinstance(ep, dict)]
+                        zf.writestr("tools.py", t_tmpl.render(title=api_title, base_url=base_url_val, endpoints=safe_eps))
                 except Exception as tmpl_exc:
                     logger.warning("mcp_tools_template_fallback_failed", error=str(tmpl_exc))
 
