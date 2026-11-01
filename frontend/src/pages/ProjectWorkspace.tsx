@@ -259,7 +259,7 @@ export const ProjectWorkspace: React.FC = () => {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [buildError, setBuildError] = useState('');
-  const [targetLanguages, setTargetLanguages] = useState<string[]>(['python', 'node']);
+  const [targetLanguages, setTargetLanguages] = useState<string[]>(['python']);
   const [liveThoughts, setLiveThoughts] = useState<LiveThought[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const terminalEndRef = useRef<HTMLDivElement>(null);
@@ -778,7 +778,7 @@ export const ProjectWorkspace: React.FC = () => {
         method: 'POST',
         body: JSON.stringify({
           approved: true,
-          target_languages: targetLanguages.length > 0 ? targetLanguages : ['python', 'node'],
+          target_languages: targetLanguages.length > 0 ? targetLanguages : ['python'],
         }),
       });
       setActiveRunId(pausedRunId);
@@ -868,7 +868,7 @@ export const ProjectWorkspace: React.FC = () => {
         method: 'POST',
         body: JSON.stringify({
           stages: ['plan', 'generate', 'test', 'export'],
-          target_languages: targetLanguages.length > 0 ? targetLanguages : ['python', 'node'],
+          target_languages: targetLanguages.length > 0 ? targetLanguages : ['python'],
           // Runs execute on the agent worker; the API falls back in-process only in
           // development when no worker is reachable.
           execution_mode: 'async',

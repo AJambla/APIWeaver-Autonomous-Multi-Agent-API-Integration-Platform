@@ -301,6 +301,79 @@ class TestCodeGeneratorAPI:
             assert own.json()["file_path"] == "mine.py"
             assert own.json()["content"] == "secret bytes"
 
+    @pytest.mark.asyncio
+    async def test_list_files_deduplicates_and_scopes_to_latest_workflow_run(self, client, db):
+        """list_generated_files scopes to the latest workflow run and deduplicates identical file paths."""
+        from tests.conftest import add_org_member, make_org, make_project, make_user
+
+        async with db as session:
+            org = await make_org(session, name=f"Dedupe Org {uuid.uuid4().hex[:6]}")
+            owner = await make_user(session, email=f"dedupe-owner-{uuid.uuid4().hex[:8]}@example.com")
+            await add_org_member(session, org=org, user=owner, role=OrgRole.OWNER)
+            project = await make_project(session, org=org, name="Dedupe Project")
+
+            # Older run
+            old_run = WorkflowRun(project_id=project.id, status="completed")
+            session.add(old_run)
+            await session.flush()
+            old_code_run = CodeGenerationRun(workflow_run_id=old_run.id, target_language="python", status="completed")
+            session.add(old_code_run)
+            await session.flush()
+            session.add(GeneratedFile(
+                code_generation_run_id=old_code_run.id,
+                file_path="old_obsolete.py",
+                content_s3_key=f"generated/{project.id}/old_obsolete.py",
+                language="python",
+                file_type="sdk",
+            ))
+
+            # Newer run with duplicate file_path entries (e.g. from multi-language or re-run)
+            new_run = WorkflowRun(project_id=project.id, status="completed")
+            session.add(new_run)
+            await session.flush()
+            new_code_run = CodeGenerationRun(workflow_run_id=new_run.id, target_language="python", status="completed")
+            session.add(new_code_run)
+            await session.flush()
+            session.add(GeneratedFile(
+                code_generation_run_id=new_code_run.id,
+                file_path="server.py",
+                content_s3_key=f"generated/{project.id}/server.py",
+                language="python",
+                file_type="mcp",
+            ))
+            # Duplicate file_path entry
+            session.add(GeneratedFile(
+                code_generation_run_id=new_code_run.id,
+                file_path="server.py",
+                content_s3_key=f"generated/{project.id}/server_dup.py",
+                language="node",
+                file_type="mcp",
+            ))
+            session.add(GeneratedFile(
+                code_generation_run_id=new_code_run.id,
+                file_path="tools.py",
+                content_s3_key=f"generated/{project.id}/tools.py",
+                language="python",
+                file_type="mcp",
+            ))
+            await session.commit()
+
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"email": owner.email, "password": TEST_PASSWORD},
+        )
+        assert login.status_code == 200, login.text
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        res = await client.get(f"/api/v1/projects/{project.id}/files", headers=headers)
+        assert res.status_code == 200, res.text
+        paths = [row["file_path"] for row in res.json()]
+
+        # Should only contain files from the latest run, with server.py deduplicated
+        assert "old_obsolete.py" not in paths
+        assert set(paths) == {"server.py", "tools.py"}
+        assert len(paths) == 2
+
     def test_merge_python_code_preserves_methods(self):
         """Verify _merge_python_code accumulates methods from multiple phases."""
         from app.workflows.agents.code_agent import _merge_python_code

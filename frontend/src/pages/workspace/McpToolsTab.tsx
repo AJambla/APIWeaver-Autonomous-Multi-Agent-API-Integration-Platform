@@ -165,19 +165,32 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
     };
   }, [fetchFiles, runIsLive, activeRun?.status, activeRun?.current_node]);
 
+  // Deduplicate files by file_path
+  const uniqueFiles = useMemo(() => {
+    const seen = new Set<string>();
+    const res: GeneratedFileMeta[] = [];
+    for (const f of files) {
+      if (!seen.has(f.file_path)) {
+        seen.add(f.file_path);
+        res.push(f);
+      }
+    }
+    return res;
+  }, [files]);
+
   // Auto-select preferred file when files arrive
   useEffect(() => {
-    if (files.length > 0) {
-      const fileNames = files.map(f => f.file_path.split('/').pop() || f.file_path);
-      const filePaths = files.map(f => f.file_path);
+    if (uniqueFiles.length > 0) {
+      const fileNames = uniqueFiles.map(f => f.file_path.split('/').pop() || f.file_path);
+      const filePaths = uniqueFiles.map(f => f.file_path);
       if (!fileNames.includes(selectedFile) && !filePaths.includes(selectedFile)) {
-        const defaultFile = fileNames.includes('tools.py')
-          ? 'tools.py'
-          : filePaths.find(p => p.endsWith('tools.py')) || fileNames[0];
+        const defaultFile = filePaths.find(p => p === 'tools.py' || p.endsWith('/tools.py'))
+          || filePaths.find(p => p.endsWith('.py'))
+          || filePaths[0];
         setSelectedFile(defaultFile);
       }
     }
-  }, [files, selectedFile]);
+  }, [uniqueFiles, selectedFile]);
 
   // Load user saved edits from localStorage on project load
   useEffect(() => {
@@ -312,16 +325,25 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
     const test: GeneratedFileMeta[] = [];
     const other: GeneratedFileMeta[] = [];
 
-    files.forEach(f => {
+    uniqueFiles.forEach(f => {
       const lower = f.file_path.toLowerCase();
-      if (lower.startsWith('tests/') || lower.startsWith('test_') || lower.includes('/test_')) {
+      if (
+        lower.startsWith('tests/') ||
+        lower.startsWith('test_') ||
+        lower.includes('/test_') ||
+        lower.includes('.test.') ||
+        lower.includes('__tests__')
+      ) {
         test.push(f);
       } else if (
         lower.startsWith('fastmcp/') ||
         lower.endsWith('.py') ||
         lower.endsWith('.json') ||
         lower.endsWith('.txt') ||
-        lower.endsWith('.toml')
+        lower.endsWith('.toml') ||
+        lower.endsWith('.md') ||
+        lower.endsWith('.yaml') ||
+        lower.endsWith('.yml')
       ) {
         fastmcp.push(f);
       } else {
@@ -330,7 +352,7 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
     });
 
     return { fastmcpFiles: fastmcp, testFiles: test, otherFiles: other };
-  }, [files]);
+  }, [uniqueFiles]);
 
   // Baseline original code (unmodified) - strictly authentic from backend
   const getOriginalCode = useCallback(
@@ -545,14 +567,15 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
 
   const renderFileRow = (f: GeneratedFileMeta) => {
     const fileName = f.file_path.split('/').pop() || f.file_path;
-    const isSelected = selectedFile === f.file_path || selectedFile === fileName;
+    const dirPath = f.file_path.includes('/') ? f.file_path.substring(0, f.file_path.lastIndexOf('/') + 1) : '';
+    const isSelected = selectedFile === f.file_path || (selectedFile === fileName && !f.file_path.includes('/'));
     const isDirty = dirtyFiles.has(f.file_path) || dirtyFiles.has(fileName);
 
     return (
       <button
         key={f.id || f.file_path}
         type="button"
-        onClick={() => setSelectedFile(fileName)}
+        onClick={() => setSelectedFile(f.file_path)}
         className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-colors font-mono text-[11px] ${
           isSelected
             ? 'bg-[#131b2e] text-white border border-sky-500/30'
@@ -567,7 +590,10 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
           ) : (
             <FileText className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
           )}
-          <span className="truncate">{fileName}</span>
+          <div className="truncate flex items-baseline">
+            {dirPath && <span className="text-neutral-500 text-[10px] shrink-0 mr-0.5">{dirPath}</span>}
+            <span className="truncate">{fileName}</span>
+          </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0 ml-2">
           {f.size_bytes > 0 && (
@@ -852,7 +878,7 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
                   PROJECT FILES
                 </span>
                 <span className="text-[10px] font-mono text-neutral-500">
-                  {dirtyFiles.size > 0 ? `${dirtyFiles.size} modified` : `${files.length} file${files.length === 1 ? '' : 's'}`}
+                  {dirtyFiles.size > 0 ? `${dirtyFiles.size} modified` : `${uniqueFiles.length} file${uniqueFiles.length === 1 ? '' : 's'}`}
                 </span>
               </div>
 
@@ -1103,6 +1129,14 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
                             ? 'json'
                             : selectedFile.endsWith('.py')
                             ? 'python'
+                            : selectedFile.endsWith('.ts')
+                            ? 'typescript'
+                            : selectedFile.endsWith('.js')
+                            ? 'javascript'
+                            : selectedFile.endsWith('.md')
+                            ? 'markdown'
+                            : selectedFile.endsWith('.toml')
+                            ? 'toml'
                             : 'plaintext'
                         }
                         theme="vs-dark"
@@ -1125,6 +1159,14 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
                             ? 'json'
                             : selectedFile.endsWith('.py')
                             ? 'python'
+                            : selectedFile.endsWith('.ts')
+                            ? 'typescript'
+                            : selectedFile.endsWith('.js')
+                            ? 'javascript'
+                            : selectedFile.endsWith('.md')
+                            ? 'markdown'
+                            : selectedFile.endsWith('.toml')
+                            ? 'toml'
                             : 'plaintext'
                         }
                         theme="vs-dark"

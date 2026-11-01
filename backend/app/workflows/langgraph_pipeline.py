@@ -763,10 +763,10 @@ def create_apiweaver_graph(
                         session.add(existing_run)
                         await session.flush()
 
-                    existing_entries: set[tuple[Any, Any]] = {
-                        tuple(row)
-                        for row in (await session.execute(
-                            select(GeneratedFile.language, GeneratedFile.file_path).where(GeneratedFile.code_generation_run_id == existing_run.id)
+                    existing_files_by_path = {
+                        gf.file_path: gf
+                        for gf in (await session.scalars(
+                            select(GeneratedFile).where(GeneratedFile.code_generation_run_id == existing_run.id)
                         )).all()
                     }
 
@@ -774,27 +774,33 @@ def create_apiweaver_graph(
                         fp = gf.get("file_path", "")
                         lang = gf.get("language") or ("python" if fp.endswith(".py") else "node")
                         s3_key = gf.get("content_s3_key", "")
-                        entry_key = (lang, fp)
-                        if fp and s3_key and entry_key not in existing_entries:
-                            file_type_val = GeneratedFileType.SDK.value
-                            if "test" in fp.lower():
-                                file_type_val = GeneratedFileType.TEST.value
-                            elif "docker" in fp.lower():
-                                file_type_val = GeneratedFileType.DOCKERFILE.value
-                            elif "readme" in fp.lower():
-                                file_type_val = GeneratedFileType.README.value
+                        if not (fp and s3_key):
+                            continue
+                        file_type_val = GeneratedFileType.SDK.value
+                        if "test" in fp.lower():
+                            file_type_val = GeneratedFileType.TEST.value
+                        elif "docker" in fp.lower():
+                            file_type_val = GeneratedFileType.DOCKERFILE.value
+                        elif "readme" in fp.lower():
+                            file_type_val = GeneratedFileType.README.value
 
-                            session.add(
-                                GeneratedFile(
-                                    code_generation_run_id=existing_run.id,
-                                    file_path=fp,
-                                    content_s3_key=s3_key,
-                                    language=lang,
-                                    file_type=file_type_val,
-                                    size_bytes=gf.get("size_bytes", 0),
-                                )
+                        if fp in existing_files_by_path:
+                            existing_gf = existing_files_by_path[fp]
+                            existing_gf.content_s3_key = s3_key
+                            existing_gf.language = lang
+                            existing_gf.file_type = file_type_val
+                            existing_gf.size_bytes = gf.get("size_bytes", 0)
+                        else:
+                            new_gf = GeneratedFile(
+                                code_generation_run_id=existing_run.id,
+                                file_path=fp,
+                                content_s3_key=s3_key,
+                                language=lang,
+                                file_type=file_type_val,
+                                size_bytes=gf.get("size_bytes", 0),
                             )
-                            existing_entries.add(entry_key)
+                            session.add(new_gf)
+                            existing_files_by_path[fp] = new_gf
                     await session.commit()
             except Exception as exc:
                 pipeline_error_total.labels(subsystem="codegen_persist", error_type=type(exc).__name__).inc()
@@ -955,10 +961,10 @@ def create_apiweaver_graph(
                         session.add(existing_run)
                         await session.flush()
 
-                    existing_entries: set[tuple[Any, Any]] = {
-                        tuple(row)
-                        for row in (await session.execute(
-                            select(GeneratedFile.language, GeneratedFile.file_path).where(GeneratedFile.code_generation_run_id == existing_run.id)
+                    existing_files_by_path = {
+                        gf.file_path: gf
+                        for gf in (await session.scalars(
+                            select(GeneratedFile).where(GeneratedFile.code_generation_run_id == existing_run.id)
                         )).all()
                     }
 
@@ -966,27 +972,33 @@ def create_apiweaver_graph(
                         fp = gf.get("file_path", "")
                         lang = gf.get("language") or ("python" if fp.endswith(".py") else "node")
                         s3_key = gf.get("content_s3_key", "")
-                        entry_key = (lang, fp)
-                        if fp and s3_key and entry_key not in existing_entries:
-                            file_type_val = GeneratedFileType.SDK.value
-                            if "test" in fp.lower():
-                                file_type_val = GeneratedFileType.TEST.value
-                            elif "docker" in fp.lower():
-                                file_type_val = GeneratedFileType.DOCKERFILE.value
-                            elif "readme" in fp.lower():
-                                file_type_val = GeneratedFileType.README.value
+                        if not (fp and s3_key):
+                            continue
+                        file_type_val = GeneratedFileType.SDK.value
+                        if "test" in fp.lower():
+                            file_type_val = GeneratedFileType.TEST.value
+                        elif "docker" in fp.lower():
+                            file_type_val = GeneratedFileType.DOCKERFILE.value
+                        elif "readme" in fp.lower():
+                            file_type_val = GeneratedFileType.README.value
 
-                            session.add(
-                                GeneratedFile(
-                                    code_generation_run_id=existing_run.id,
-                                    file_path=fp,
-                                    content_s3_key=s3_key,
-                                    language=lang,
-                                    file_type=file_type_val,
-                                    size_bytes=gf.get("size_bytes", 0),
-                                )
+                        if fp in existing_files_by_path:
+                            existing_gf = existing_files_by_path[fp]
+                            existing_gf.content_s3_key = s3_key
+                            existing_gf.language = lang
+                            existing_gf.file_type = file_type_val
+                            existing_gf.size_bytes = gf.get("size_bytes", 0)
+                        else:
+                            new_gf = GeneratedFile(
+                                code_generation_run_id=existing_run.id,
+                                file_path=fp,
+                                content_s3_key=s3_key,
+                                language=lang,
+                                file_type=file_type_val,
+                                size_bytes=gf.get("size_bytes", 0),
                             )
-                            existing_entries.add(entry_key)
+                            session.add(new_gf)
+                            existing_files_by_path[fp] = new_gf
                     await session.commit()
             except Exception as exc:
                 pipeline_error_total.labels(subsystem="codegen_persist", error_type=type(exc).__name__).inc()

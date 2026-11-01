@@ -142,22 +142,40 @@ async def list_generated_files(
     )
     if active_run_id:
         stmt = stmt.where(WorkflowRun.id == active_run_id)
+    else:
+        # Scope to the latest workflow run that has generated files for this project
+        latest_wf_run_id = await session.scalar(
+            select(WorkflowRun.id)
+            .join(CodeGenerationRun, CodeGenerationRun.workflow_run_id == WorkflowRun.id)
+            .where(WorkflowRun.project_id == project.id)
+            .order_by(WorkflowRun.created_at.desc())
+            .limit(1)
+        )
+        if latest_wf_run_id:
+            stmt = stmt.where(WorkflowRun.id == latest_wf_run_id)
+
     stmt = stmt.order_by(WorkflowRun.created_at.desc(), GeneratedFile.id.asc()).limit(limit)
 
     rows = (await session.execute(stmt)).all()
-    return [
-        FileResponse(
-            id=gf.id,
-            project_id=project.id,
-            file_path=gf.file_path,
-            language=gf.language,
-            file_type=gf.file_type,
-            size_bytes=getattr(gf, "size_bytes", 0) or 0,
-            created_at=created_at.isoformat() if created_at else None,
-            code_generation_run_id=gf.code_generation_run_id,
+    seen_paths: set[str] = set()
+    results: list[FileResponse] = []
+    for gf, created_at in rows:
+        if gf.file_path in seen_paths:
+            continue
+        seen_paths.add(gf.file_path)
+        results.append(
+            FileResponse(
+                id=gf.id,
+                project_id=project.id,
+                file_path=gf.file_path,
+                language=gf.language,
+                file_type=gf.file_type,
+                size_bytes=getattr(gf, "size_bytes", 0) or 0,
+                created_at=created_at.isoformat() if created_at else None,
+                code_generation_run_id=gf.code_generation_run_id,
+            )
         )
-        for gf, created_at in rows
-    ]
+    return results
 
 
 @router.get("/{id}/files/{file_id}/content", response_model=FileContentResponse)
