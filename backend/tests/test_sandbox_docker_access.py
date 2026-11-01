@@ -14,10 +14,12 @@ def test_docker_socket_permission_error_diagnosed():
         assert "Permission denied" in str(exc_info.value)
 
 
-def test_build_sandbox_executor_falls_back_when_docker_permission_denied(monkeypatch):
+def test_build_sandbox_executor_raises_when_docker_permission_denied():
+    from app.core.errors import DependencyUnavailableError
+
     settings = get_settings()
-    monkeypatch.setattr(settings, "app_env", "development")
     with patch("docker.from_env", side_effect=PermissionError(13, "Permission denied")):
-        executor = _build_sandbox_executor(settings, network_enabled=False)
-        assert isinstance(executor, MockSandboxExecutor)
+        with pytest.raises(DependencyUnavailableError) as exc_info:
+            _build_sandbox_executor(settings, network_enabled=False)
+        assert "Docker sandbox daemon is unavailable" in str(exc_info.value)
 
