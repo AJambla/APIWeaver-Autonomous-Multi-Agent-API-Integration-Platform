@@ -85,9 +85,9 @@ class Settings(BaseSettings):
 
     # --- Secrets & Crypto ----------------------------------------------------
     app_encryption_key: str | None = None
-    vault_addr: str = "http://localhost:8200"
-    vault_token: str | None = None
-    vault_mount_path: str = "secret"
+    vault_addr: str = Field(default="http://localhost:8200", deprecated=True, description="Deprecated: HashiCorp Vault address. Zero-dependency AES-256-GCM is used instead.")
+    vault_token: str | None = Field(default=None, deprecated=True, description="Deprecated: HashiCorp Vault token.")
+    vault_mount_path: str = Field(default="secret", deprecated=True, description="Deprecated: HashiCorp Vault mount path.")
     qdrant_timeout_seconds: float = 10.0
     github_timeout_seconds: float = 30.0
 

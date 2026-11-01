@@ -136,7 +136,7 @@ class CryptoService:
             logger.info("secret_deleted", path=path)
 
     async def renew_token(self, increment_seconds: int = 3600) -> bool:
-        """No-op token renewal to satisfy legacy VaultClient protocol."""
+        """Deprecated: No-op token renewal to satisfy legacy VaultClient protocol."""
         return True
 
 
