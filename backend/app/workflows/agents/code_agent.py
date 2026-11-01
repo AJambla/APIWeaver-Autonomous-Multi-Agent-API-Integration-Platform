@@ -169,19 +169,36 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
             node.name: node for node in tree_orig.body if isinstance(node, ast.ClassDef)
         }
 
-        # Identify existing client class if any
+        # Identify existing client class if any (contains 'Client', or non-model/non-exception with most methods)
         existing_client_cls = None
         for cname, cnode in orig_classes.items():
             if "Client" in cname:
                 existing_client_cls = cnode
                 break
+        if existing_client_cls is None and orig_classes:
+            candidates = [
+                c for c in orig_classes.values()
+                if not any(
+                    isinstance(base, ast.Name) and base.id in ("Exception", "BaseModel", "APIWeaverError")
+                    for base in c.bases
+                )
+            ]
+            if candidates:
+                existing_client_cls = max(
+                    candidates,
+                    key=lambda c: len([m for m in c.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]),
+                )
 
         for node in tree_new.body:
             if isinstance(node, ast.ClassDef):
+                is_schema_or_err = any(
+                    isinstance(base, ast.Name) and base.id in ("Exception", "BaseModel", "APIWeaverError")
+                    for base in node.bases
+                )
                 target_cls = None
                 if node.name in orig_classes:
                     target_cls = orig_classes[node.name]
-                elif "Client" in node.name and existing_client_cls is not None:
+                elif existing_client_cls is not None and not is_schema_or_err:
                     # Unify across generation phases: merge into existing client class
                     target_cls = existing_client_cls
                     alias_name = node.name

@@ -564,7 +564,24 @@ class DockerSandboxExecutor:
                 client_file = rel_path.replace("\\", "/")
                 break
 
-        # Second priority: standard client module
+        # Second priority: exact client module (client.py / client.ts)
+        if not client_module and not client_file:
+            for rel_path in files:
+                normalized = rel_path.replace("\\", "/").lower()
+                filename = normalized.split("/")[-1]
+                stem = filename.split(".")[0]
+                if self._language == "python" and normalized.endswith(".py") and stem == "client":
+                    client_module = rel_path.replace("\\", "/").removesuffix(".py").replace("/", ".")
+                    break
+                if (
+                    self._language == "node"
+                    and normalized.endswith((".ts", ".js", ".mjs"))
+                    and stem == "client"
+                ):
+                    client_file = rel_path.replace("\\", "/")
+                    break
+
+        # Third priority: any module containing 'client'
         if not client_module and not client_file:
             for rel_path in files:
                 normalized = rel_path.replace("\\", "/").lower()
