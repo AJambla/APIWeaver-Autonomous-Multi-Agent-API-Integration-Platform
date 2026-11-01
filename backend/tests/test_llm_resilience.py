@@ -91,7 +91,7 @@ def _capture_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     async def fake_sleep(delay: float) -> None:
         sleeps.append(delay)
 
-    monkeypatch.setattr(llm_module, "asyncio", SimpleNamespace(sleep=fake_sleep))
+    monkeypatch.setattr(llm_module.asyncio, "sleep", fake_sleep)
     return sleeps
 
 

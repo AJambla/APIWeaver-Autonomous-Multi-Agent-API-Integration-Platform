@@ -23,11 +23,6 @@ TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _MAX_RETRY_DELAY_SECONDS = 30.0
 _MAX_RETRY_AFTER_SECONDS = 60.0
 
-# Request pacing across concurrent coroutines to enforce max ~17 requests/min per provider (avoids 429 bursts)
-_PROVIDER_LOCKS: dict[str, asyncio.Lock] = {}
-_LAST_REQUEST_TIME: dict[str, float] = {}
-_MIN_REQUEST_INTERVAL_SECONDS = 3.5
-
 
 class LLMResponseTruncatedError(DependencyUnavailableError):
     """The provider hit its output-token ceiling mid-reply.
@@ -179,22 +174,16 @@ class LLMClient:
 
         _raise_if_open()
         last_error: Exception | None = None
-        lock = _PROVIDER_LOCKS.setdefault(provider, asyncio.Lock())
 
         for attempt in range(self.settings.llm_max_retries + 1):
             try:
-                # Pace requests to this provider to prevent burst rate limit violations (e.g. 15 RPM limits)
-                async with lock:
-                    last_time = _LAST_REQUEST_TIME.get(provider, 0.0)
-                    now = time.monotonic()
-                    wait_time = _MIN_REQUEST_INTERVAL_SECONDS - (now - last_time)
-                    if wait_time > 0:
-                        await asyncio.sleep(wait_time)
-                    _LAST_REQUEST_TIME[provider] = time.monotonic()
-
                 result = await send()
             except _TransientProviderError as exc:
                 last_error = exc
+                circuit.failures += 1
+                if circuit.failures >= self.settings.llm_circuit_failure_threshold:
+                    circuit.opened_at = time.monotonic()
+                    _raise_if_open()
                 if attempt >= self.settings.llm_max_retries:
                     break
                 max_retry_delay = getattr(self.settings, "llm_max_retry_delay_seconds", _MAX_RETRY_DELAY_SECONDS)
@@ -206,11 +195,11 @@ class LLMClient:
                 if getattr(self.settings, "llm_retry_jitter", False):
                     # Full jitter: random between 0.5 * delay and 1.5 * delay
                     delay = random.uniform(delay * 0.5, delay * 1.5)
-                # Rate limits (429) need a higher floor (12s) to let provider per-minute windows clear
-                if exc.status_code == 429:
-                    delay = max(delay, 12.0)
                 if exc.retry_after is not None:
-                    delay = max(delay, min(exc.retry_after, max_retry_after))
+                    delay = min(exc.retry_after, max_retry_after)
+                elif exc.status_code == 429:
+                    # Rate limits without Retry-After need a floor (12s) to let provider window clear
+                    delay = max(delay, 12.0)
                 logger.warning(
                     "llm_transient_failure",
                     provider=provider,
@@ -219,15 +208,12 @@ class LLMClient:
                     retry_in_seconds=round(delay, 2),
                 )
                 await asyncio.sleep(delay)
+                _raise_if_open()
             else:
                 circuit.failures = 0
                 circuit.opened_at = None
                 return result
 
-        # Only increment circuit failures after ALL retries for this request have been exhausted
-        circuit.failures += 1
-        if circuit.failures >= self.settings.llm_circuit_failure_threshold:
-            circuit.opened_at = time.monotonic()
         raise DependencyUnavailableError(
             f"{provider} unavailable after {self.settings.llm_max_retries + 1} attempts: "
             f"{last_error}"
