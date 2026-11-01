@@ -299,8 +299,9 @@ class DockerSandboxExecutor:
             import docker
 
             try:
-                if self._settings.docker_host:
-                    self._docker_client = docker.DockerClient(base_url=self._settings.docker_host)
+                docker_host = getattr(self._settings, "docker_host", None)
+                if docker_host:
+                    self._docker_client = docker.DockerClient(base_url=docker_host)
                 else:
                     self._docker_client = docker.from_env()
             except PermissionError as exc:

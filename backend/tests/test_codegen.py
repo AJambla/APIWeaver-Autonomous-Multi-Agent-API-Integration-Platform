@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -13,7 +14,7 @@ from sqlalchemy import select
 from app.models.codegen import CodeGenerationRun, GeneratedFile
 from app.models.enums import OrgRole, ProjectRole
 from app.models.workflow import WorkflowRun
-from app.workflows.agents.code_agent import run_code_agent
+from app.workflows.agents.code_agent import _merge_python_code, run_code_agent
 from app.workflows.state import WorkflowState
 from tests.conftest import TEST_PASSWORD
 
@@ -329,3 +330,45 @@ class TestCodeGeneratorAPI:
         assert "class Pet" in merged
         assert "import httpx" in merged
         assert "import pydantic" in merged
+
+    def test_merge_python_code_preserves_earlier_phase_methods(self):
+        phase1_code = """
+class SwaggerPetstoreClient:
+    async def createUsersWithListInput(self, body=None):
+        return await self._request("POST", "/user/createWithList", json=body)
+
+    async def createUser(self, body=None):
+        return await self._request("POST", "/user", json=body)
+
+Client = SwaggerPetstoreClient
+"""
+        phase2_code = """
+class SwaggerPetstoreClient:
+    async def addPet(self, body=None):
+        return await self._request("POST", "/pet", json=body)
+"""
+        phase3_code = """
+class Client:
+    async def get_inventory(self):
+        return await self._request("GET", "/store/inventory")
+
+    async def place_order(self, order_data=None):
+        return await self._request("POST", "/store/order", json=order_data)
+"""
+        merged_1_2 = _merge_python_code(phase1_code, phase2_code, "client.py")
+        tree = ast.parse(merged_1_2)
+        cls_node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "SwaggerPetstoreClient")
+        methods = {m.name for m in cls_node.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        assert "createUsersWithListInput" in methods
+        assert "createUser" in methods
+        assert "addPet" in methods
+
+        merged_all = _merge_python_code(merged_1_2, phase3_code, "client.py")
+        tree_all = ast.parse(merged_all)
+        cls_all = next(n for n in tree_all.body if isinstance(n, ast.ClassDef) and n.name == "SwaggerPetstoreClient")
+        all_methods = {m.name for m in cls_all.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        assert "createUsersWithListInput" in all_methods
+        assert "createUser" in all_methods
+        assert "addPet" in all_methods
+        assert "get_inventory" in all_methods
+        assert "place_order" in all_methods

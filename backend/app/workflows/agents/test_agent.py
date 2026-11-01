@@ -580,7 +580,7 @@ def _build_sandbox_executor(settings: Any, network_enabled: bool) -> Any:
     executor = DockerSandboxExecutor(settings, network_enabled=network_enabled)
     is_prod_val = getattr(settings, "is_production", False)
     is_prod = is_prod_val() if callable(is_prod_val) else bool(is_prod_val)
-    if not is_prod:
+    if not is_prod and hasattr(executor, "_get_docker_client"):
         try:
             client = executor._get_docker_client()
             if hasattr(client, "ping"):

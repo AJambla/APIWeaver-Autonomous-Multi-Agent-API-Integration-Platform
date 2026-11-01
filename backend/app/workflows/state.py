@@ -66,21 +66,23 @@ def merge_test_suite(
         return list(right)
     by_name: dict[str, dict[str, Any]] = {}
     for t in left:
+        lang_pfx = f"{t.get('language')}:" if t.get("language") else ""
         key = str(
             t.get("name")
             or t.get("test_name")
             or t.get("test_id")
-            or (f"{t.get('method')}:{t.get('path')}" if t.get("method") and t.get("path") else None)
+            or (f"{lang_pfx}{t.get('method')}:{t.get('path')}" if t.get("method") and t.get("path") else None)
             or t.get("endpoint")
             or id(t)
         )
         by_name[key] = t
     for t in right:
+        lang_pfx = f"{t.get('language')}:" if t.get("language") else ""
         key = str(
             t.get("name")
             or t.get("test_name")
             or t.get("test_id")
-            or (f"{t.get('method')}:{t.get('path')}" if t.get("method") and t.get("path") else None)
+            or (f"{lang_pfx}{t.get('method')}:{t.get('path')}" if t.get("method") and t.get("path") else None)
             or t.get("endpoint")
             or id(t)
         )

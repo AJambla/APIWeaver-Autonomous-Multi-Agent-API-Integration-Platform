@@ -169,6 +169,13 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
             node.name: node for node in tree_orig.body if isinstance(node, ast.ClassDef)
         }
 
+        def _is_schema_or_err_base(base: ast.AST) -> bool:
+            if isinstance(base, ast.Name):
+                return base.id in ("Exception", "BaseModel", "APIWeaverError")
+            if isinstance(base, ast.Attribute):
+                return base.attr in ("Exception", "BaseModel", "APIWeaverError")
+            return False
+
         # Identify existing client class if any (contains 'Client', or non-model/non-exception with most methods)
         existing_client_cls = None
         for cname, cnode in orig_classes.items():
@@ -178,10 +185,7 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
         if existing_client_cls is None and orig_classes:
             candidates = [
                 c for c in orig_classes.values()
-                if not any(
-                    isinstance(base, ast.Name) and base.id in ("Exception", "BaseModel", "APIWeaverError")
-                    for base in c.bases
-                )
+                if not any(_is_schema_or_err_base(base) for base in c.bases)
             ]
             if candidates:
                 existing_client_cls = max(
@@ -191,10 +195,7 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
 
         for node in tree_new.body:
             if isinstance(node, ast.ClassDef):
-                is_schema_or_err = any(
-                    isinstance(base, ast.Name) and base.id in ("Exception", "BaseModel", "APIWeaverError")
-                    for base in node.bases
-                )
+                is_schema_or_err = any(_is_schema_or_err_base(base) for base in node.bases)
                 target_cls = None
                 if node.name in orig_classes:
                     target_cls = orig_classes[node.name]
@@ -799,11 +800,18 @@ async def run_code_agent(
     # Handle repair mode
     if failure_diagnosis and target_file:
         # Find the file to repair, matching language for the target file
+        norm_target = target_file.replace("\\", "/").lstrip("/")
+        expected_lang = _language_for_path(norm_target)
         file_meta = next(
             (
                 f for f in generated_files
-                if isinstance(f, dict) and f.get("file_path") == target_file
-                and f.get("language") == _language_for_path(target_file)
+                if isinstance(f, dict)
+                and (
+                    f.get("file_path") == target_file
+                    or str(f.get("file_path", "")).replace("\\", "/").lstrip("/").endswith(norm_target)
+                    or norm_target.endswith(str(f.get("file_path", "")).replace("\\", "/").lstrip("/"))
+                )
+                and (not f.get("language") or f.get("language") == expected_lang)
             ),
             None,
         )

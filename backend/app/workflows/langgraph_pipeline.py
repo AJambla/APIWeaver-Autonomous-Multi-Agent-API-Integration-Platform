@@ -1039,6 +1039,8 @@ def create_apiweaver_graph(
         for f in repaired_files:
             fp = f.get("file_path", "")
             base_name = fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            if base_name == "__init__.py":
+                continue  # Never target __init__.py for client/tool method repairs
             if base_name and (base_name in error_context or fp in error_context):
                 target_file_path = fp
                 break

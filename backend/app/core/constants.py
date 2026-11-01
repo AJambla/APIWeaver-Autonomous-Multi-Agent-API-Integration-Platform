@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-DEFAULT_TARGET_LANGUAGES: list[str] = ["python", "node"]
+DEFAULT_TARGET_LANGUAGES: list[str] = ["python"]
 
 # MCP is the primary export format; docs is an optional reference artifact.
 DEFAULT_EXPORT_TYPES: list[str] = ["mcp", "docs"]

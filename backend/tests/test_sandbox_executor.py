@@ -374,7 +374,7 @@ async def test_create_sandbox_selects_docker_executor(monkeypatch):
     monkeypatch.setattr(
         test_agent_module,
         "get_settings",
-        lambda: SimpleNamespace(sandbox_backend="docker"),
+        lambda: SimpleNamespace(sandbox_backend="docker", is_production=True),
     )
     monkeypatch.setattr(
         test_agent_module,
@@ -412,7 +412,7 @@ async def test_create_sandbox_passes_resolved_credential(monkeypatch):
     monkeypatch.setattr(
         test_agent_module,
         "get_settings",
-        lambda: SimpleNamespace(sandbox_backend="docker"),
+        lambda: SimpleNamespace(sandbox_backend="docker", is_production=True),
     )
     monkeypatch.setattr(
         test_agent_module,
@@ -439,7 +439,7 @@ async def test_create_sandbox_selects_docker_by_default(monkeypatch):
     monkeypatch.setattr(
         test_agent_module,
         "get_settings",
-        lambda: SimpleNamespace(sandbox_backend="docker"),
+        lambda: SimpleNamespace(sandbox_backend="docker", is_production=True),
     )
 
     sandbox = await test_agent_module._create_sandbox(
@@ -803,3 +803,41 @@ def test_build_sandbox_executor_with_mock_backend():
     settings = _make_settings(sandbox_backend="mock")
     executor = _build_sandbox_executor(settings, network_enabled=False)
     assert isinstance(executor, MockSandboxExecutor)
+
+
+def test_bind_arguments_with_order_data():
+    from app.services.sandbox_runners.runner import _bind_arguments
+
+    def place_order(order_data: dict, confirm: bool = False):
+        pass
+
+    params = {}
+    body = {"petId": 123, "quantity": 1}
+
+    kwargs, missing = _bind_arguments(place_order, params, body)
+    assert not missing
+    assert kwargs.get("order_data") == body
+
+
+def test_bind_arguments_with_user_input():
+    from app.services.sandbox_runners.runner import _bind_arguments
+
+    def create_user(user_input: dict):
+        pass
+
+    kwargs, missing = _bind_arguments(create_user, {}, {"username": "alice"})
+    assert not missing
+    assert kwargs.get("user_input") == {"username": "alice"}
+
+
+def test_bind_arguments_with_path_and_body():
+    from app.services.sandbox_runners.runner import _bind_arguments
+
+    def update_pet(pet_id: int, pet_payload: dict):
+        pass
+
+    kwargs, missing = _bind_arguments(update_pet, {"pet_id": 42}, {"name": "fido"})
+    assert not missing
+    assert kwargs.get("pet_id") == 42
+    assert kwargs.get("pet_payload") == {"name": "fido"}
+
