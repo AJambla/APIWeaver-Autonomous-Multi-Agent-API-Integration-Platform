@@ -234,6 +234,8 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
     );
   }, [activeRun?.status, activeRun?.progress_percent, files.length]);
 
+  const isSynthesizing = activeRun?.status === 'running' && activeRun?.current_node === 'code_agent';
+
   const authSchemeText = useMemo(() => {
     const authObj = rawSpec.components?.securitySchemes ?? rawSpec.securityDefinitions ?? {};
     const keys = Object.keys(authObj);
@@ -628,7 +630,7 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
       )}
 
       {/* Main Content Area */}
-      <div className="flex-1 min-h-0 flex flex-col p-4 sm:p-5 space-y-4 overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col p-4 sm:p-5 space-y-4 overflow-y-auto">
         {/* Top Header */}
         <div className="flex flex-wrap items-center justify-between gap-4 shrink-0">
           <div>
@@ -651,11 +653,11 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
           <div className="flex items-center gap-2.5">
             <button
               onClick={onRunBuild}
-              disabled={runIsLive}
+              disabled={isSynthesizing}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] text-xs font-medium text-white transition-colors disabled:opacity-50"
             >
-              <RotateCw className={`h-3.5 w-3.5 ${runIsLive ? 'animate-spin' : ''}`} />
-              <span>{runIsLive ? 'Synthesizing…' : 'Re-synthesize'}</span>
+              <RotateCw className={`h-3.5 w-3.5 ${isSynthesizing ? 'animate-spin' : ''}`} />
+              <span>{isSynthesizing ? 'Synthesizing…' : 'Re-synthesize'}</span>
             </button>
 
             {files.length > 0 && (
@@ -750,7 +752,7 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
           </div>
         )}
 
-        {(runIsLive || activeRun?.current_node === 'code_agent') && (
+        {isSynthesizing && (
           <div className="rounded-xl border border-sky-500/30 bg-sky-950/20 px-4 py-3 flex items-center justify-between gap-3 shadow-lg shrink-0">
             <div className="flex items-center gap-3">
               <Loader2 className="h-5 w-5 text-sky-400 animate-spin shrink-0" />
@@ -842,9 +844,9 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
 
         {/* TAB 1: FILES 3-COLUMN STUDIO LAYOUT */}
         {activeSubTab === 'files' && (
-          <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-12 gap-3 overflow-hidden">
+          <div className="flex-1 min-h-[560px] grid grid-cols-1 md:grid-cols-12 gap-3">
             {/* COLUMN 1: PROJECT FILES TREE (3 cols on md) */}
-            <div className="md:col-span-3 rounded-xl border border-white/10 bg-[#090a0f] p-3 flex flex-col min-h-0">
+            <div className="md:col-span-3 rounded-xl border border-white/10 bg-[#090a0f] p-3 flex flex-col min-h-[500px]">
               <div className="flex items-center justify-between mb-2.5 pb-2 border-b border-white/5">
                 <span className="text-[10px] font-mono tracking-wider uppercase text-neutral-400 font-semibold">
                   PROJECT FILES
@@ -967,7 +969,7 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
             </div>
 
             {/* COLUMN 2: CENTRAL MONACO CODE EDITOR (6 cols on md) */}
-            <div className="md:col-span-6 rounded-xl border border-white/10 bg-[#090a0f] flex flex-col min-h-0 overflow-hidden">
+            <div className="md:col-span-6 rounded-xl border border-white/10 bg-[#090a0f] flex flex-col min-h-[500px] overflow-hidden">
               {files.length === 0 ? (
                 (runIsLive || activeRun?.current_node === 'code_agent' || loadingFiles) ? (
                   <div className="flex-1 min-h-[380px] flex flex-col items-center justify-center p-6 text-center">
@@ -1147,7 +1149,7 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
             </div>
 
             {/* COLUMN 3: CONTEXTUAL ENDPOINT INSPECTOR (3 cols on md) */}
-            <div className="md:col-span-3 rounded-xl border border-white/10 bg-[#090a0f] p-4 flex flex-col min-h-0 overflow-y-auto space-y-4">
+            <div className="md:col-span-3 rounded-xl border border-white/10 bg-[#090a0f] p-4 flex flex-col min-h-[500px] overflow-y-auto space-y-4">
               <div>
                 <span className="text-[10px] font-mono tracking-wider uppercase text-neutral-400 block mb-1">
                   SELECTED ENDPOINT
