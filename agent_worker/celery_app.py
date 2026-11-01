@@ -13,7 +13,7 @@ if _multiproc_dir:
     except OSError:
         pass
 
-from celery import Celery, signals
+from celery import Celery, signals  # noqa: E402
 
 BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/1")
 RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://redis:6379/2")

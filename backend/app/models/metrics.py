@@ -10,7 +10,7 @@ import datetime
 import decimal
 import uuid
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Numeric, String
+from sqlalchemy import ForeignKey, Index, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TZDateTime, bigint_pk, utcnow

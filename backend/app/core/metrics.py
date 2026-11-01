@@ -30,8 +30,8 @@ if multiproc_dir:
     except OSError:
         pass
 
-from prometheus_client import Counter, Histogram
-from prometheus_client.registry import CollectorRegistry
+from prometheus_client import Counter, Histogram  # noqa: E402
+from prometheus_client.registry import CollectorRegistry  # noqa: E402
 
 registry = CollectorRegistry()
 

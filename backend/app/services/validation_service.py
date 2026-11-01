@@ -67,7 +67,7 @@ def validate_mcp_code_statically(
     warnings: list[str] = []
 
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             is_mcp_tool = False
             for dec in node.decorator_list:
                 # Matches @mcp.tool or @mcp.tool(...)

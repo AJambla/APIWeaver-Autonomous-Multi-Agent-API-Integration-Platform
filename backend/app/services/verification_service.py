@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
-from app.services.safety_service import RiskLevel, SafetyBadge, classify_safety
+from app.services.safety_service import classify_safety
 from app.services.validation_service import StaticValidationResult
 
 

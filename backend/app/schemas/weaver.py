@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from pydantic import ConfigDict
+
 from app.schemas.common import ResponseModel, StrictModel
 
 
