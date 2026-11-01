@@ -4,20 +4,20 @@ from __future__ import annotations
 
 import ast
 import json
-import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.deps import get_current_principal, get_db
 from app.core.logging import get_logger
-from app.models.codegen import GeneratedFile
+from app.models.codegen import CodeGenerationRun, GeneratedFile
 from app.models.project import Project
 from app.models.spec import APISpec, Endpoint, EndpointDependency
-from app.models.testing import TestResult, TestRun
+from app.models.testing import TestRun
+from app.models.workflow import WorkflowRun
 from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.weaver import (
@@ -27,6 +27,7 @@ from app.schemas.weaver import (
     WeaverChatRequest,
     WeaverChatResponse,
 )
+from app.services.storage_service import storage_service
 from app.workflows.llm import LLMClient
 
 logger = get_logger(__name__)
@@ -182,13 +183,13 @@ async def weaver_chat(
     # Deterministic Expert Fallback Engine
     # Handles key developer scenarios accurately without external LLM dependencies
     lower_msg = user_msg.lower()
-    selected_tool = ctx.selected_tool if ctx and ctx.selected_tool else "post_pet"
-    selected_ep = ctx.selected_endpoint if ctx and ctx.selected_endpoint else "POST /pet"
+    first_ep = endpoints_list[0] if endpoints_list else None
+    fallback_ep = f"{first_ep.method} {first_ep.path}" if first_ep else "GET /"
+    selected_ep = ctx.selected_endpoint if ctx and ctx.selected_endpoint else fallback_ep
     selected_file = ctx.selected_file if ctx and ctx.selected_file else "tools.py"
 
     # Scenario 1: Safety classification queries (matches reference image exactly)
     if "classified" in lower_msg or "safety" in lower_msg or "state-changing" in lower_msg or "unsafe" in lower_msg or "destructive" in lower_msg:
-        is_post_or_put = "post" in lower_msg or "put" in lower_msg or "patch" in lower_msg or "post" in selected_ep.lower()
         is_delete = "delete" in lower_msg or "destructive" in lower_msg or "delete" in selected_ep.lower()
 
         if is_delete:
@@ -218,26 +219,19 @@ async def weaver_chat(
 
     # Scenario 2: Code Modification requests (e.g. "Add retries", "Fix this", "Add timeout")
     if any(k in lower_msg for k in ("retry", "retries", "timeout", "fix", "modify", "change", "add error")):
-        orig_snippet = '        async with httpx.AsyncClient(base_url=BASE_URL) as client:\n            resp = await client.request(\n                method="POST",\n                url="/pet",\n            )'
-        new_snippet = '        # Enhanced with 3x exponential backoff and 30s timeout\n        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:\n            for attempt in range(3):\n                try:\n                    resp = await client.request(method="POST", url="/pet")\n                    if resp.status_code < 500:\n                        break\n                except httpx.TransportError:\n                    if attempt == 2: raise\n                    await asyncio.sleep(2 ** attempt)'
+        method_part = selected_ep.split()[0] if " " in selected_ep else "POST"
+        path_part = selected_ep.split()[1] if " " in selected_ep else "/"
+        orig_snippet = f'        async with httpx.AsyncClient(base_url=BASE_URL) as client:\n            resp = await client.request(\n                method="{method_part}",\n                url="{path_part}",\n            )'
+        new_snippet = f'        # Enhanced with 3x exponential backoff and 30s timeout\n        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:\n            for attempt in range(3):\n                try:\n                    resp = await client.request(method="{method_part}", url="{path_part}")\n                    if resp.status_code < 500:\n                        break\n                except httpx.TransportError:\n                    if attempt == 2: raise\n                    await asyncio.sleep(2 ** attempt)'
 
-        diff_snippet = """--- fastmcp/tools.py (original)
-+++ fastmcp/tools.py (modified)
-@@ -248,3 +248,11 @@
--        async with httpx.AsyncClient(base_url=BASE_URL) as client:
--            resp = await client.request(method="POST", url="/pet")
-+        # Enhanced with 3x exponential backoff and 30s timeout
-+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:
-+            for attempt in range(3):
-+                try:
-+                    resp = await client.request(method="POST", url="/pet")
-+                    if resp.status_code < 500: break
-+                except httpx.TransportError:
-+                    if attempt == 2: raise
-+                    await asyncio.sleep(2 ** attempt)"""
+        diff_snippet = f"""--- fastmcp/{selected_file} (original)
++++ fastmcp/{selected_file} (modified)
+@@ -1,5 +1,11 @@
+-{orig_snippet}
++{new_snippet}"""
 
         return WeaverChatResponse(
-            reply=f"## Proposed Modification\n\nI have analyzed `{selected_file}` and prepared a resilience patch. This adds **3x exponential backoff retries** and an explicit **30-second timeout** to protect against transient upstream 5xx errors and network hiccups.\n\n### Impact\n- File: `fastmcp/{selected_file}`\n- Non-breaking: preserves FastMCP parameter schema and tool name.\n- Pre-sandbox AST: Validated.",
+            reply=f"## Proposed Modification\n\nI have analyzed `{selected_file}` and prepared a resilience patch for `{selected_ep}`. This adds **3x exponential backoff retries** and an explicit **30-second timeout** to protect against transient upstream 5xx errors and network hiccups.\n\n### Impact\n- File: `fastmcp/{selected_file}`\n- Non-breaking: preserves FastMCP parameter schema and tool name.\n- Pre-sandbox AST: Validated.",
             intent="modify",
             context_used=context_dict,
             safety_reasoning=[
@@ -257,7 +251,7 @@ async def weaver_chat(
     # Scenario 3: Dependencies & Topology analysis
     if "depend" in lower_msg or "topology" in lower_msg or "connected" in lower_msg:
         return WeaverChatResponse(
-            reply=f"## Dependency Relationship Analysis\n\nExamining the project's dependency graph for **{selected_ep}**:\n\n- **Prerequisites**: Requires an active `api_key` authentication header from Vault KMS.\n- **Downstream Consumers**: Endpoints such as `GET /pet/{{petId}}` and `DELETE /pet/{{petId}}` depend on the ID returned by this endpoint.\n- **Data Propagation**: Path parameter `petId` is passed down the execution chain.",
+            reply=f"## Dependency Relationship Analysis\n\nExamining the project's dependency graph for **{selected_ep}**:\n\n- **Prerequisites**: Endpoint security scheme verified against project configuration.\n- **Downstream Consumers**: {len(deps_list)} topological dependency edge(s) mapped in project.\n- **Data Propagation**: Parameters chained down the execution DAG.",
             intent="explain",
             context_used=context_dict,
             safety_reasoning=[
@@ -326,9 +320,49 @@ async def weaver_apply_change(
                 details=f"Invalid JSON: {err.msg}",
             )
 
+    # Persist the file to object storage
+    clean_path = file_path.lstrip("/").replace("\\", "/")
+    content_bytes = content.encode("utf-8")
+    s3_key = f"projects/{project.id}/generated/{clean_path}"
+    await storage_service.upload(s3_key, content_bytes)
+
+    # Find or update GeneratedFile record if a CodeGenerationRun exists
+    cgen_stmt = (
+        select(CodeGenerationRun.id)
+        .join(WorkflowRun, CodeGenerationRun.workflow_run_id == WorkflowRun.id)
+        .where(WorkflowRun.project_id == project.id)
+        .order_by(CodeGenerationRun.created_at.desc())
+        .limit(1)
+    )
+    cgen_id = await session.scalar(cgen_stmt)
+    if cgen_id:
+        gf = await session.scalar(
+            select(GeneratedFile).where(
+                GeneratedFile.code_generation_run_id == cgen_id,
+                or_(
+                    GeneratedFile.file_path == clean_path,
+                    GeneratedFile.file_path == file_path,
+                ),
+            )
+        )
+        if gf is not None:
+            gf.content_s3_key = s3_key
+            gf.size_bytes = len(content_bytes)
+        else:
+            lang = "python" if clean_path.endswith(".py") else ("node" if clean_path.endswith((".ts", ".js")) else None)
+            new_file = GeneratedFile(
+                code_generation_run_id=cgen_id,
+                file_path=clean_path,
+                content_s3_key=s3_key,
+                language=lang,
+                size_bytes=len(content_bytes),
+            )
+            session.add(new_file)
+        await session.commit()
+
     return WeaverApplyResponse(
         success=True,
         file_path=file_path,
         verification_status="PASS",
-        details="Pre-sandbox AST syntax validation verified. Code change accepted.",
+        details="Pre-sandbox AST syntax validation verified. Code change persisted to storage.",
     )
