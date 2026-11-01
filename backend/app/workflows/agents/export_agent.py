@@ -10,6 +10,7 @@ import io
 import json
 import zipfile
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from app.core.constants import DEFAULT_EXPORT_TYPES
@@ -436,10 +437,9 @@ Add to `.cursor/mcp.json`:
 - **Destructive/Gated Tools:** {flagged_destructive} (marked with `requires_confirmation = True`)
 """
 
-        summary = test_run_summary or {}
-        passed_tests = summary.get("passed", 0)
-        total_tests = summary.get("total", 0)
-        failed_tests = summary.get("failed", 0)
+        test_summary = test_run_summary or {}
+        total_tests = test_summary.get("total", 0)
+        failed_tests = test_summary.get("failed", 0)
 
         # Build verification report using verification_service
         endpoint_items = [
