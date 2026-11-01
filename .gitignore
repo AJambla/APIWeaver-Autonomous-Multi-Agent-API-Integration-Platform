@@ -161,4 +161,5 @@ gen-context.config.json
 docs/
 Project-docs/
 project-docs/
+.archify/
 
