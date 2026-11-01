@@ -1,0 +1,29 @@
+"""Model Context Protocol (MCP) Server for {{ title }}."""
+from __future__ import annotations
+
+import os
+import sys
+
+try:
+    from mcp.server.fastmcp import FastMCP
+    import tools
+
+    mcp = FastMCP({{ title | lit }})
+except ImportError:
+    mcp = None
+
+
+def main() -> None:
+    if mcp is None:
+        print("FastMCP package is not installed. Install with `pip install mcp`.", file=sys.stderr)
+        sys.exit(1)
+    transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
+    if transport == "sse":
+        port = int(os.environ.get("PORT", "8000"))
+        mcp.run(transport="sse")
+    else:
+        mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()
