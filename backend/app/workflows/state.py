@@ -133,6 +133,8 @@ class WorkflowState(TypedDict, total=False):
     spec_confidence_score: float | None
     execution_plan: dict[str, Any] | None
     plan_approved: bool | None
+    test_approved: bool | None
+    export_approved: bool | None
     approval_notes: str | None
 
     # Code generation & testing outputs

@@ -301,7 +301,7 @@ async def approve_workflow_gate(
             ]
             resume_state["stages"] = requested or list(_POST_PLAN_STAGES)
 
-
+        latest_checkpoint.state_snapshot = resume_state
         await session.commit()
         await dispatch_run(
             run_id=run.id,
