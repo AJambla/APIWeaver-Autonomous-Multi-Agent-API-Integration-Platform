@@ -276,7 +276,7 @@ class LLMClient:
         }
         model_candidates = [self.settings.llm_model]
         if "googleapis.com" in (self.settings.openai_api_base_url or ""):
-            for fallback in ("gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemma-4-26b-a4b-it"):
+            for fallback in ("gemini-2.0-flash", "gemini-1.5-flash"):
                 if fallback not in model_candidates:
                     model_candidates.append(fallback)
 
