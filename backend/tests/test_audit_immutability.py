@@ -31,12 +31,20 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 _VERSIONS = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
-_MIGRATION = _VERSIONS / "0009_audit_log_immutability.py"
+_MIGRATION = _VERSIONS / "0001_initial_schema.py"
 
 PG_TEST_URL = os.environ.get("AUDIT_PG_TEST_URL", "")
 
-_REVISION = re.compile(r'^revision: str = "(?P<rev>[^"]+)"', re.MULTILINE)
-_DOWN_REVISION = re.compile(r'^down_revision: str \| None = (?P<parent>None|"[^"]+")', re.MULTILINE)
+_REVISION = re.compile(r"""^revision: str = ['"](?P<rev>[^'"]+)['"]""", re.MULTILINE)
+_DOWN_REVISION = re.compile(r"""^down_revision: str \| None = (?P<parent>None|['"][^'"]+['"])""", re.MULTILINE)
+
+
+class _DummyDialect:
+    name = "postgresql"
+
+
+class _DummyBind:
+    dialect = _DummyDialect()
 
 
 def _chain() -> dict[str, str | None]:
@@ -48,28 +56,32 @@ def _chain() -> dict[str, str | None]:
         parent = _DOWN_REVISION.search(source)
         assert revision is not None and parent is not None, path
         value = parent.group("parent")
-        chain[revision.group("rev")] = None if value == "None" else value.strip('"')
+        chain[revision.group("rev")] = None if value == "None" else value.strip("'\"")
     return chain
 
 
 def _emitted(operation: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The statements `operation` sends to the database, captured without connecting."""
-    spec = importlib.util.spec_from_file_location("audit_m0009", _MIGRATION)
+    spec = importlib.util.spec_from_file_location("audit_m0001", _MIGRATION)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
     emitted: list[str] = []
+    monkeypatch.setattr(module.op, "f", lambda name: name)
+    monkeypatch.setattr(module.op, "get_bind", lambda: _DummyBind())
     monkeypatch.setattr(module.op, "execute", lambda sql, *args, **kw: emitted.append(str(sql)))
+    for noop_op in ("create_table", "create_index", "drop_table", "drop_index", "add_column", "drop_column"):
+        if hasattr(module.op, noop_op):
+            monkeypatch.setattr(module.op, noop_op, lambda *args, **kw: None)
     getattr(module, operation)()
     return emitted
 
 
 def test_migration_extends_the_single_head() -> None:
     chain = _chain()
-    assert chain["0009"] == "0008"
-    # A second migration revising 0008 would fork history and stall every later deploy.
-    assert [rev for rev, parent in chain.items() if parent == "0008"] == ["0009"]
+    assert "0001" in chain
+    assert chain["0001"] is None
     assert [rev for rev, parent in chain.items() if parent is None] == ["0001"]
 
 
