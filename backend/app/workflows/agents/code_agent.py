@@ -578,7 +578,15 @@ async def _render_templates(
     }
 
     template_files = {
-        "python": ["models.py.j2", "client.py.j2", "__init__.py.j2", "pyproject.toml.j2", "README.md.j2"],
+        "python": [
+            "tools.py.j2",
+            "server.py.j2",
+            "models.py.j2",
+            "client.py.j2",
+            "__init__.py.j2",
+            "pyproject.toml.j2",
+            "README.md.j2",
+        ],
         "node": ["types.ts.j2", "client.ts.j2", "index.ts.j2", "package.json.j2", "tsconfig.json.j2", "README.md.j2"],
     }
 
