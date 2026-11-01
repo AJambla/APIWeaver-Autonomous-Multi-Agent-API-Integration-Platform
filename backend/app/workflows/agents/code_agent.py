@@ -253,8 +253,113 @@ def _merge_python_code(existing_code: str, new_code: str, file_path: str = "") -
         return _keep_parseable(existing_code, new_code, file_path)
 
 
+def _find_class_body_close_brace(code: str) -> int | None:
+    """Find the character index of the closing brace of the main class in TypeScript code."""
+    match = re.search(r'(?:export\s+)?class\s+[a-zA-Z0-9_]+[^{]*\{', code)
+    if not match:
+        return None
+    open_brace_idx = match.end() - 1
+    depth = 0
+    in_single = False
+    in_double = False
+    in_template = False
+    in_line_comment = False
+    in_block_comment = False
+    i = open_brace_idx
+    length = len(code)
+
+    while i < length:
+        ch = code[i]
+        nxt = code[i + 1] if i + 1 < length else ""
+
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+        elif in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                i += 1
+        elif in_single:
+            if ch == "\\" and i + 1 < length:
+                i += 1
+            elif ch == "'":
+                in_single = False
+        elif in_double:
+            if ch == "\\" and i + 1 < length:
+                i += 1
+            elif ch == '"':
+                in_double = False
+        elif in_template:
+            if ch == "\\" and i + 1 < length:
+                i += 1
+            elif ch == "`":
+                in_template = False
+        else:
+            if ch == "/" and nxt == "/":
+                in_line_comment = True
+                i += 1
+            elif ch == "/" and nxt == "*":
+                in_block_comment = True
+                i += 1
+            elif ch == "'":
+                in_single = True
+            elif ch == '"':
+                in_double = True
+            elif ch == "`":
+                in_template = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    return None
+
+
+def _extract_ts_class_methods(code: str) -> list[tuple[str, str]]:
+    """Extract (method_name, method_source) from a TypeScript class."""
+    close_idx = _find_class_body_close_brace(code)
+    if close_idx is None:
+        return []
+    match = re.search(r'(?:export\s+)?class\s+[a-zA-Z0-9_]+[^{]*\{', code)
+    if not match:
+        return []
+    body = code[match.end():close_idx]
+    methods: list[tuple[str, str]] = []
+    for m in re.finditer(r'(?:/\*\*[\s\S]*?\*/\s*)?(?:public\s+)?async\s+([a-zA-Z0-9_]+)\s*\(', body):
+        mname = m.group(1)
+        start_idx = m.start()
+        brace_m = re.search(r'\{', body[m.end():])
+        if not brace_m:
+            continue
+        open_pos = m.end() + brace_m.start()
+        depth = 0
+        in_str = None
+        pos = open_pos
+        while pos < len(body):
+            c = body[pos]
+            if in_str:
+                if c == "\\" and pos + 1 < len(body):
+                    pos += 1
+                elif c == in_str:
+                    in_str = None
+            elif c in ('"', "'", "`"):
+                in_str = c
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    method_src = body[start_idx:pos + 1].strip()
+                    methods.append((mname, method_src))
+                    break
+            pos += 1
+    return methods
+
+
 def _merge_ts_code(existing_code: str, new_code: str, file_path: str = "") -> str:
-    """Merge TypeScript code, injecting new methods into the client class."""
+    """Merge TypeScript code, injecting new methods into the client class body."""
     if not existing_code.strip():
         return new_code
     if not new_code.strip():
@@ -262,22 +367,27 @@ def _merge_ts_code(existing_code: str, new_code: str, file_path: str = "") -> st
 
     result = existing_code
     if "class " in existing_code and "class " in new_code:
-        new_methods = re.findall(
-            r'(async\s+[a-zA-Z0-9_]+\([^)]*\)[\s\S]*?^  \})', new_code, re.MULTILINE
-        )
-        if new_methods:
-            added = []
-            for m in new_methods:
+        new_methods = _extract_ts_class_methods(new_code)
+        if not new_methods:
+            # Fallback regex extraction if brace parsing found nothing
+            raw_methods = re.findall(
+                r'(async\s+[a-zA-Z0-9_]+\([^)]*\)[\s\S]*?^  \})', new_code, re.MULTILINE
+            )
+            for m in raw_methods:
                 m_match = re.search(r'async\s+([a-zA-Z0-9_]+)', m)
                 if m_match:
-                    mname = m_match.group(1)
-                    if f"{mname}(" not in existing_code:
-                        added.append(m)
-            if added:
-                last_brace = existing_code.rfind("}")
-                if last_brace != -1:
-                    injection = "\n\n  " + "\n\n  ".join(added) + "\n"
-                    result = existing_code[:last_brace] + injection + existing_code[last_brace:]
+                    new_methods.append((m_match.group(1), m.strip()))
+
+        added = []
+        for mname, msrc in new_methods:
+            if f"{mname}(" not in existing_code:
+                added.append(msrc)
+
+        if added:
+            class_close_idx = _find_class_body_close_brace(existing_code)
+            if class_close_idx is not None:
+                injection = "\n\n  " + "\n\n  ".join(added) + "\n"
+                result = existing_code[:class_close_idx] + injection + existing_code[class_close_idx:]
 
     # Ensure Client alias is exported if class has a specific name like PetstoreClient
     if "class " in result and "export class Client" not in result and "as Client" not in result:
