@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Boxes,
   Check,
@@ -13,6 +14,7 @@ import {
   FileCode2,
   FileJson,
   FileText,
+  FlaskConical,
   Folder,
   FolderOpen,
   Info,
@@ -49,20 +51,15 @@ export interface McpToolsTabProps {
   runIsLive: boolean;
   onRunBuild: () => void;
   onContinueToVerify: () => void;
+  onProceedToTest?: () => Promise<void> | void;
+  onGoToDependencies?: () => void;
   onGoToIngest: () => void;
   onAskWeaver?: (query: string, context?: Partial<WeaverWorkspaceContext>) => void;
   externalFileUpdate?: { file: string; content: string; timestamp: number } | null;
 }
 
 type SubNavTab = 'files' | 'tools' | 'dependencies' | 'verification' | 'manifest';
-type FileItem =
-  | 'tools.py'
-  | 'server.py'
-  | 'test_mcp.py'
-  | 'manifest.json'
-  | 'requirements.txt'
-  | 'test_tools.py'
-  | 'test_safety.py';
+type FileItem = string;
 
 export const McpToolsTab: React.FC<McpToolsTabProps> = ({
   projectId,
@@ -73,6 +70,8 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
   runIsLive,
   onRunBuild,
   onContinueToVerify,
+  onProceedToTest,
+  onGoToDependencies,
   onGoToIngest,
   onAskWeaver,
   externalFileUpdate,
@@ -94,6 +93,7 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
   const [diffMode, setDiffMode] = useState(false);
   const [fastmcpFolderOpen, setFastmcpFolderOpen] = useState(true);
   const [testsFolderOpen, setTestsFolderOpen] = useState(true);
+  const [otherFolderOpen, setOtherFolderOpen] = useState(true);
   const [error, setError] = useState('');
 
   // Real generated files from API
@@ -105,39 +105,64 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
   const [editedContents, setEditedContents] = useState<Partial<Record<FileItem, string>>>({});
   const [dirtyFiles, setDirtyFiles] = useState<Set<FileItem>>(new Set());
 
-  useEffect(() => {
+  const fetchFiles = useCallback(async () => {
     if (!projectId) return;
+    try {
+      const fileList = await apiFetch<GeneratedFileMeta[]>(`/projects/${projectId}/files`);
+      setFiles(fileList || []);
+      const contents: Record<string, string> = {};
+      for (const f of fileList || []) {
+        const name = f.file_path.split('/').pop() || f.file_path;
+        try {
+          const res = await apiFetch<{ content: string }>(`/projects/${projectId}/files/${f.id}/content`);
+          if (res && res.content) {
+            contents[name] = res.content;
+            contents[f.file_path] = res.content;
+          }
+        } catch {
+          // File content not ready yet
+        }
+      }
+      setFileContents(prev => ({ ...prev, ...contents }));
+    } catch {
+      // Not ready yet
+    }
+  }, [projectId]);
+
+  useEffect(() => {
     let cancelled = false;
     setLoadingFiles(true);
-    apiFetch<GeneratedFileMeta[]>(`/projects/${projectId}/files`)
-      .then(async fileList => {
-        if (cancelled) return;
-        setFiles(fileList || []);
-        const contents: Record<string, string> = {};
-        for (const f of fileList || []) {
-          const name = f.file_path.split('/').pop() || f.file_path;
-          try {
-            const res = await apiFetch<{ content: string }>(`/projects/${projectId}/files/${f.id}/content`);
-            if (res && res.content) {
-              contents[name] = res.content;
-            }
-          } catch {
-            // File content not ready yet
-          }
-        }
-        if (!cancelled) setFileContents(contents);
-      })
-      .catch(() => {
-        // Fallback to synthesized previews
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingFiles(false);
-      });
+    fetchFiles().finally(() => {
+      if (!cancelled) setLoadingFiles(false);
+    });
+
+    // Poll while live or code generation is in progress so newly generated files stream in real-time
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    if (runIsLive || activeRun?.status === 'running' || activeRun?.current_node === 'code_agent') {
+      intervalId = setInterval(() => {
+        if (!cancelled) fetchFiles();
+      }, 2500);
+    }
 
     return () => {
       cancelled = true;
+      if (intervalId) clearInterval(intervalId);
     };
-  }, [projectId, activeRun?.status]);
+  }, [fetchFiles, runIsLive, activeRun?.status, activeRun?.current_node]);
+
+  // Auto-select preferred file when files arrive
+  useEffect(() => {
+    if (files.length > 0) {
+      const fileNames = files.map(f => f.file_path.split('/').pop() || f.file_path);
+      const filePaths = files.map(f => f.file_path);
+      if (!fileNames.includes(selectedFile) && !filePaths.includes(selectedFile)) {
+        const defaultFile = fileNames.includes('tools.py')
+          ? 'tools.py'
+          : filePaths.find(p => p.endsWith('tools.py')) || fileNames[0];
+        setSelectedFile(defaultFile);
+      }
+    }
+  }, [files, selectedFile]);
 
   // Load user saved edits from localStorage on project load
   useEffect(() => {
@@ -256,162 +281,38 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
     return tools.find(t => t.id === selectedToolId) || tools[0] || null;
   }, [tools, selectedToolId]);
 
-  // Base dynamic template code for any file
-  const getDynamicCodeFor = useCallback(
-    (file: FileItem): string => {
-      const title = specTitle;
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const baseUrl = spec?.base_url || 'https://petstore.swagger.io/v2';
+  // Group real generated files from backend
+  const { fastmcpFiles, testFiles, otherFiles } = useMemo(() => {
+    const fastmcp: GeneratedFileMeta[] = [];
+    const test: GeneratedFileMeta[] = [];
+    const other: GeneratedFileMeta[] = [];
 
-      if (file === 'server.py') {
-        return `from fastmcp import FastMCP
-from .tools import register_tools
-import os
-
-# Initialize FastMCP Server
-mcp = FastMCP(
-    "${slug}",
-    dependencies=["httpx", "pydantic"],
-)
-
-# Register generated API tools
-register_tools(mcp)
-
-if __name__ == "__main__":
-    mcp.run()
-`;
+    files.forEach(f => {
+      const lower = f.file_path.toLowerCase();
+      if (lower.startsWith('tests/') || lower.startsWith('test_') || lower.includes('/test_')) {
+        test.push(f);
+      } else if (
+        lower.startsWith('fastmcp/') ||
+        lower.endsWith('.py') ||
+        lower.endsWith('.json') ||
+        lower.endsWith('.txt') ||
+        lower.endsWith('.toml')
+      ) {
+        fastmcp.push(f);
+      } else {
+        other.push(f);
       }
+    });
 
-      if (file === 'test_mcp.py') {
-        return `"""Automated Pytest Suite for FastMCP Tools"""
-import pytest
-from mcp.server.fastmcp import FastMCP
-from .tools import register_tools
+    return { fastmcpFiles: fastmcp, testFiles: test, otherFiles: other };
+  }, [files]);
 
-@pytest.fixture
-def mcp_app():
-    app = FastMCP("test-server")
-    register_tools(app)
-    return app
-
-def test_mcp_tools_registration(mcp_app):
-    """Verify all ${tools.length} synthesized tools register with valid JSON schemas."""
-    tools = mcp_app.list_tools()
-    assert len(tools) >= ${tools.length}
-
-${tools.slice(0, 3).map(t => `def test_${t.name}_schema(mcp_app):
-    tool = next(t for t in mcp_app.list_tools() if t.name == "${t.name}")
-    assert tool is not None
-    assert "${t.safetyBadge}" in (tool.description or "")
-`).join('\n')}
-`;
-      }
-
-      if (file === 'test_tools.py') {
-        return `"""Unit test execution for synthesized FastMCP tool definitions."""
-import pytest
-from unittest.mock import AsyncMock, patch
-from .tools import register_tools
-from mcp.server.fastmcp import FastMCP
-
-@pytest.mark.asyncio
-async def test_tool_invocations():
-    app = FastMCP("test-app")
-    register_tools(app)
-    assert len(app.list_tools()) == ${tools.length}
-`;
-      }
-
-      if (file === 'test_safety.py') {
-        return `"""Verification of deterministic safety classifications and approval gates."""
-import pytest
-from .tools import register_tools
-from mcp.server.fastmcp import FastMCP
-
-def test_destructive_gates():
-    app = FastMCP("safety-audit")
-    register_tools(app)
-    tools = app.list_tools()
-    for tool in tools:
-        if "DESTRUCTIVE" in tool.description:
-            assert "⚠" in tool.description
-`;
-      }
-
-      if (file === 'requirements.txt') {
-        return `fastmcp>=0.1.0
-httpx>=0.27.0
-pydantic>=2.0.0
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
-`;
-      }
-
-      if (file === 'manifest.json') {
-        return JSON.stringify(
-          {
-            schema_version: '1.0.0',
-            server: {
-              name: slug,
-              version: '1.0.0',
-              description: `FastMCP Server generated for ${title}`,
-              framework: 'fastmcp',
-            },
-            tools: tools.map(t => ({
-              name: t.name,
-              description: `[${t.safetyBadge}] ${t.summary}`,
-              method: t.method,
-              path: t.path,
-              risk_level: t.riskLevel,
-              requires_confirmation: t.requiresConfirmation,
-            })),
-          },
-          null,
-          2
-        );
-      }
-
-      // Default: tools.py
-      return `from fastmcp import FastMCP
-import os
-
-BASE_URL = os.getenv(
-    "API_BASE_URL",
-    "${baseUrl}"
-)
-
-def register_tools(mcp: FastMCP):
-    """Register all ${tools.length} synthesized API endpoints as typed FastMCP tools."""
-
-${tools.map(t => `    @mcp.tool(
-        name="${t.name}",
-        description="[${t.safetyBadge}] ${t.summary}",
-    )
-    async def ${t.name}(
-        # Path: ${t.path}
-        # Risk: ${t.riskLevel} | Requires confirmation: ${t.requiresConfirmation}
-    ) -> dict:
-        """Call ${t.method} ${t.path}"""
-        import httpx
-        async with httpx.AsyncClient(base_url=BASE_URL) as client:
-            resp = await client.request(
-                method="${t.method}",
-                url="${t.path}",
-                headers={"User-Agent": "APIWeaver-FastMCP/1.0"}
-            )
-            return {"status_code": resp.status_code, "data": resp.json() if resp.headers.get("content-type") == "application/json" else resp.text}
-`).join('\n')}
-`;
-    },
-    [specTitle, spec, tools]
-  );
-
-  // Baseline original code (unmodified)
+  // Baseline original code (unmodified) - strictly authentic from backend
   const getOriginalCode = useCallback(
     (file: FileItem): string => {
-      return fileContents[file] || getDynamicCodeFor(file);
+      return fileContents[file] || '';
     },
-    [fileContents, getDynamicCodeFor]
+    [fileContents]
   );
 
   // Current code (edited or stored or original)
@@ -617,6 +518,46 @@ ${tools.map(t => `    @mcp.tool(
     );
   }
 
+  const renderFileRow = (f: GeneratedFileMeta) => {
+    const fileName = f.file_path.split('/').pop() || f.file_path;
+    const isSelected = selectedFile === f.file_path || selectedFile === fileName;
+    const isDirty = dirtyFiles.has(f.file_path) || dirtyFiles.has(fileName);
+
+    return (
+      <button
+        key={f.id || f.file_path}
+        type="button"
+        onClick={() => setSelectedFile(fileName)}
+        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-colors font-mono text-[11px] ${
+          isSelected
+            ? 'bg-[#131b2e] text-white border border-sky-500/30'
+            : 'text-neutral-400 hover:text-white hover:bg-white/[0.03]'
+        }`}
+      >
+        <div className="flex items-center gap-2 truncate min-w-0">
+          {fileName.endsWith('.py') ? (
+            <FileCode2 className="h-3.5 w-3.5 text-sky-400/80 shrink-0" />
+          ) : fileName.endsWith('.json') ? (
+            <FileJson className="h-3.5 w-3.5 text-amber-400/80 shrink-0" />
+          ) : (
+            <FileText className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
+          )}
+          <span className="truncate">{fileName}</span>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+          {f.size_bytes > 0 && (
+            <span className="text-[10px] text-neutral-500 font-mono">
+              {f.size_bytes < 1024 ? `${f.size_bytes}b` : `${(f.size_bytes / 1024).toFixed(1)}k`}
+            </span>
+          )}
+          {isDirty && (
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" title="Modified (unsaved)" />
+          )}
+        </div>
+      </button>
+    );
+  };
+
   return (
     <div className="flex flex-col h-full min-h-0 bg-[#07080c] text-white">
       {/* Toast Notifications */}
@@ -694,15 +635,77 @@ ${tools.map(t => `    @mcp.tool(
               <span>{runIsLive ? 'Synthesizing…' : 'Re-synthesize'}</span>
             </button>
 
-            <button
-              onClick={onContinueToVerify}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/15 hover:bg-emerald-500/25 text-xs font-medium text-emerald-300 transition-colors"
-            >
-              <Check className="h-3.5 w-3.5" />
-              <span>Verify</span>
-            </button>
+            {files.length > 0 && (
+              <button
+                onClick={() => {
+                  if (onProceedToTest) {
+                    onProceedToTest();
+                  } else {
+                    onContinueToVerify();
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500 hover:bg-emerald-400 text-neutral-950 text-xs font-semibold shadow-md shadow-emerald-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+              >
+                <FlaskConical className="h-3.5 w-3.5" />
+                <span>Proceed to Test</span>
+              </button>
+            )}
           </div>
         </div>
+
+        {/* Real-time Status Banner */}
+        {files.length > 0 && !runIsLive && (
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-lg shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="h-9 w-9 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0">
+                <CheckCircle2 className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-white">FastMCP Files Generated Successfully</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    {files.length} file{files.length === 1 ? '' : 's'} compiled
+                  </span>
+                </div>
+                <p className="text-[11px] text-neutral-400 mt-0.5">
+                  Source code, tool bindings, and test fixtures are compiled and AST-validated. Proceed to Stage 04 to run sandbox verification.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (onProceedToTest) {
+                  onProceedToTest();
+                } else {
+                  onContinueToVerify();
+                }
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500 hover:bg-emerald-400 text-neutral-950 text-xs font-semibold shadow-md shadow-emerald-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+            >
+              <FlaskConical className="h-3.5 w-3.5" />
+              <span>Proceed to Test</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
+        {(runIsLive || activeRun?.current_node === 'code_agent') && (
+          <div className="rounded-xl border border-sky-500/30 bg-sky-950/20 px-4 py-3 flex items-center justify-between gap-3 shadow-lg shrink-0">
+            <div className="flex items-center gap-3">
+              <Loader2 className="h-5 w-5 text-sky-400 animate-spin shrink-0" />
+              <div>
+                <span className="text-xs font-bold text-white">Synthesizing FastMCP Server in Real-Time...</span>
+                <p className="text-[11px] text-neutral-400 mt-0.5">
+                  LangGraph Code Agent is generating typed Python tools, AST validation models, and pytest fixtures ({files.length} files created so far).
+                </p>
+              </div>
+            </div>
+            <span className="text-[10px] font-mono text-sky-400 animate-pulse px-2.5 py-1 rounded-full bg-sky-500/10 border border-sky-500/20 shrink-0">
+              Generating code...
+            </span>
+          </div>
+        )}
 
         {/* Sub-Navigation Tabs */}
         <div className="flex items-center gap-1.5 border-b border-white/10 pb-2.5 shrink-0">
@@ -787,7 +790,7 @@ ${tools.map(t => `    @mcp.tool(
                   PROJECT FILES
                 </span>
                 <span className="text-[10px] font-mono text-neutral-500">
-                  {dirtyFiles.size > 0 ? `${dirtyFiles.size} modified` : '7 files'}
+                  {dirtyFiles.size > 0 ? `${dirtyFiles.size} modified` : `${files.length} file${files.length === 1 ? '' : 's'}`}
                 </span>
               </div>
 
@@ -805,229 +808,282 @@ ${tools.map(t => `    @mcp.tool(
 
               {/* File Tree List */}
               <div className="flex-1 min-h-0 overflow-y-auto space-y-3 text-xs pr-1">
-                {/* fastmcp folder */}
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => setFastmcpFolderOpen(prev => !prev)}
-                    className="w-full flex items-center gap-1.5 text-neutral-400 hover:text-white font-medium py-1 text-left"
-                  >
-                    {fastmcpFolderOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                    <Folder className="h-3.5 w-3.5 text-sky-400" />
-                    <span>fastmcp</span>
-                  </button>
-
-                  {fastmcpFolderOpen && (
-                    <div className="ml-3 mt-1 space-y-1 pl-2 border-l border-white/10">
-                      {[
-                        'tools.py' as FileItem,
-                        'server.py' as FileItem,
-                        'test_mcp.py' as FileItem,
-                        'manifest.json' as FileItem,
-                        'requirements.txt' as FileItem,
-                      ]
-                        .filter(f => f.toLowerCase().includes(fileSearch.toLowerCase()))
-                        .map(f => {
-                          const isSelected = selectedFile === f;
-                          const isDirty = dirtyFiles.has(f);
-                          return (
-                            <button
-                              key={f}
-                              type="button"
-                              onClick={() => setSelectedFile(f)}
-                              className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-colors font-mono text-[11px] ${
-                                isSelected
-                                  ? 'bg-[#131b2e] text-white border border-sky-500/30'
-                                  : 'text-neutral-400 hover:text-white hover:bg-white/[0.03]'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2 truncate">
-                                <span className="text-neutral-500">◇</span>
-                                <span className="truncate">{f}</span>
-                              </div>
-                              {isDirty && (
-                                <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" title="Modified (unsaved)" />
-                              )}
-                            </button>
-                          );
-                        })}
+                {files.length === 0 ? (
+                  (runIsLive || activeRun?.current_node === 'code_agent' || loadingFiles) ? (
+                    <div className="py-8 px-2 text-center text-xs text-neutral-400 space-y-2">
+                      <Loader2 className="h-5 w-5 animate-spin text-sky-400 mx-auto" />
+                      <p className="font-mono text-[11px] text-sky-300">Synthesizing files...</p>
+                      <p className="text-[10px] text-neutral-500">Files appear here as synthesized</p>
                     </div>
-                  )}
-                </div>
-
-                {/* tests folder */}
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => setTestsFolderOpen(prev => !prev)}
-                    className="w-full flex items-center gap-1.5 text-neutral-400 hover:text-white font-medium py-1 text-left"
-                  >
-                    {testsFolderOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                    <Folder className="h-3.5 w-3.5 text-amber-400" />
-                    <span>tests</span>
-                  </button>
-
-                  {testsFolderOpen && (
-                    <div className="ml-3 mt-1 space-y-1 pl-2 border-l border-white/10">
-                      {['test_tools.py' as FileItem, 'test_safety.py' as FileItem]
-                        .filter(f => f.toLowerCase().includes(fileSearch.toLowerCase()))
-                        .map(f => {
-                          const isSelected = selectedFile === f;
-                          const isDirty = dirtyFiles.has(f);
-                          return (
-                            <button
-                              key={f}
-                              type="button"
-                              onClick={() => setSelectedFile(f)}
-                              className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-colors font-mono text-[11px] ${
-                                isSelected
-                                  ? 'bg-[#131b2e] text-white border border-sky-500/30'
-                                  : 'text-neutral-400 hover:text-white hover:bg-white/[0.03]'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2 truncate">
-                                <span className="text-neutral-500">◇</span>
-                                <span className="truncate">{f}</span>
-                              </div>
-                              {isDirty && (
-                                <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" title="Modified (unsaved)" />
-                              )}
-                            </button>
-                          );
-                        })}
+                  ) : (
+                    <div className="py-8 px-2 text-center text-xs text-neutral-400 space-y-2">
+                      <FolderOpen className="h-6 w-6 text-neutral-600 mx-auto" />
+                      <p className="text-neutral-400 font-medium">No files synthesized yet</p>
+                      <p className="text-[10px] text-neutral-500">Approve Stage 02 to generate files</p>
                     </div>
-                  )}
-                </div>
+                  )
+                ) : (
+                  <>
+                    {/* fastmcp folder */}
+                    {fastmcpFiles.length > 0 && (
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => setFastmcpFolderOpen(prev => !prev)}
+                          className="w-full flex items-center justify-between text-neutral-400 hover:text-white font-medium py-1 text-left"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {fastmcpFolderOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                            <Folder className="h-3.5 w-3.5 text-sky-400" />
+                            <span>fastmcp</span>
+                          </div>
+                          <span className="text-[10px] text-neutral-500 font-mono">{fastmcpFiles.length}</span>
+                        </button>
+
+                        {fastmcpFolderOpen && (
+                          <div className="ml-3 mt-1 space-y-1 pl-2 border-l border-white/10">
+                            {fastmcpFiles
+                              .filter(f => f.file_path.toLowerCase().includes(fileSearch.toLowerCase()))
+                              .map(renderFileRow)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* tests folder */}
+                    {testFiles.length > 0 && (
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => setTestsFolderOpen(prev => !prev)}
+                          className="w-full flex items-center gap-1.5 text-neutral-400 hover:text-white font-medium py-1 text-left"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {testsFolderOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                            <Folder className="h-3.5 w-3.5 text-amber-400" />
+                            <span>tests</span>
+                          </div>
+                          <span className="text-[10px] text-neutral-500 font-mono">{testFiles.length}</span>
+                        </button>
+
+                        {testsFolderOpen && (
+                          <div className="ml-3 mt-1 space-y-1 pl-2 border-l border-white/10">
+                            {testFiles
+                              .filter(f => f.file_path.toLowerCase().includes(fileSearch.toLowerCase()))
+                              .map(renderFileRow)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* other folder */}
+                    {otherFiles.length > 0 && (
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => setOtherFolderOpen(prev => !prev)}
+                          className="w-full flex items-center gap-1.5 text-neutral-400 hover:text-white font-medium py-1 text-left"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {otherFolderOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                            <Folder className="h-3.5 w-3.5 text-purple-400" />
+                            <span>other</span>
+                          </div>
+                          <span className="text-[10px] text-neutral-500 font-mono">{otherFiles.length}</span>
+                        </button>
+
+                        {otherFolderOpen && (
+                          <div className="ml-3 mt-1 space-y-1 pl-2 border-l border-white/10">
+                            {otherFiles
+                              .filter(f => f.file_path.toLowerCase().includes(fileSearch.toLowerCase()))
+                              .map(renderFileRow)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             </div>
 
             {/* COLUMN 2: CENTRAL MONACO CODE EDITOR (6 cols on md) */}
             <div className="md:col-span-6 rounded-xl border border-white/10 bg-[#090a0f] flex flex-col min-h-0 overflow-hidden">
-              {/* Tab Header Bar */}
-              <div className="flex items-center justify-between border-b border-white/10 px-3 py-2 bg-white/[0.02] shrink-0">
-                <div className="flex items-center gap-2 font-mono text-xs text-white">
-                  <span className="text-neutral-400">◇</span>
-                  <span className="font-medium">{selectedFile}</span>
-                  {isSelectedFileDirty && (
-                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title="Modified" />
-                  )}
-                  {isSelectedFileDirty && (
-                    <span className="text-[10px] text-amber-400 font-sans ml-1">● Unsaved</span>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2 text-xs">
-                  <button
-                    type="button"
-                    onClick={handleFormat}
-                    className="px-2.5 py-1 rounded hover:bg-white/10 text-neutral-400 hover:text-white transition-colors"
-                    title="Format file content"
-                  >
-                    Format
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setDiffMode(prev => !prev)}
-                    className={`px-2.5 py-1 rounded transition-colors ${
-                      diffMode
-                        ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30 font-medium'
-                        : 'text-neutral-400 hover:text-white hover:bg-white/10'
-                    }`}
-                    title="Toggle side-by-side diff against original"
-                  >
-                    {diffMode ? 'Close Diff' : 'Diff'}
-                  </button>
-
-                  {isSelectedFileDirty && (
-                    <button
-                      type="button"
-                      onClick={handleRevert}
-                      className="p-1 rounded hover:bg-white/10 text-neutral-400 hover:text-white transition-colors"
-                      title="Revert edits to original"
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={handleSave}
-                    disabled={isSaving}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded transition-colors font-medium ${
-                      isSelectedFileDirty
-                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
-                        : 'text-neutral-400 hover:text-white hover:bg-white/10'
-                    } disabled:opacity-50`}
-                    title="Save changes to workspace (Ctrl+S)"
-                  >
-                    <Save className={`h-3 w-3 ${isSaving ? 'animate-spin' : ''}`} />
-                    <span>{isSaving ? 'Saving…' : 'Save'}</span>
-                  </button>
-
-
-                  <button
-                    type="button"
-                    onClick={copyToClipboard}
-                    className="p-1 rounded hover:bg-white/10 text-neutral-400 hover:text-white transition-colors ml-0.5"
-                    title="Copy code"
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Monaco Editor Container */}
-              <div className="flex-1 min-h-0 w-full relative">
-                {diffMode ? (
-                  <DiffEditor
-                    height="100%"
-                    language={
-                      selectedFile.endsWith('.json')
-                        ? 'json'
-                        : selectedFile.endsWith('.py')
-                        ? 'python'
-                        : 'plaintext'
-                    }
-                    theme="vs-dark"
-                    original={originalEditorContent}
-                    modified={activeEditorContent}
-                    options={{
-                      readOnly: true,
-                      minimap: { enabled: false },
-                      fontSize: 12,
-                      lineNumbers: 'on',
-                      scrollBeyondLastLine: false,
-                      renderSideBySide: true,
-                    }}
-                  />
+              {files.length === 0 ? (
+                (runIsLive || activeRun?.current_node === 'code_agent' || loadingFiles) ? (
+                  <div className="flex-1 min-h-[380px] flex flex-col items-center justify-center p-6 text-center">
+                    <div className="relative mb-4">
+                      <div className="h-12 w-12 rounded-2xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400 shadow-lg shadow-sky-500/10">
+                        <Code2 className="h-6 w-6 animate-pulse" />
+                      </div>
+                      <span className="absolute -bottom-1 -right-1 flex h-4 w-4">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-4 w-4 bg-sky-500"></span>
+                      </span>
+                    </div>
+                    <h3 className="text-sm font-semibold text-white">Synthesizing FastMCP Server in Real-Time</h3>
+                    <p className="text-xs text-neutral-400 max-w-sm mt-1.5 mb-4">
+                      LangGraph Code Agent is compiling your OpenAPI endpoints into typed FastMCP tools, client models, and pytest fixtures. Files will stream directly into this editor as they are compiled.
+                    </p>
+                    <div className="flex items-center gap-2 text-xs font-mono text-sky-400 bg-sky-500/10 border border-sky-500/20 px-3 py-1.5 rounded-lg">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>code_agent compiling AST...</span>
+                    </div>
+                  </div>
                 ) : (
-                  <Editor
-                    height="100%"
-                    language={
-                      selectedFile.endsWith('.json')
-                        ? 'json'
-                        : selectedFile.endsWith('.py')
-                        ? 'python'
-                        : 'plaintext'
-                    }
-                    theme="vs-dark"
-                    value={activeEditorContent}
-                    onChange={handleEditorChange}
-                    options={{
-                      readOnly: false,
-                      minimap: { enabled: false },
-                      fontSize: 12,
-                      lineNumbers: 'on',
-                      scrollBeyondLastLine: false,
-                      renderLineHighlight: 'all',
-                      wordWrap: 'on',
-                      tabSize: 4,
-                      insertSpaces: true,
-                    }}
-                  />
-                )}
-              </div>
+                  <div className="flex-1 min-h-[380px] flex flex-col items-center justify-center p-6 text-center">
+                    <div className="h-12 w-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-4 shadow-lg shadow-amber-500/10">
+                      <ShieldAlert className="h-6 w-6" />
+                    </div>
+                    <h3 className="text-sm font-semibold text-white">Awaiting Stage 02 Approval</h3>
+                    <p className="text-xs text-neutral-400 max-w-sm mt-1.5 mb-5">
+                      FastMCP code synthesis will begin automatically once you review and approve the Dependency Graph in Stage 02.
+                    </p>
+                    {onGoToDependencies && (
+                      <button
+                        type="button"
+                        onClick={onGoToDependencies}
+                        className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-medium text-white transition-colors"
+                      >
+                        <ArrowLeft className="h-3.5 w-3.5" />
+                        <span>Review Stage 02 Dependency Graph</span>
+                      </button>
+                    )}
+                  </div>
+                )
+              ) : (
+                <>
+                  {/* Tab Header Bar */}
+                  <div className="flex items-center justify-between border-b border-white/10 px-3 py-2 bg-white/[0.02] shrink-0">
+                    <div className="flex items-center gap-2 font-mono text-xs text-white">
+                      <span className="text-neutral-400">◇</span>
+                      <span className="font-medium">{selectedFile}</span>
+                      {isSelectedFileDirty && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title="Modified" />
+                      )}
+                      {isSelectedFileDirty && (
+                        <span className="text-[10px] text-amber-400 font-sans ml-1">● Unsaved</span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={handleFormat}
+                        className="px-2.5 py-1 rounded hover:bg-white/10 text-neutral-400 hover:text-white transition-colors"
+                        title="Format file content"
+                      >
+                        Format
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDiffMode(prev => !prev)}
+                        className={`px-2.5 py-1 rounded transition-colors ${
+                          diffMode
+                            ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30 font-medium'
+                            : 'text-neutral-400 hover:text-white hover:bg-white/10'
+                        }`}
+                        title="Toggle side-by-side diff against original"
+                      >
+                        {diffMode ? 'Close Diff' : 'Diff'}
+                      </button>
+
+                      {isSelectedFileDirty && (
+                        <button
+                          type="button"
+                          onClick={handleRevert}
+                          className="p-1 rounded hover:bg-white/10 text-neutral-400 hover:text-white transition-colors"
+                          title="Revert edits to original"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleSave}
+                        disabled={isSaving}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded transition-colors font-medium ${
+                          isSelectedFileDirty
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
+                            : 'text-neutral-400 hover:text-white hover:bg-white/10'
+                        } disabled:opacity-50`}
+                        title="Save changes to workspace (Ctrl+S)"
+                      >
+                        <Save className={`h-3 w-3 ${isSaving ? 'animate-spin' : ''}`} />
+                        <span>{isSaving ? 'Saving…' : 'Save'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={copyToClipboard}
+                        className="p-1 rounded hover:bg-white/10 text-neutral-400 hover:text-white transition-colors ml-0.5"
+                        title="Copy code"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Monaco Editor Container */}
+                  <div className="flex-1 min-h-0 w-full relative">
+                    {loadingFiles && !activeEditorContent && (
+                      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#090a0f]/80 backdrop-blur-sm gap-2">
+                        <Loader2 className="h-5 w-5 animate-spin text-sky-400" />
+                        <span className="text-xs font-mono text-neutral-400">Loading file content...</span>
+                      </div>
+                    )}
+                    {diffMode ? (
+                      <DiffEditor
+                        height="100%"
+                        language={
+                          selectedFile.endsWith('.json')
+                            ? 'json'
+                            : selectedFile.endsWith('.py')
+                            ? 'python'
+                            : 'plaintext'
+                        }
+                        theme="vs-dark"
+                        original={originalEditorContent}
+                        modified={activeEditorContent}
+                        options={{
+                          readOnly: true,
+                          minimap: { enabled: false },
+                          fontSize: 12,
+                          lineNumbers: 'on',
+                          scrollBeyondLastLine: false,
+                          renderSideBySide: true,
+                        }}
+                      />
+                    ) : (
+                      <Editor
+                        height="100%"
+                        language={
+                          selectedFile.endsWith('.json')
+                            ? 'json'
+                            : selectedFile.endsWith('.py')
+                            ? 'python'
+                            : 'plaintext'
+                        }
+                        theme="vs-dark"
+                        value={activeEditorContent}
+                        onChange={handleEditorChange}
+                        options={{
+                          readOnly: false,
+                          minimap: { enabled: false },
+                          fontSize: 12,
+                          lineNumbers: 'on',
+                          scrollBeyondLastLine: false,
+                          renderLineHighlight: 'all',
+                          wordWrap: 'on',
+                          tabSize: 4,
+                          insertSpaces: true,
+                        }}
+                      />
+                    )}
+                  </div>
+                </>
+              )}
             </div>
 
             {/* COLUMN 3: CONTEXTUAL ENDPOINT INSPECTOR (3 cols on md) */}
@@ -1372,10 +1428,25 @@ ${tools.map(t => `    @mcp.tool(
           )}
         </div>
         <button
-          onClick={onContinueToVerify}
-          className={btnPrimary}
+          onClick={() => {
+            if (files.length > 0 && onProceedToTest) {
+              onProceedToTest();
+            } else {
+              onContinueToVerify();
+            }
+          }}
+          disabled={runIsLive && files.length === 0}
+          className={`${btnPrimary} flex items-center gap-2 ${runIsLive && files.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
         >
-          Continue to Verify <ArrowRight className="h-4 w-4" />
+          {files.length > 0 ? (
+            <>
+              <FlaskConical className="h-4 w-4" />
+              <span>Proceed to Test</span>
+            </>
+          ) : (
+            <span>Continue to Verify</span>
+          )}
+          <ArrowRight className="h-4 w-4" />
         </button>
       </div>
     </div>

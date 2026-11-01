@@ -455,11 +455,22 @@ export const ProjectWorkspace: React.FC = () => {
 
     if (autoFollow) {
       if (isPaused) {
-        setActiveTab('dependencies');
+        if (payload.is_export_ready || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 80)) {
+          setActiveTab('result');
+        } else {
+          setActiveTab('dependencies');
+        }
       } else if (payload.current_node) {
         const node = String(payload.current_node);
         if (node === 'doc_agent') setActiveTab('ingest');
-        else if (node === 'planner_agent' || node === 'approval_gate') setActiveTab('dependencies');
+        else if (node === 'planner_agent') setActiveTab('dependencies');
+        else if (node === 'approval_gate') {
+          if (payload.is_export_ready || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 80)) {
+            setActiveTab('result');
+          } else {
+            setActiveTab('dependencies');
+          }
+        }
         else if (node === 'code_agent') setActiveTab('tools');
         else if (node === 'test_agent' || node === 'repair_agent') setActiveTab('verify');
         else if (node === 'export_agent') setActiveTab('result');
@@ -1435,6 +1446,11 @@ export const ProjectWorkspace: React.FC = () => {
                 runIsLive={runIsLive}
                 onRunBuild={runBuild}
                 onContinueToVerify={() => setActiveTab('verify')}
+                onProceedToTest={async () => {
+                  setActiveTab('verify');
+                  await runTests();
+                }}
+                onGoToDependencies={() => setActiveTab('dependencies')}
                 onGoToIngest={() => setActiveTab('ingest')}
                 onAskWeaver={handleAskWeaver}
                 externalFileUpdate={externalFileUpdate}
