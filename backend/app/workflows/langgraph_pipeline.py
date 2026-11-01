@@ -1748,6 +1748,8 @@ class LangGraphOrchestrator:
         if self.session_factory:
             async with self.session_factory() as session:
                 now = datetime.datetime.now(datetime.UTC)
+                lease_seconds = getattr(self.settings, "workflow_lease_seconds", 300)
+                lease_cutoff = now - datetime.timedelta(seconds=lease_seconds)
                 claimed = cast(CursorResult[Any], await session.execute(
                     update(WorkflowRun)
                     .where(
@@ -1756,7 +1758,10 @@ class LangGraphOrchestrator:
                             WorkflowRun.status == WorkflowStatus.QUEUED,
                             and_(
                                 WorkflowRun.status == WorkflowStatus.RUNNING,
-                                WorkflowRun.heartbeat_at.is_(None),
+                                or_(
+                                    WorkflowRun.heartbeat_at.is_(None),
+                                    WorkflowRun.heartbeat_at < lease_cutoff,
+                                ),
                             ),
                         ),
                     )
