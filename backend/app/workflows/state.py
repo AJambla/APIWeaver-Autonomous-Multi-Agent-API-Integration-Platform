@@ -60,8 +60,10 @@ def merge_test_suite(
     right: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
     """Reducer that updates test suite results by test name or appends new tests."""
-    if not right:
+    if right is None:
         return list(left or [])
+    if not right:
+        return []
     if not left:
         return list(right)
     by_name: dict[str, dict[str, Any]] = {}
