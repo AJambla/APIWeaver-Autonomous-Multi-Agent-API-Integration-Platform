@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.deps import get_current_principal, get_db, get_redis
-from app.core.errors import NotFoundError
+from app.core.errors import NotFoundError, UnprocessableEntityError
 from app.core.logging import get_logger
 from app.models.codegen import CodeGenerationRun, GeneratedFile
 from app.models.enums import WorkflowStatus
@@ -22,7 +22,7 @@ from app.models.versioning import ArtifactVersion
 from app.models.workflow import WorkflowRun
 from app.rbac.enforce import require_project_permission
 from app.rbac.policy import Permission, Principal
-from app.schemas.generate import FileContentResponse, FileResponse
+from app.schemas.generate import FileContentResponse, FileContentUpdateRequest, FileResponse
 from app.schemas.generate import GenerateRequest as GenerateRequestAlias
 from app.schemas.generate import GenerateResponse as GenerateResponseAlias
 from app.services import audit_service
@@ -186,6 +186,71 @@ async def get_file_content(
     return FileContentResponse(
         file_path=file_meta.file_path,
         content=text,
+        language=file_meta.language,
+        file_type=file_meta.file_type,
+    )
+
+
+@router.put("/{id}/files/{file_id}/content", response_model=FileContentResponse)
+async def update_file_content(
+    file_id: uuid.UUID,
+    payload: FileContentUpdateRequest,
+    project: Project = Depends(require_project_permission(Permission.CODE_GENERATE)),
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_db),
+) -> FileContentResponse:
+    """Update the content of a generated file in S3 and workspace."""
+    file_meta = (
+        await session.execute(
+            select(GeneratedFile)
+            .join(CodeGenerationRun, GeneratedFile.code_generation_run_id == CodeGenerationRun.id)
+            .join(WorkflowRun, CodeGenerationRun.workflow_run_id == WorkflowRun.id)
+            .where(GeneratedFile.id == file_id, WorkflowRun.project_id == project.id)
+        )
+    ).scalar_one_or_none()
+    if file_meta is None:
+        raise NotFoundError("File not found.")
+
+    # Validate syntax prior to persisting
+    if file_meta.file_path.endswith(".py"):
+        import ast
+
+        try:
+            ast.parse(payload.content, filename=file_meta.file_path)
+        except SyntaxError as err:
+            raise UnprocessableEntityError(
+                f"Invalid Python syntax: {err.msg} at line {err.lineno}"
+            )
+    elif file_meta.file_path.endswith(".json"):
+        try:
+            json.loads(payload.content)
+        except json.JSONDecodeError as err:
+            raise UnprocessableEntityError(f"Invalid JSON: {err.msg}")
+
+    content_bytes = payload.content.encode("utf-8")
+    from app.services.storage_service import storage_service
+
+    await storage_service.put(
+        key=file_meta.content_s3_key,
+        content=content_bytes,
+        content_type="text/plain; charset=utf-8",
+    )
+    file_meta.size_bytes = len(content_bytes)
+
+    await audit_service.record(
+        session,
+        **audit_service.actor(principal),
+        action="generated_file.updated",
+        organization_id=project.organization_id,
+        resource_type="generated_file",
+        resource_id=str(file_meta.id),
+        metadata={"file_path": file_meta.file_path, "size_bytes": len(content_bytes)},
+    )
+    await session.commit()
+
+    return FileContentResponse(
+        file_path=file_meta.file_path,
+        content=payload.content,
         language=file_meta.language,
         file_type=file_meta.file_type,
     )

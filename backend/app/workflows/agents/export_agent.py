@@ -498,6 +498,14 @@ Add to `.cursor/mcp.json`:
             if s_content:
                 server_code = s_content
 
+        # Defensive portability: ensure server.py imports tools.py both as module and standalone script
+        if "from .tools import mcp" in server_code:
+            server_code = server_code.replace(
+                "from .tools import mcp",
+                "try:\n    from tools import mcp\nexcept (ImportError, ValueError):\n    from .tools import mcp",
+            )
+
+
         # Build in-memory ZIP package
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:

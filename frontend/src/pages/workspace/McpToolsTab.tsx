@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
+  AlertTriangle,
   ArrowRight,
   Boxes,
   Check,
@@ -85,6 +86,8 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
   const [safetyFilter, setSafetyFilter] = useState<string>('ALL');
   const [copiedCode, setCopiedCode] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [formatToast, setFormatToast] = useState(false);
   const [revertToast, setRevertToast] = useState(false);
   const [agentToast, setAgentToast] = useState(false);
@@ -445,17 +448,56 @@ ${tools.map(t => `    @mcp.tool(
     }
   };
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     const current = getCurrentCode(selectedFile);
+    setIsSaving(true);
+    setSaveError('');
+
+    // Always persist to localStorage as backup
     localStorage.setItem(`aw_mcp_edit_${projectId}_${selectedFile}`, current);
-    setDirtyFiles(prev => {
-      const next = new Set(prev);
-      next.delete(selectedFile);
-      return next;
-    });
-    setSavedToast(true);
-    setTimeout(() => setSavedToast(false), 2000);
-  }, [getCurrentCode, selectedFile, projectId]);
+
+    // Look for real backend file metadata
+    const matched = files.find(
+      f => f.file_path === selectedFile || f.file_path.split('/').pop() === selectedFile
+    );
+
+    if (matched) {
+      try {
+        await apiFetch(`/projects/${projectId}/files/${matched.id}/content`, {
+          method: 'PUT',
+          body: JSON.stringify({ content: current }),
+        });
+        setFileContents(prev => ({
+          ...prev,
+          [selectedFile]: current,
+        }));
+        setDirtyFiles(prev => {
+          const next = new Set(prev);
+          next.delete(selectedFile);
+          return next;
+        });
+        setSavedToast(true);
+        setTimeout(() => setSavedToast(false), 2500);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Failed to save file to server';
+        setSaveError(msg);
+        setTimeout(() => setSaveError(''), 5000);
+      } finally {
+        setIsSaving(false);
+      }
+    } else {
+      // Local preview file
+      setDirtyFiles(prev => {
+        const next = new Set(prev);
+        next.delete(selectedFile);
+        return next;
+      });
+      setSavedToast(true);
+      setTimeout(() => setSavedToast(false), 2500);
+      setIsSaving(false);
+    }
+  }, [getCurrentCode, selectedFile, projectId, files]);
+
 
   const handleRevert = () => {
     const orig = getOriginalCode(selectedFile);
@@ -588,9 +630,17 @@ ${tools.map(t => `    @mcp.tool(
       {savedToast && (
         <div className="fixed top-5 right-5 z-50 rounded-xl border border-sky-500/30 bg-[#0d1016] px-4 py-2.5 text-xs text-sky-300 shadow-2xl flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
           <Check className="h-4 w-4 text-sky-400" />
-          <span>File saved & persisted to workspace</span>
+          <span>File saved & persisted to S3 workspace</span>
         </div>
       )}
+
+      {saveError && (
+        <div className="fixed top-5 right-5 z-50 rounded-xl border border-rose-500/30 bg-[#180d0d] px-4 py-2.5 text-xs text-rose-300 shadow-2xl flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
+          <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+          <span>{saveError}</span>
+        </div>
+      )}
+
 
       {revertToast && (
         <div className="fixed top-5 right-5 z-50 rounded-xl border border-amber-500/30 bg-[#16120d] px-4 py-2.5 text-xs text-amber-300 shadow-2xl flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
@@ -903,16 +953,18 @@ ${tools.map(t => `    @mcp.tool(
                   <button
                     type="button"
                     onClick={handleSave}
+                    disabled={isSaving}
                     className={`flex items-center gap-1.5 px-2.5 py-1 rounded transition-colors font-medium ${
                       isSelectedFileDirty
                         ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
                         : 'text-neutral-400 hover:text-white hover:bg-white/10'
-                    }`}
+                    } disabled:opacity-50`}
                     title="Save changes to workspace (Ctrl+S)"
                   >
-                    <Save className="h-3 w-3" />
-                    <span>Save</span>
+                    <Save className={`h-3 w-3 ${isSaving ? 'animate-spin' : ''}`} />
+                    <span>{isSaving ? 'Saving…' : 'Save'}</span>
                   </button>
+
 
                   <button
                     type="button"
@@ -1259,11 +1311,13 @@ ${tools.map(t => `    @mcp.tool(
                 <button
                   type="button"
                   onClick={handleSave}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-white transition-colors"
+                  disabled={isSaving}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-white transition-colors disabled:opacity-50"
                 >
-                  <Save className="h-3 w-3" />
-                  <span>Save Manifest</span>
+                  <Save className={`h-3 w-3 ${isSaving ? 'animate-spin' : ''}`} />
+                  <span>{isSaving ? 'Saving…' : 'Save Manifest'}</span>
                 </button>
+
                 <button
                   type="button"
                   onClick={copyToClipboard}

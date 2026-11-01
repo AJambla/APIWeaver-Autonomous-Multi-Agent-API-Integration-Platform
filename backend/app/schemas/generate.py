@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import cast
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from app.core.constants import (
     DEFAULT_TARGET_LANGUAGES,
@@ -54,7 +54,18 @@ class FileResponse(ResponseModel):
 class FileContentResponse(ResponseModel):
     """Response containing the content of a generated file."""
 
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
     file_path: str
     content: str
     language: str | None = None
     file_type: str | None = None
+
+
+class FileContentUpdateRequest(StrictModel):
+    """Request to update the content of a generated file."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
+    content: str = Field(..., max_length=10_000_000, description="New UTF-8 content for the file.")
+
