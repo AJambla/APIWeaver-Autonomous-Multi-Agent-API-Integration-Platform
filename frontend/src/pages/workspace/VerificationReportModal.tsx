@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { CheckCircle2, ShieldAlert, ShieldCheck, X, XCircle, FileText, Code2, AlertTriangle } from 'lucide-react';
-import { btnGhost, btnPrimary, cardCls } from '../../components/ui';
+import { CheckCircle2, ShieldCheck, X, XCircle, AlertTriangle } from 'lucide-react';
+import { btnPrimary, cardCls } from '../../components/ui';
 import { VerificationReportData } from '../../lib/types';
 
 export interface VerificationReportModalProps {

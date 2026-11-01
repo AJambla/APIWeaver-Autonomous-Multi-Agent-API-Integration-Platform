@@ -7,20 +7,16 @@ import {
   FileCode,
   FileText,
   FlaskConical,
-  Info,
   Loader2,
   Lock,
   Package,
   RefreshCw,
   Server,
   ShieldAlert,
-  ShieldCheck,
-  Terminal,
 } from 'lucide-react';
 import { ApiSpec, ExportRecord, ProjectSummary, SpecEndpoint, TestRunSummary, VerificationReportData, WorkflowRunInfo } from '../../lib/types';
 
-import { btnGhost, btnPrimary, cardCls, StatCard, StatusBadge, tableCls, Td, Th } from '../../components/ui';
-import { shortId } from '../../lib/format';
+import { btnPrimary, cardCls, StatusBadge, tableCls, Td, Th } from '../../components/ui';
 import { VerificationReportModal } from './VerificationReportModal';
 
 export interface McpResultTabProps {
@@ -42,9 +38,9 @@ export interface McpResultTabProps {
 }
 
 export const McpResultTab: React.FC<McpResultTabProps> = ({
-  projectId,
+  projectId: _projectId,
   project,
-  spec,
+  spec: _spec,
   endpoints,
   testSummary,
   exports,
@@ -56,7 +52,7 @@ export const McpResultTab: React.FC<McpResultTabProps> = ({
   onDownloadExport,
   onGoToVerify,
   onApproveExport,
-  activeRun,
+  activeRun: _activeRun,
 }) => {
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [copiedConfig, setCopiedConfig] = useState(false);
@@ -98,7 +94,7 @@ export const McpResultTab: React.FC<McpResultTabProps> = ({
     if (testSummary) {
       const passed = testSummary.summary.passed ?? 0;
       const failed = testSummary.summary.failed ?? 0;
-      const isLive = (testSummary as any).environment === 'live';
+      const isLive = (testSummary as unknown as { environment?: string }).environment === 'live';
 
       if (isLive) {
         liveStatus = failed === 0 && passed > 0 ? 'PASS' : failed > 0 ? 'FAIL' : 'PASS';

@@ -10,36 +10,29 @@ import {
   ChevronRight,
   Code2,
   Copy,
-  ExternalLink,
   FileCode2,
   FileJson,
   FileText,
   FlaskConical,
   Folder,
   FolderOpen,
-  Info,
   Layers,
   Loader2,
   Network,
-  Play,
-  Plus,
-  RefreshCw,
   RotateCcw,
   RotateCw,
   Save,
   Search,
-  Shield,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
-  Terminal,
 } from 'lucide-react';
 import Editor, { DiffEditor } from '@monaco-editor/react';
 import { ApiSpec, GeneratedFileMeta, ProjectSummary, SpecEndpoint, WorkflowRunInfo } from '../../lib/types';
-import { btnGhost, btnPrimary, cardCls, EmptyState, ErrorBanner } from '../../components/ui';
+import { btnPrimary, EmptyState, ErrorBanner } from '../../components/ui';
 import { MethodChip } from './DependenciesTab';
 import { apiFetch } from '../../lib/api';
-import { NormalizedSpec, specFormat, specVersion } from '../../lib/format';
+import { NormalizedSpec } from '../../lib/format';
 import { WeaverWorkspaceContext } from '../../components/WeaverAgentDrawer';
 
 export interface McpToolsTabProps {
@@ -63,7 +56,7 @@ type FileItem = string;
 
 export const McpToolsTab: React.FC<McpToolsTabProps> = ({
   projectId,
-  project,
+  project: _project,
   spec,
   endpoints,
   activeRun,
@@ -235,9 +228,6 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
 
   // Normalized spec details
   const rawSpec = useMemo(() => (spec?.raw_normalized ?? {}) as NormalizedSpec, [spec]);
-  const specTitle = useMemo(() => {
-    return spec?.title || rawSpec.info?.title || project?.name || 'OpenAPI Spec';
-  }, [spec, rawSpec, project]);
 
   // Awaiting test approval gate (Stage 03 complete, waiting for human sign-off before Stage 04 tests)
   const isAwaitingTestApproval = useMemo(() => {
@@ -261,7 +251,6 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
       const method = ep.method.toUpperCase();
       const isDelete = method === 'DELETE';
       const isStateChanging = ['POST', 'PUT', 'PATCH'].includes(method);
-      const isSafe = ['GET', 'HEAD', 'OPTIONS'].includes(method);
 
       // Clean pythonic tool name: get_pet_by_id, delete_user
       const cleanPath = ep.path

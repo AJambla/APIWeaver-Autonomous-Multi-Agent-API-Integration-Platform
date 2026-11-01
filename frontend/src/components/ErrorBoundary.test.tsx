@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { ErrorBoundary } from './ErrorBoundary';
 
 const ThrowingComponent: React.FC<{ shouldThrow?: boolean; message?: string }> = ({

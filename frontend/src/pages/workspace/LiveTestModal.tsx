@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { AlertTriangle, CheckCircle2, Lock, ShieldAlert, Sparkles, X } from 'lucide-react';
-import { btnGhost, btnPrimary, inputCls, Modal } from '../../components/ui';
+import { Lock, ShieldAlert, X } from 'lucide-react';
+import { btnGhost, btnPrimary, inputCls } from '../../components/ui';
 
 export interface LiveTestModalProps {
   isOpen: boolean;

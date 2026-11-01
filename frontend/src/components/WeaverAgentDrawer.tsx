@@ -1,17 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Check,
-  CheckCircle2,
-  Copy,
-  ExternalLink,
   FileCode2,
   Loader2,
   Send,
-  Shield,
-  ShieldAlert,
   ShieldCheck,
   Sparkles,
-  Terminal,
   X,
   Zap,
 } from 'lucide-react';
@@ -85,15 +79,7 @@ export const WeaverAgentDrawer: React.FC<WeaverAgentDrawerProps> = ({
     }
   }, [messages, isOpen]);
 
-  // Handle initial auto-query (e.g. from "Ask Agent About This")
-  useEffect(() => {
-    if (isOpen && initialQuery && initialTriggeredRef.current !== initialQuery) {
-      initialTriggeredRef.current = initialQuery;
-      handleSendMessage(initialQuery);
-    }
-  }, [isOpen, initialQuery]);
-
-  const handleSendMessage = async (queryText?: string) => {
+  const handleSendMessage = useCallback(async (queryText?: string) => {
     const textToSend = queryText || input.trim();
     if (!textToSend || loading) return;
 
@@ -146,20 +132,29 @@ export const WeaverAgentDrawer: React.FC<WeaverAgentDrawerProps> = ({
       };
 
       setMessages(prev => [...prev, weaverMsg]);
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       setMessages(prev => [
         ...prev,
         {
           id: `error-${Date.now()}`,
           sender: 'weaver',
-          text: `⚠️ **Agent Communication Issue**: ${err?.message || 'Could not reach Weaver Agent'}. Please verify backend status.`,
+          text: `⚠️ **Agent Communication Issue**: ${errMsg || 'Could not reach Weaver Agent'}. Please verify backend status.`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [input, loading, projectId, context, messages]);
+
+  // Handle initial auto-query (e.g. from "Ask Agent About This")
+  useEffect(() => {
+    if (isOpen && initialQuery && initialTriggeredRef.current !== initialQuery) {
+      initialTriggeredRef.current = initialQuery;
+      void handleSendMessage(initialQuery);
+    }
+  }, [isOpen, initialQuery, handleSendMessage]);
 
   const handleApplyProposal = async (msgId: string, proposal: WeaverChangeProposal) => {
     try {
@@ -183,7 +178,7 @@ export const WeaverAgentDrawer: React.FC<WeaverAgentDrawerProps> = ({
           onApplyCode(proposal.file_path, targetContent);
         }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to apply proposal', err);
     }
   };

@@ -5,9 +5,6 @@ import {
   Check,
   CheckCircle2,
   FileCode2,
-  FileJson,
-  FileText,
-  FileType,
   History,
   Link2,
   Loader2,
@@ -61,6 +58,13 @@ export interface IngestTabProps {
   onPreviewExpand: () => void;
 }
 
+interface MonacoEditorInstance {
+  getModel: () => unknown;
+  updateOptions: (opts: Record<string, unknown>) => void;
+  setValue: (val: string) => void;
+  getAction: (actionId: string) => { run: () => void } | null;
+}
+
 export const IngestTab: React.FC<IngestTabProps> = ({
   file,
   setFile,
@@ -93,7 +97,7 @@ export const IngestTab: React.FC<IngestTabProps> = ({
   const [formatStatus, setFormatStatus] = useState('');
   const [formattedOverride, setFormattedOverride] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const editorRef = useRef<any>(null);
+  const editorRef = useRef<MonacoEditorInstance | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Clear formattedOverride whenever the source file, content, or mode changes

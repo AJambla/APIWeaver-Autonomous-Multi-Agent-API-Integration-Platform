@@ -1,22 +1,18 @@
 import React from 'react';
 import {
-  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   Clock,
   Copy,
-  FileCode,
   FlaskConical,
   Loader2,
-  Play,
-  RotateCw,
   ShieldAlert,
   ShieldCheck,
   Terminal as TerminalIcon,
   XCircle,
 } from 'lucide-react';
 import { SpecEndpoint, TestRunSummary } from '../../lib/types';
-import { btnGhost, btnPrimary, cardCls, EmptyState, ErrorBanner, FilterSelect, StatCard, StatusBadge, tableCls, Td, Th } from '../../components/ui';
+import { btnPrimary, cardCls, EmptyState, ErrorBanner, FilterSelect, StatCard, StatusBadge, tableCls, Td, Th } from '../../components/ui';
 import { MethodChip } from './DependenciesTab';
 import { shortId } from '../../lib/format';
 
@@ -111,8 +107,6 @@ export const VerifyTab: React.FC<VerifyTabProps> = ({
     setCopiedLogs(true);
     setTimeout(() => setCopiedLogs(false), 2000);
   };
-
-  const hasDestructive = endpoints.some(e => e.method.toUpperCase() === 'DELETE' || e.deprecated);
 
   return (
     <div className="space-y-6">

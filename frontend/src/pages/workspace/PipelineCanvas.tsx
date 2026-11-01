@@ -1,20 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import {
   Check,
-  CheckCircle2,
   FileCode2,
-  FileText,
   FlaskConical,
   Layers,
   Lock,
   Network,
   Package,
   ShieldAlert,
-  Sparkles,
-  Terminal,
   ZoomIn,
   ZoomOut,
-  RotateCcw,
 } from 'lucide-react';
 import {
   ApiSpec,
@@ -49,9 +44,9 @@ export const PipelineCanvas: React.FC<PipelineCanvasProps> = ({
   endpoints,
   graph,
   testSummary,
-  exports,
+  exports: _exports,
   activeRun,
-  project,
+  project: _project,
   stepCompleted,
 }) => {
   const currentNode = activeRun?.current_node || '';

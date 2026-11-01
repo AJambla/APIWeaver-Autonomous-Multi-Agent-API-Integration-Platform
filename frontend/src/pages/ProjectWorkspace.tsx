@@ -2,31 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { asUuid } from '../lib/ids';
 import {
-  AlertTriangle,
   ArrowLeft,
-  ArrowRight,
-  Boxes,
-  Check,
-  CheckCircle2,
-  Clock,
-  Copy,
-  Download,
-  FileCode2,
-  FlaskConical,
-  GitBranch,
-  History,
-  Link2,
-  Loader2,
-  Network,
   Package,
-  Play,
-  RefreshCw,
-  RotateCcw,
   Settings as SettingsIcon,
-  ShieldAlert,
   Sparkles,
   Terminal as TerminalIcon,
-  Upload,
   XCircle,
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
@@ -50,28 +30,16 @@ import {
   UploadResponse,
   WorkflowRunInfo,
 } from '../lib/types';
-import { NormalizedSpec, relativeTime, shortId, specFormat, specVersion, validationState } from '../lib/format';
+import { NormalizedSpec, specFormat } from '../lib/format';
 import {
-  btnGhost,
-  btnPrimary,
-  cardCls,
-  EmptyState,
   ErrorBanner,
-  FilterSelect,
-  inputCls,
   Modal,
   OptionsMenu,
-  SearchInput,
-  StatCard,
-  StatusBadge,
-  tableCls,
-  Td,
-  Th,
 } from '../components/ui';
 import { LogsTab } from './workspace/LogsTab';
 import { SettingsTab } from './workspace/SettingsTab';
-import { IngestTab, UploadMode, UploadPhase } from './workspace/IngestTab';
-import { DependenciesTab, MethodChip } from './workspace/DependenciesTab';
+import { IngestTab, type UploadMode, type UploadPhase } from './workspace/IngestTab';
+import { DependenciesTab } from './workspace/DependenciesTab';
 import { McpToolsTab } from './workspace/McpToolsTab';
 import { VerifyTab } from './workspace/VerifyTab';
 import { LiveTestModal } from './workspace/LiveTestModal';
@@ -121,39 +89,6 @@ interface LiveThought {
   step?: number;
   total_steps?: number;
 }
-
-const agentBadgeColor = (agent: string) => {
-  const a = agent.toLowerCase();
-  if (a.includes('doc')) return 'bg-purple-500/10 text-purple-300 border border-purple-500/20';
-  if (a.includes('plan')) return 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20';
-  if (a.includes('gate') || a.includes('approval')) return 'bg-amber-500/10 text-amber-300 border border-amber-500/20';
-  if (a.includes('code')) return 'bg-blue-500/10 text-blue-300 border border-blue-500/20';
-  if (a.includes('test')) return 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20';
-  if (a.includes('repair')) return 'bg-rose-500/10 text-rose-300 border border-rose-500/20';
-  if (a.includes('export')) return 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20';
-  return 'bg-neutral-800 text-neutral-300 border border-neutral-700';
-};
-
-const thoughtColor = (level: string) => {
-  if (level === 'success') return 'text-emerald-300';
-  if (level === 'error') return 'text-rose-400';
-  if (level === 'warn') return 'text-amber-300';
-  return 'text-neutral-200';
-};
-
-const formatExportType = (type: string) => {
-  const map: Record<string, string> = {
-    sdk: 'SDK',
-    mcp: 'MCP',
-    cicd: 'CI/CD',
-    client: 'Client',
-    docker: 'Docker',
-    docs: 'Docs',
-    fastapi: 'FastAPI',
-    github: 'GitHub',
-  };
-  return map[type.toLowerCase()] || type.toUpperCase();
-};
 
 /* Main page ------------------------------------------------------------------- */
 
@@ -260,7 +195,7 @@ export const ProjectWorkspace: React.FC = () => {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [buildError, setBuildError] = useState('');
-  const [targetLanguages, setTargetLanguages] = useState<string[]>(['python']);
+  const [targetLanguages] = useState<string[]>(['python']);
   const [liveThoughts, setLiveThoughts] = useState<LiveThought[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const terminalEndRef = useRef<HTMLDivElement>(null);
@@ -339,15 +274,6 @@ export const ProjectWorkspace: React.FC = () => {
     setWeaverOpen(true);
   }, []);
 
-  const handleApplyWeaverCode = useCallback((filePath: string, newContent: string) => {
-    const fileName = filePath.split('/').pop() || filePath;
-    if (fileName.includes('spec')) {
-      setSpecContent(newContent);
-    }
-    setExternalFileUpdate({ file: fileName, content: newContent, timestamp: Date.now() });
-    loadProjectData();
-  }, [loadProjectData]);
-
   const loadProjectData = useCallback(async () => {
     if (!id) return;
     setError('');
@@ -392,6 +318,15 @@ export const ProjectWorkspace: React.FC = () => {
       setLoading(false);
     }
   }, [id]);
+
+  const handleApplyWeaverCode = useCallback((filePath: string, newContent: string) => {
+    const fileName = filePath.split('/').pop() || filePath;
+    if (fileName.includes('spec')) {
+      setSpecContent(newContent);
+    }
+    setExternalFileUpdate({ file: fileName, content: newContent, timestamp: Date.now() });
+    loadProjectData();
+  }, [loadProjectData]);
 
   useEffect(() => {
     if (!id) {
@@ -1080,15 +1015,6 @@ export const ProjectWorkspace: React.FC = () => {
   const language = phase === 'success' && spec ? 'json' : editorLanguage(file?.name ?? 'spec.yaml');
 
   const rawSpec = useMemo(() => (spec?.raw_normalized ?? {}) as NormalizedSpec, [spec]);
-  const projectDescription = useMemo(() => {
-    const info = rawSpec.info?.description?.trim();
-    if (info) return info.length > 160 ? `${info.slice(0, 157)}…` : info;
-    if (spec) {
-      const parts = [specFormat(rawSpec), specVersion(rawSpec) !== '—' ? `v${specVersion(rawSpec)}` : null, spec.base_url];
-      return parts.filter(Boolean).join(' · ');
-    }
-    return 'No specification uploaded yet.';
-  }, [spec, rawSpec]);
 
   /* Topology: group graph nodes by resource (first meaningful path segment). */
   const resourceGroups = useMemo(() => {
@@ -1117,22 +1043,6 @@ export const ProjectWorkspace: React.FC = () => {
       .sort((a, b) => b[1].length - a[1].length)
       .map(([resource, nodes]) => ({ resource, nodes, edgeCounts }));
   }, [graph]);
-
-  /* Agent execution streams: group logs by agent name. */
-  const agentStreams = useMemo(() => {
-    const byAgent = new Map<string, AgentEventLog[]>();
-    for (const log of logs) {
-      const name = log.agent_name || 'System';
-      const list = byAgent.get(name) || [];
-      list.push(log);
-      byAgent.set(name, list);
-    }
-    return Array.from(byAgent.entries()).map(([agent, events]) => ({
-      agent,
-      events: events.length,
-      latest: events[0], // logs arrive newest-first
-    }));
-  }, [logs]);
 
   const activeAgentName = useMemo(() => {
     if (activeRun?.current_node) {

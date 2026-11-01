@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Copy, Minus } from 'lucide-react';
+import { ChevronDown, ChevronUp, Minus } from 'lucide-react';
 
 export interface LiveThoughtItem {
   id: string;
