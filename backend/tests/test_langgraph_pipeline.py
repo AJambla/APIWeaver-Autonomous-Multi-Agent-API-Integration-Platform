@@ -184,7 +184,7 @@ async def test_langgraph_orchestrator_pauses_for_approval(monkeypatch):
     result = await orchestrator.run(run_id, initial_state)
 
     assert result["status"] == WorkflowStatus.PAUSED_FOR_APPROVAL
-    assert result.get("current_node") == "completed"
+    assert result.get("current_node") == "approval_gate"
     assert result.get("execution_plan") is not None
     assert not result.get("generated_files")
 
