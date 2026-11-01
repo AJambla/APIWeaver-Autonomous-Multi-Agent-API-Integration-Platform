@@ -232,6 +232,12 @@ async def approve_workflow_gate(
         raise ForbiddenError("Only project owners can approve workflow gates.")
 
     if run.status != WorkflowStatus.PAUSED_FOR_APPROVAL:
+        if run.status in (WorkflowStatus.QUEUED, WorkflowStatus.RUNNING) and payload.approved:
+            return ApproveWorkflowResponse(
+                workflow_run_id=run.id,
+                status=run.status,
+                approved=True,
+            )
         raise UnprocessableEntityError("Workflow is not waiting for approval.")
 
     latest_checkpoint: WorkflowCheckpoint | None = None

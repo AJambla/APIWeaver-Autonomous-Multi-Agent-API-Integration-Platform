@@ -251,6 +251,7 @@ export const ProjectWorkspace: React.FC = () => {
   const [dagPlan, setDagPlan] = useState('');
   const [planDocOpen, setPlanDocOpen] = useState(false);
   const [approvedRunId, setApprovedRunId] = useState<string | null>(null);
+  const [testApprovedRunId, setTestApprovedRunId] = useState<string | null>(null);
   const [planBusy, setPlanBusy] = useState(false);
   const [planError, setPlanError] = useState('');
 
@@ -454,23 +455,37 @@ export const ProjectWorkspace: React.FC = () => {
     });
 
     if (autoFollow) {
+      const activeNode = (payload.current_node || payload.agent_name) as string | undefined;
+      const currentRunId = activeRunId || latestRun?.workflow_run_id;
+      const isTestGateApproved = Boolean(currentRunId && testApprovedRunId === currentRunId);
+
       if (isPaused) {
         if (payload.is_export_ready || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 80)) {
           setActiveTab('result');
-        } else if (payload.is_code_ready || payload.reason === 'code_review_required' || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 50 && payload.progress_percent < 80)) {
+        } else if (
+          (payload.is_code_ready || payload.reason === 'code_review_required' || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 50 && payload.progress_percent < 80)) &&
+          !isTestGateApproved
+        ) {
           setActiveTab('tools');
+        } else if (isTestGateApproved) {
+          setActiveTab('verify');
         } else {
           setActiveTab('dependencies');
         }
-      } else if (payload.current_node) {
-        const node = String(payload.current_node);
+      } else if (activeNode) {
+        const node = String(activeNode);
         if (node === 'doc_agent') setActiveTab('ingest');
         else if (node === 'planner_agent') setActiveTab('dependencies');
         else if (node === 'approval_gate') {
           if (payload.is_export_ready || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 80)) {
             setActiveTab('result');
-          } else if (payload.is_code_ready || payload.reason === 'code_review_required' || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 50 && payload.progress_percent < 80)) {
+          } else if (
+            (payload.is_code_ready || payload.reason === 'code_review_required' || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 50 && payload.progress_percent < 80)) &&
+            !isTestGateApproved
+          ) {
             setActiveTab('tools');
+          } else if (isTestGateApproved) {
+            setActiveTab('verify');
           } else {
             setActiveTab('dependencies');
           }
@@ -484,7 +499,7 @@ export const ProjectWorkspace: React.FC = () => {
     if (isPaused) {
       loadProjectData();
     }
-  }, [runEvents, activeRunId, loadProjectData, autoFollow, setActiveTab]);
+  }, [runEvents, activeRunId, loadProjectData, autoFollow, setActiveTab, testApprovedRunId, latestRun?.workflow_run_id]);
 
   /* A terminal stream event ends the watch: reconcile from REST, then detach. */
   useEffect(() => {
@@ -610,9 +625,9 @@ export const ProjectWorkspace: React.FC = () => {
     }
   }, [liveThoughts, autoScroll]);
 
-  /* Resume watching a run that is still in flight when the tools tab opens. */
+  /* Resume watching a run that is still in flight when the tools, verify, or result tab opens. */
   useEffect(() => {
-    if (activeTab !== 'tools' || activeRunId || !latestRun) return;
+    if (!['tools', 'verify', 'result'].includes(activeTab) || activeRunId || !latestRun) return;
     if (['queued', 'running', 'paused_for_approval'].includes(latestRun.status)) {
       setActiveRunId(latestRun.workflow_run_id);
     }
@@ -817,9 +832,11 @@ export const ProjectWorkspace: React.FC = () => {
   };
 
   const approveTests = async () => {
+    setActiveTab('verify');
     if (pausedRunId) {
       setTestBusy(true);
       setTestError('');
+      setTestApprovedRunId(pausedRunId);
       try {
         await apiFetch(`/workflows/${pausedRunId}/approve`, {
           method: 'POST',
@@ -837,7 +854,6 @@ export const ProjectWorkspace: React.FC = () => {
         setTestBusy(false);
       }
     } else {
-      setActiveTab('verify');
       await runTests();
     }
   };
