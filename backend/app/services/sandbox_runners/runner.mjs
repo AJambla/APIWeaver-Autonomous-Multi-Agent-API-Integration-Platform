@@ -16,6 +16,12 @@ const BODY_NAMES = ["body", "payload", "data", "request", "jsonbody", "json"];
 
 const norm = (name) => String(name).toLowerCase().replace(/[^a-z0-9]/g, "");
 
+function isBodyParam(name) {
+  const n = norm(name);
+  if (BODY_NAMES.includes(n)) return true;
+  return ["body", "payload", "data", "request", "json", "input"].some((t) => n.includes(t));
+}
+
 function emit(result) {
   console.log(RESULT_PREFIX + NONCE + ":" + JSON.stringify(result));
 }
@@ -104,8 +110,9 @@ function bindArguments(names, params, body) {
   return names.map((name) => {
     if (name in params) return params[name];
     if (norm(name) in byNorm) return byNorm[norm(name)];
-    if (BODY_NAMES.includes(norm(name))) return body;
+    if (isBodyParam(name) && body !== undefined) return body;
     if (norm(name) in bodyNorm) return bodyNorm[norm(name)];
+    if (body !== undefined && !names.some((other) => other !== name && isBodyParam(other))) return body;
     return undefined;
   });
 }

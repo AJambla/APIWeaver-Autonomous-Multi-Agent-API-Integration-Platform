@@ -38,6 +38,13 @@ def _norm(name):
     return re.sub(r"[^a-z0-9]", "", str(name).lower())
 
 
+def _is_body_param(name):
+    n = _norm(name)
+    if n in _BODY_NAMES:
+        return True
+    return any(term in n for term in ("body", "payload", "data", "request", "json", "input"))
+
+
 def _setup_path(payload_path):
     roots = [os.path.dirname(payload_path)] if os.path.dirname(payload_path) else []
     for root, dirs, _ in os.walk("/sandbox"):
@@ -180,11 +187,14 @@ def _bind_arguments(operation, params, body):
             kwargs[name] = params[name]
         elif _norm(name) in by_norm:
             kwargs[name] = by_norm[_norm(name)]
-        elif name in _BODY_NAMES and body is not None:
+        elif _is_body_param(name) and body is not None and not body_bound:
             kwargs[name] = body
             body_bound = True
         elif required and _norm(name) in body_by_norm:
             kwargs[name] = body_by_norm[_norm(name)]
+        elif required and body is not None and not body_bound and not (name in params or _norm(name) in by_norm):
+            kwargs[name] = body
+            body_bound = True
         elif required:
             missing.append(name)
     if varkw:
