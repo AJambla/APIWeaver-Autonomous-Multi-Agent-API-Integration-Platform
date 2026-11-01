@@ -72,13 +72,10 @@ class TestExtractText:
         assert "Paragraph" in result
 
     def test_extract_pdf(self):
-        # Test that PDF extraction doesn't crash (falls back to UTF-8 for invalid PDF)
+        # Corrupted / invalid PDF raises ValueError instead of silent UTF-8 fallback
         content = b"%PDF-1.4\n%Test content"
-        # This will fail and fall back to UTF-8 decode
-        result = extract_text(content, "doc.pdf")
-        # Should not crash, returns fallback text
-        assert isinstance(result, str)
-        assert "Test content" in result
+        with pytest.raises(ValueError, match="Failed to extract readable text from PDF"):
+            extract_text(content, "doc.pdf")
 
 
 class TestFakeQdrantClient:
