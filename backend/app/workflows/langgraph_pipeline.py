@@ -688,7 +688,7 @@ def create_apiweaver_graph(
             run_id,
             details=f"Target Languages: {target_langs} across {len(phases)} execution phase(s)",
         )
-        await _emit_thought(state, "code_agent", f"Starting SDK code synthesis for {target_langs} across {len(phases)} execution phases...", action="codegen_start")
+        await _emit_thought(state, "code_agent", f"Starting FastMCP tool and client synthesis for {target_langs} across {len(phases)} execution phases...", action="codegen_start")
 
         tokens_before = state.get("total_tokens_used", 0)
         generated_files = list(state.get("generated_files", []))
@@ -703,7 +703,7 @@ def create_apiweaver_graph(
                     raise RuntimeError(f"token_budget_exceeded: {total_tokens}/{budget}")
 
                 phase_num = phase.get("phase_number")
-                await _emit_thought(state, "code_agent", f"Phase {phase_num}/{len(phases)}: Synthesizing {target_langs} client and models for '{phase.get('group_name', 'endpoints')}'...", action="codegen_phase", step=phase_num, total_steps=len(phases))
+                await _emit_thought(state, "code_agent", f"Phase {phase_num}/{len(phases)}: Synthesizing FastMCP tools and schemas for '{phase.get('group_name', 'endpoints')}'...", action="codegen_phase", step=phase_num, total_steps=len(phases))
                 from app.workflows.agents import code_agent as code_agent_module
 
                 phase_result = await code_agent_module.run_code_agent(
@@ -797,9 +797,9 @@ def create_apiweaver_graph(
             run_id,
             tokens_before=tokens_before,
             tokens_after=total_tokens,
-            details=f"Generated {len(generated_files)} SDK file(s) ({preview_files})",
+            details=f"Generated {len(generated_files)} FastMCP file(s) ({preview_files})",
         )
-        await _emit_thought(state, "code_agent", f"SDK generation complete: {len(generated_files)} source files generated ({preview_files}).", level="success", action="codegen_complete")
+        await _emit_thought(state, "code_agent", f"FastMCP code generation complete: {len(generated_files)} source files generated ({preview_files}).", level="success", action="codegen_complete")
 
         updates: dict[str, Any] = {
             "generated_files": generated_files,
@@ -1232,9 +1232,9 @@ def create_apiweaver_graph(
         terminal_logger.log_start(
             "export_agent",
             run_id,
-            details="Packaging SDK distribution bundles, wheel/npm archives, and docs",
+            details="Packaging verified FastMCP server bundle, manifest, and reports",
         )
-        await _emit_thought(state, "export_agent", "Building distribution packages and packaging SDK modules...", action="export_start")
+        await _emit_thought(state, "export_agent", "Building verified FastMCP server package and manifest...", action="export_start")
 
         tokens_before = state.get("total_tokens_used", 0)
         try:
@@ -1253,9 +1253,9 @@ def create_apiweaver_graph(
             run_id,
             tokens_before=tokens_before,
             tokens_after=tokens_after,
-            details=f"Export packaging complete: {len(artifacts)} distribution artifact(s) published",
+            details=f"Export packaging complete: {len(artifacts)} FastMCP artifact(s) published",
         )
-        await _emit_thought(state, "export_agent", f"Export packaging complete: {len(artifacts)} distribution bundle(s) generated.", level="success", action="export_complete")
+        await _emit_thought(state, "export_agent", f"Export packaging complete: {len(artifacts)} FastMCP bundle(s) generated.", level="success", action="export_complete")
 
         updates: dict[str, Any] = {
             **export_updates,
