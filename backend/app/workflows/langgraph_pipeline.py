@@ -197,8 +197,12 @@ def route_after_testing(state: WorkflowState) -> str:
     # All recorded tests passed
     if failed_count == 0:
         if "export" in stages:
+            # Stage 5 is locked until user explicitly approves the export
+            if not state.get("export_approved"):
+                return "approval_gate"
             return "export_agent"
         return "finalize"
+
 
     # Check repair attempts (bounded to 3)
     repair_attempts = state.get("repair_attempts", [])
@@ -643,12 +647,20 @@ def create_apiweaver_graph(
         run_id = state.get("workflow_run_id", "")
         test_summary = state.get("test_run_summary") or {}
         failed_tests = test_summary.get("failed", 0)
+        total_tests = test_summary.get("total", 0)
         is_repair_exhausted = failed_tests > 0 and len(state.get("repair_attempts", [])) >= 3
-        reason = (
-            f"Self-healing repair exhausted (3/3 attempts failed; {failed_tests} tests failing). Workflow paused awaiting human review"
-            if is_repair_exhausted
-            else "Human approval gate reached. Workflow paused awaiting project owner sign-off"
+        is_export_ready = (
+            total_tests > 0
+            and failed_tests == 0
+            and not state.get("export_approved")
         )
+        if is_export_ready:
+            reason = f"All {total_tests} sandbox tests verified. MCP is ready to ship. Workflow paused awaiting user approval to export Certified MCP Bundle."
+        elif is_repair_exhausted:
+            reason = f"Self-healing repair exhausted (3/3 attempts failed; {failed_tests} tests failing). Workflow paused awaiting human review"
+        else:
+            reason = "Human approval gate reached. Workflow paused awaiting project owner sign-off"
+
         terminal_logger.log_idle(
             "approval_gate",
             run_id,
@@ -659,7 +671,7 @@ def create_apiweaver_graph(
         updates: dict[str, Any] = {
             "status": WorkflowStatus.PAUSED_FOR_APPROVAL,
             "current_node": "approval_gate",
-            "progress_percent": 80 if is_repair_exhausted else state.get("progress_percent", 30),
+            "progress_percent": 85 if is_export_ready else (80 if is_repair_exhausted else state.get("progress_percent", 30)),
         }
 
         if event_publisher and run_id:
@@ -667,8 +679,17 @@ def create_apiweaver_graph(
                 run_id=run_id,
                 project_id=state.get("project_id"),
                 event_type="workflow.paused",
-                payload={"reason": "test_repair_exhausted" if is_repair_exhausted else "human_approval_required"},
+                payload={
+                    "reason": (
+                        "export_approval_required"
+                        if is_export_ready
+                        else "test_repair_exhausted"
+                        if is_repair_exhausted
+                        else "human_approval_required"
+                    )
+                },
             )
+
 
         await _save_checkpoint({**state, **updates}, "approval_gate")
 

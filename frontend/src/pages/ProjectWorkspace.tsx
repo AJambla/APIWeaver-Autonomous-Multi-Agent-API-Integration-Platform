@@ -778,6 +778,30 @@ export const ProjectWorkspace: React.FC = () => {
     }
   };
 
+  const approveExport = async () => {
+    if (pausedRunId) {
+      setExportBusy('mcp');
+      try {
+        await apiFetch(`/workflows/${pausedRunId}/approve`, {
+          method: 'POST',
+          body: JSON.stringify({
+            approved: true,
+          }),
+        });
+        setActiveRunId(pausedRunId);
+        setActiveRun(prev => (prev ? { ...prev, status: 'running' } : null));
+        await loadProjectData();
+      } catch (err) {
+        setExportError(errorMessage(err));
+      } finally {
+        setExportBusy(null);
+      }
+    } else {
+      await triggerExport('mcp');
+    }
+  };
+
+
   const cancelWorkflow = async () => {
     const runId = activeRunId || latestRun?.workflow_run_id;
     if (!runId) return;
@@ -1457,7 +1481,10 @@ export const ProjectWorkspace: React.FC = () => {
                 onTriggerExport={triggerExport}
                 onDownloadExport={handleDownloadExport}
                 onGoToVerify={() => setActiveTab('verify')}
+                onApproveExport={approveExport}
+                activeRun={activeRun}
               />
+
             )}
 
             {activeTab === 'logs' && (

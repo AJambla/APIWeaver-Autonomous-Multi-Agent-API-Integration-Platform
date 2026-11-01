@@ -70,12 +70,21 @@ def test_route_after_planner():
 
 def test_route_after_testing():
     """Test routing decisions after the testing stage."""
-    # 1. All tests passed -> export
+    # 1. All tests passed, export not approved -> approval_gate
     passed_state: WorkflowState = {
         "stages": ["plan", "generate", "test", "export"],
         "test_run_summary": {"passed": 5, "failed": 0},
     }
-    assert route_after_testing(passed_state) == "export_agent"
+    assert route_after_testing(passed_state) == "approval_gate"
+
+    # 1b. All tests passed, export approved -> export_agent
+    approved_state: WorkflowState = {
+        "stages": ["plan", "generate", "test", "export"],
+        "test_run_summary": {"passed": 5, "failed": 0},
+        "export_approved": True,
+    }
+    assert route_after_testing(approved_state) == "export_agent"
+
 
     # 2. Tests failed, attempts < 3 -> repair cycle
     failing_state_1: WorkflowState = {
@@ -396,7 +405,10 @@ def test_missing_test_summary_never_routes_to_export() -> None:
     crashed = {"stages": ["test", "export"], "status": "failed", "errors": ["sandbox crashed"]}
     assert route_after_testing(crashed) == "finalize"
     passed = {"stages": ["test", "export"], "test_run_summary": {"failed": 0, "passed": 3}}
-    assert route_after_testing(passed) == "export_agent"
+    assert route_after_testing(passed) == "approval_gate"
+    passed_approved = {"stages": ["test", "export"], "test_run_summary": {"failed": 0, "passed": 3}, "export_approved": True}
+    assert route_after_testing(passed_approved) == "export_agent"
+
     failing = {"stages": ["test", "export"], "test_run_summary": {"failed": 1}, "repair_attempts": []}
     assert route_after_testing(failing) == "repair_agent"
 

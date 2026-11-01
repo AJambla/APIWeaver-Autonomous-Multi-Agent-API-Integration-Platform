@@ -9,6 +9,7 @@ import {
   FlaskConical,
   Info,
   Loader2,
+  Lock,
   Package,
   RefreshCw,
   Server,
@@ -16,7 +17,8 @@ import {
   ShieldCheck,
   Terminal,
 } from 'lucide-react';
-import { ApiSpec, ExportRecord, ProjectSummary, SpecEndpoint, TestRunSummary, VerificationReportData } from '../../lib/types';
+import { ApiSpec, ExportRecord, ProjectSummary, SpecEndpoint, TestRunSummary, VerificationReportData, WorkflowRunInfo } from '../../lib/types';
+
 import { btnGhost, btnPrimary, cardCls, StatCard, StatusBadge, tableCls, Td, Th } from '../../components/ui';
 import { shortId } from '../../lib/format';
 import { VerificationReportModal } from './VerificationReportModal';
@@ -35,6 +37,8 @@ export interface McpResultTabProps {
   onTriggerExport: (exportType: string) => Promise<void> | void;
   onDownloadExport: (row: ExportRecord) => Promise<void> | void;
   onGoToVerify: () => void;
+  onApproveExport?: () => Promise<void> | void;
+  activeRun?: WorkflowRunInfo | null;
 }
 
 export const McpResultTab: React.FC<McpResultTabProps> = ({
@@ -51,6 +55,8 @@ export const McpResultTab: React.FC<McpResultTabProps> = ({
   onTriggerExport,
   onDownloadExport,
   onGoToVerify,
+  onApproveExport,
+  activeRun,
 }) => {
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [copiedConfig, setCopiedConfig] = useState(false);
@@ -68,7 +74,20 @@ export const McpResultTab: React.FC<McpResultTabProps> = ({
     return exports.find(r => r.export_type === 'mcp' && r.status === 'completed') || null;
   }, [exports]);
 
+  // Stage 5 lock & approval states
+  const testsPassed = useMemo(() => {
+    return Boolean(
+      testSummary &&
+      (testSummary.summary.total ?? 0) > 0 &&
+      (testSummary.summary.failed ?? 0) === 0
+    );
+  }, [testSummary]);
+
+  const isStage5Locked = !testsPassed && !mcpExport;
+  const isAwaitingApproval = testsPassed && !mcpExport;
+
   // Multi-tier Verification Status calculation
+
   const verificationReport: VerificationReportData = useMemo(() => {
     const hasEndpoints = endpoints.length > 0;
     const staticPass = hasEndpoints;
@@ -165,18 +184,77 @@ export const McpResultTab: React.FC<McpResultTabProps> = ({
             >
               <Download className="h-4 w-4" /> Download FastMCP Bundle (.zip)
             </button>
+          ) : isStage5Locked ? (
+            <button
+              onClick={onGoToVerify}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-neutral-700 bg-neutral-800/80 px-4 py-2 text-xs font-medium text-neutral-300 hover:text-white transition-colors"
+            >
+              <Lock className="h-3.5 w-3.5 text-neutral-400" />
+              <span>Locked: Tests Required</span>
+            </button>
           ) : (
             <button
-              onClick={() => onTriggerExport('mcp')}
-              disabled={isExporting || endpoints.length === 0}
-              className={btnPrimary}
+              onClick={() => onApproveExport ? onApproveExport() : onTriggerExport('mcp')}
+              disabled={isExporting}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-4 py-2 text-xs font-semibold text-emerald-300 transition-colors"
             >
-              {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Package className="h-4 w-4" />}
-              {isExporting ? 'Generating Bundle…' : 'Generate FastMCP Bundle'}
+              {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4 text-emerald-400" />}
+              <span>{isExporting ? 'Packaging Bundle…' : 'Approve & Export'}</span>
             </button>
           )}
         </div>
       </div>
+
+      {isStage5Locked && (
+        <div className="rounded-2xl border border-neutral-700/60 bg-[#0d0f15] p-5 shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="p-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-neutral-400 shrink-0">
+              <Lock className="h-5 w-5 text-neutral-400" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-white">Stage 05 (Certified MCP Bundle) is Locked</h3>
+              <p className="text-xs text-neutral-400 mt-1 max-w-xl">
+                To guarantee functional correctness, Stage 5 cannot be exported until all FastMCP tool functions have run and passed verification in the Stage 04 Docker Sandbox.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onGoToVerify}
+            className={btnPrimary}
+          >
+            <FlaskConical className="h-4 w-4" /> Go to Stage 04 (Run Tests)
+          </button>
+        </div>
+      )}
+
+      {isAwaitingApproval && (
+        <div className="rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-950/30 via-neutral-900 to-black p-5 shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 shrink-0">
+              <ShieldAlert className="h-5 w-5 text-amber-400" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-amber-400">Ready to Ship</span>
+                <span className="text-[11px] text-neutral-400 font-mono">({testSummary?.summary.passed}/{testSummary?.summary.total} Tests Passed)</span>
+              </div>
+              <h3 className="text-sm font-semibold text-white mt-0.5">Project Owner Sign-Off Required to Export</h3>
+              <p className="text-xs text-neutral-300 mt-1 max-w-xl">
+                All FastMCP tools have been verified in the isolated Docker Sandbox. Please confirm you approve the tool inventory to generate the certified distribution bundle.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => onApproveExport ? onApproveExport() : onTriggerExport('mcp')}
+            disabled={isExporting}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-5 py-2.5 text-xs font-semibold text-emerald-300 shadow-lg shadow-emerald-500/10 transition-all shrink-0"
+          >
+            {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4 text-emerald-400" />}
+            <span>{isExporting ? 'Packaging Bundle…' : 'Approve & Export MCP Bundle'}</span>
+          </button>
+        </div>
+      )}
+
 
       {exportError && (
         <div className="rounded-xl border border-red-500/25 bg-red-950/20 p-4 text-xs text-red-300 flex items-center justify-between">

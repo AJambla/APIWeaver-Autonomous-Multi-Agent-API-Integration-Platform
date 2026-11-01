@@ -278,19 +278,25 @@ async def approve_workflow_gate(
             resume_state["target_languages"] = payload.target_languages
         elif not resume_state.get("target_languages"):
             resume_state["target_languages"] = list(DEFAULT_TARGET_LANGUAGES)
-        if (resume_state.get("test_run_summary") or {}).get("failed", 0) > 0 and len(resume_state.get("repair_attempts", [])) >= 3:
+        test_summary = resume_state.get("test_run_summary") or {}
+        failed_tests = test_summary.get("failed", 0)
+        total_tests = test_summary.get("total", 0)
+        if failed_tests > 0 and len(resume_state.get("repair_attempts", [])) >= 3:
             # The owner reviewed the failing tests and chose to export regardless.
             resume_state["stages"] = ["export"]
             resume_state["export_override_approved"] = True
+            resume_state["export_approved"] = True
+        elif total_tests > 0 and failed_tests == 0 and not resume_state.get("export_approved"):
+            # The owner verified tests and approved exporting the certified MCP bundle.
+            resume_state["stages"] = ["export"]
+            resume_state["export_approved"] = True
         else:
-            # Resume with the stages the caller asked for after planning. Overwriting
-            # them made a ["plan", "generate"] run also test and run every export
-            # packager. A run that requested nothing past "plan" (the upload auto-plan)
-            # means "approve and build", so it gets the full post-plan pipeline.
+            # Resume with the stages the caller asked for after planning.
             requested = [
                 s for s in (resume_state.get("stages") or []) if s in _POST_PLAN_STAGES
             ]
             resume_state["stages"] = requested or list(_POST_PLAN_STAGES)
+
 
         await session.commit()
         await dispatch_run(

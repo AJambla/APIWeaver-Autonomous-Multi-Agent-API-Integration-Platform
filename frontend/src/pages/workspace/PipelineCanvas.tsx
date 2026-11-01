@@ -6,6 +6,7 @@ import {
   FileText,
   FlaskConical,
   Layers,
+  Lock,
   Network,
   Package,
   ShieldAlert,
@@ -111,6 +112,11 @@ export const PipelineCanvas: React.FC<PipelineCanvasProps> = ({
   const stage3Verified = stepCompleted.tools;
   const stage4Verified = stepCompleted.verify;
   const stage5Verified = stepCompleted.result;
+
+  const testsPassed = Boolean(testSummary && (testSummary.summary.total ?? 0) > 0 && (testSummary.summary.failed ?? 0) === 0);
+  const stage5Locked = !testsPassed;
+  const stage5AwaitingApproval = testsPassed && !stage5Verified;
+
 
   const cardCls = (id: TabId, isRunning: boolean) => {
     const isSelected = activeTab === id;
@@ -375,28 +381,57 @@ export const PipelineCanvas: React.FC<PipelineCanvasProps> = ({
           {/* STAGE 05 CARD: CERTIFIED MCP BUNDLE */}
           <div
             onClick={() => onSelectTab('result')}
-            className={`${cardCls('result', stage5Running)} top-[310px] left-[420px] w-[260px]`}
+            className={`${cardCls('result', stage5Running)} top-[310px] left-[420px] w-[260px] ${
+              stage5Locked ? 'opacity-85' : ''
+            }`}
           >
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] font-mono uppercase tracking-wider text-emerald-400">STAGE 05 • OUTPUT</span>
-              {statusBadge(stage5Verified, stage5Running)}
+              {stage5Locked ? (
+                <span className="flex items-center gap-1 rounded-full bg-neutral-800/80 px-2 py-0.5 text-[10px] font-medium text-neutral-400 border border-white/10">
+                  <Lock className="h-3 w-3 text-neutral-500" />
+                  Locked
+                </span>
+              ) : stage5AwaitingApproval ? (
+                <span className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400 border border-amber-500/30">
+                  <ShieldAlert className="h-3 w-3 animate-pulse" />
+                  Needs Approval
+                </span>
+              ) : (
+                statusBadge(stage5Verified, stage5Running)
+              )}
             </div>
             <div className="flex items-center gap-2.5 mb-2">
-              <div className="p-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
-                <Package className="h-4 w-4" />
+              <div className={`p-1.5 rounded-lg border ${
+                stage5Locked
+                  ? 'bg-neutral-800/50 border-neutral-700/50 text-neutral-500'
+                  : 'bg-indigo-500/10 border-indigo-500/20 text-indigo-400'
+              }`}>
+                {stage5Locked ? <Lock className="h-4 w-4" /> : <Package className="h-4 w-4" />}
               </div>
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-semibold text-white truncate">Certified MCP Bundle</div>
-                <div className="text-[10px] text-neutral-400 truncate">apiweaver-mcp.zip + Claude Config</div>
+                <div className="text-[10px] text-neutral-400 truncate">
+                  {stage5Locked
+                    ? 'Requires Stage 4 verification'
+                    : stage5AwaitingApproval
+                    ? 'Awaiting sign-off to package'
+                    : 'apiweaver-mcp.zip + Claude Config'}
+                </div>
               </div>
             </div>
             <div className="mt-3 pt-2.5 border-t border-white/5 flex items-center justify-between text-[11px] font-mono">
-              <span className="text-neutral-400">AWS Secrets Ready</span>
-              <span className="text-emerald-400 flex items-center gap-1 font-medium">
-                Test & Export &rarr;
+              <span className="text-neutral-400">
+                {stage5Locked ? 'Tests Pending' : stage5AwaitingApproval ? 'Ready to Ship' : 'AWS Secrets Ready'}
+              </span>
+              <span className={`flex items-center gap-1 font-medium ${
+                stage5Locked ? 'text-neutral-500' : stage5AwaitingApproval ? 'text-amber-400' : 'text-emerald-400'
+              }`}>
+                {stage5Locked ? 'Locked' : stage5AwaitingApproval ? 'Approve & Export →' : 'Download Bundle →'}
               </span>
             </div>
           </div>
+
 
         </div>
       </div>
