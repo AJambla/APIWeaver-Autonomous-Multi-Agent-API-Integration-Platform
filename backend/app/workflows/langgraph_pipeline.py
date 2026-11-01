@@ -1498,7 +1498,7 @@ def create_apiweaver_graph(
         updates: dict[str, Any] = {
             "status": final_status,
             "progress_percent": 100 if final_status == WorkflowStatus.COMPLETED else int(state.get("progress_percent") or (30 if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else 0)),
-            "current_node": "completed",
+            "current_node": "approval_gate" if final_status == WorkflowStatus.PAUSED_FOR_APPROVAL else "completed",
         }
         if "exhausted_error" in locals():
             # Through the `errors` reducer, not by mutating the state in place.
