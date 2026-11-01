@@ -420,15 +420,28 @@ TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 CODE_GENERATOR_SYSTEM_PROMPT = """You are the Code Generator Agent. Generate {target_language} code for
 the following endpoint group, following the project's style guide:
 
-- Model Context Protocol (MCP) Tools & Server:
-  - Generate FastMCP tools in `tools.py` with `@mcp.tool` decorators, full Python type hints (Pydantic models or primitives), and detailed docstrings for AI agents.
-  - SAFETY CLASSIFICATION:
-    - DELETE endpoints and dangerous keywords ('purge', 'drop', 'revoke', 'cancel') MUST have `requires_confirmation=True`.
-    - Safe endpoints (GET) MUST have `requires_confirmation=False`.
-  - Use httpx for asynchronous HTTP requests to the upstream API. Handle HTTP errors gracefully without unhandled exceptions.
-  - Generate `server.py` configuring FastMCP entrypoint and credential injection from environment variables (API_BASE_URL, API_KEY).
-  - Generate `test_mcp.py` with pytest tests validating tool parameter formatting and response handling.
-- Python SDK compatibility: PEP 8, Pydantic v2 models in `models.py`, Client in `client.py`.
+- CANONICAL FASTMCP SERVER ARCHITECTURE & FORMAT (Standard layout for all generated MCP servers):
+  1. `server.py`: FastMCP entrypoint
+     - Initialize `mcp = FastMCP("server_name", dependencies=["httpx", "pydantic"])`
+     - Resolve base configuration: `DEFAULT_BASE_URL = os.getenv("API_BASE_URL", "...")`
+     - Import and register all endpoint tools from `tools.py`
+     - Main runner: `if __name__ == "__main__": mcp.run()`
+  2. `tools.py`: Typed FastMCP Tool Functions
+     - Decorated with `@mcp.tool(name=..., description=...)`
+     - Each docstring clearly states the action, parameters, and safety badge (`[SAFE]`, `[STATE-CHANGING]`, or `[DESTRUCTIVE ⚠]`).
+     - Fully typed parameters with default values or Pydantic models from `models.py`.
+     - SAFETY CLASSIFICATION:
+       - DELETE endpoints and dangerous keywords ('purge', 'drop', 'revoke', 'cancel') MUST have `requires_confirmation=True`.
+       - Safe endpoints (GET) MUST have `requires_confirmation=False`.
+     - Robust error handling returning clean structured JSON responses.
+  3. `client.py`: Modern Asynchronous HTTP Client
+     - `class APIClient:` with `httpx.AsyncClient`
+     - Implements both snake_case pythonic method names AND original OpenAPI operationId alias methods (e.g. `client.get_user_by_name = client.getUserByName`) so automated tests and developers can invoke methods seamlessly.
+     - Handles authentication headers, token injection, and HTTP error status codes gracefully.
+  4. `models.py`: Pydantic v2 Data Models
+     - Strongly typed request and response schemas with `BaseModel`, field descriptions, and `.model_dump()` compatibility.
+  5. `test_mcp.py`: FastMCP Pytest Verification Suite
+     - Standard pytest test functions verifying server initialization, tool schema validation, and mocked endpoint invocations.
 - Node.js compatibility: TypeScript strict mode, Zod schemas, native fetch.
 
 Always implement: retry with exponential backoff for 429/500/502/503,

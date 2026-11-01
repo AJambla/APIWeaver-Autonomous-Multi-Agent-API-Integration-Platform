@@ -457,6 +457,8 @@ export const ProjectWorkspace: React.FC = () => {
       if (isPaused) {
         if (payload.is_export_ready || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 80)) {
           setActiveTab('result');
+        } else if (payload.is_code_ready || payload.reason === 'code_review_required' || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 50 && payload.progress_percent < 80)) {
+          setActiveTab('tools');
         } else {
           setActiveTab('dependencies');
         }
@@ -467,6 +469,8 @@ export const ProjectWorkspace: React.FC = () => {
         else if (node === 'approval_gate') {
           if (payload.is_export_ready || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 80)) {
             setActiveTab('result');
+          } else if (payload.is_code_ready || payload.reason === 'code_review_required' || (typeof payload.progress_percent === 'number' && payload.progress_percent >= 50 && payload.progress_percent < 80)) {
+            setActiveTab('tools');
           } else {
             setActiveTab('dependencies');
           }
@@ -809,6 +813,32 @@ export const ProjectWorkspace: React.FC = () => {
       }
     } else {
       await triggerExport('mcp');
+    }
+  };
+
+  const approveTests = async () => {
+    if (pausedRunId) {
+      setTestBusy(true);
+      setTestError('');
+      try {
+        await apiFetch(`/workflows/${pausedRunId}/approve`, {
+          method: 'POST',
+          body: JSON.stringify({
+            approved: true,
+          }),
+        });
+        setActiveRunId(pausedRunId);
+        setActiveRun(prev => (prev ? { ...prev, status: 'running' } : null));
+        await loadProjectData();
+        setActiveTab('verify');
+      } catch (err) {
+        setTestError(errorMessage(err));
+      } finally {
+        setTestBusy(false);
+      }
+    } else {
+      setActiveTab('verify');
+      await runTests();
     }
   };
 
@@ -1446,10 +1476,7 @@ export const ProjectWorkspace: React.FC = () => {
                 runIsLive={runIsLive}
                 onRunBuild={runBuild}
                 onContinueToVerify={() => setActiveTab('verify')}
-                onProceedToTest={async () => {
-                  setActiveTab('verify');
-                  await runTests();
-                }}
+                onProceedToTest={approveTests}
                 onGoToDependencies={() => setActiveTab('dependencies')}
                 onGoToIngest={() => setActiveTab('ingest')}
                 onAskWeaver={handleAskWeaver}

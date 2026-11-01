@@ -290,6 +290,10 @@ async def approve_workflow_gate(
             # The owner verified tests and approved exporting the certified MCP bundle.
             resume_state["stages"] = ["export"]
             resume_state["export_approved"] = True
+        elif resume_state.get("generated_files") and not resume_state.get("test_approved"):
+            # The owner reviewed the generated MCP server files in Stage 3 and approved running Stage 4 tests!
+            resume_state["test_approved"] = True
+            resume_state["stages"] = ["test", "export"]
         else:
             # Resume with the stages the caller asked for after planning.
             requested = [

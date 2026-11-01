@@ -102,10 +102,20 @@ export const PipelineCanvas: React.FC<PipelineCanvasProps> = ({
 
   // Stage statuses
   const stage1Running = currentNode === 'doc_agent';
-  const stage2Running = ['planner_agent', 'approval_gate'].includes(currentNode);
+  const stage2Running = currentNode === 'planner_agent';
   const stage3Running = currentNode === 'code_agent';
   const stage4Running = ['test_agent', 'repair_agent'].includes(currentNode);
   const stage5Running = currentNode === 'export_agent';
+
+  const isPaused = activeRun?.status === 'paused_for_approval';
+  const progressPercent = activeRun?.progress_percent ?? 0;
+
+  // Gate 1: stage 2 -> 3 (plan approval)
+  const stage2AwaitingApproval = isPaused && (progressPercent <= 35 || (currentNode === 'approval_gate' && progressPercent < 50));
+  // Gate 2: stage 3 -> 4 (code review & test approval)
+  const stage3AwaitingApproval = isPaused && (progressPercent >= 50 && progressPercent < 80);
+  // Gate 3: stage 4 -> 5 (export approval)
+  const stage5AwaitingApproval = isPaused && progressPercent >= 80;
 
   const stage1Verified = stepCompleted.ingest;
   const stage2Verified = stepCompleted.dependencies;
@@ -115,7 +125,6 @@ export const PipelineCanvas: React.FC<PipelineCanvasProps> = ({
 
   const testsPassed = Boolean(testSummary && (testSummary.summary.total ?? 0) > 0 && (testSummary.summary.failed ?? 0) === 0);
   const stage5Locked = !testsPassed;
-  const stage5AwaitingApproval = testsPassed && !stage5Verified;
 
 
   const cardCls = (id: TabId, isRunning: boolean) => {
@@ -307,11 +316,18 @@ export const PipelineCanvas: React.FC<PipelineCanvasProps> = ({
           {/* STAGE 02 CARD: DEPENDENCY GRAPH */}
           <div
             onClick={() => onSelectTab('dependencies')}
-            className={`${cardCls('dependencies', stage2Running)} top-6 left-[320px] w-[220px]`}
+            className={`${cardCls('dependencies', stage2Running || stage2AwaitingApproval)} top-6 left-[320px] w-[220px]`}
           >
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] font-mono uppercase tracking-wider text-neutral-400">STAGE 02</span>
-              {statusBadge(stage2Verified, stage2Running)}
+              {stage2AwaitingApproval ? (
+                <span className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400 border border-amber-500/30">
+                  <ShieldAlert className="h-3 w-3 animate-pulse" />
+                  Needs Approval
+                </span>
+              ) : (
+                statusBadge(stage2Verified, stage2Running)
+              )}
             </div>
             <div className="flex items-center gap-2.5 mb-2">
               <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
@@ -331,11 +347,18 @@ export const PipelineCanvas: React.FC<PipelineCanvasProps> = ({
           {/* STAGE 03 CARD: FASTMCP SYNTHESIZER */}
           <div
             onClick={() => onSelectTab('tools')}
-            className={`${cardCls('tools', stage3Running)} top-6 left-[630px] w-[220px]`}
+            className={`${cardCls('tools', stage3Running || stage3AwaitingApproval)} top-6 left-[630px] w-[220px]`}
           >
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] font-mono uppercase tracking-wider text-neutral-400">STAGE 03</span>
-              {statusBadge(stage3Verified, stage3Running)}
+              {stage3AwaitingApproval ? (
+                <span className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400 border border-amber-500/30">
+                  <ShieldAlert className="h-3 w-3 animate-pulse" />
+                  Code Review
+                </span>
+              ) : (
+                statusBadge(stage3Verified, stage3Running)
+              )}
             </div>
             <div className="flex items-center gap-2.5 mb-2">
               <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400">
@@ -359,7 +382,14 @@ export const PipelineCanvas: React.FC<PipelineCanvasProps> = ({
           >
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] font-mono uppercase tracking-wider text-neutral-400">STAGE 04</span>
-              {statusBadge(stage4Verified, stage4Running)}
+              {stage3AwaitingApproval ? (
+                <span className="flex items-center gap-1 rounded-full bg-neutral-800/80 px-2 py-0.5 text-[10px] font-medium text-neutral-400 border border-white/10">
+                  <Lock className="h-3 w-3 text-neutral-500" />
+                  Awaiting Approval
+                </span>
+              ) : (
+                statusBadge(stage4Verified, stage4Running)
+              )}
             </div>
             <div className="flex items-center gap-2.5 mb-2">
               <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">

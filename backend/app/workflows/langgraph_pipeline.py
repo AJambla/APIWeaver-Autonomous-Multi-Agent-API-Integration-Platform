@@ -149,12 +149,17 @@ def route_from_start(state: WorkflowState) -> str:
             "code_agent",
             "test_agent",
             "repair_agent",
+            "approval_gate",
         ):
             return route_after_code(state)
         return "code_agent"
     if "test" in stages:
+        if not state.get("test_approved"):
+            return "approval_gate"
         return "test_agent"
     if "export" in stages:
+        if not state.get("export_approved"):
+            return "approval_gate"
         return "export_agent"
     return "finalize"
 
@@ -174,11 +179,15 @@ def route_after_planner(state: WorkflowState) -> str:
 
 
 def route_after_code(state: WorkflowState) -> str:
-    """Determine whether to proceed to testing, export, or finish after code gen."""
+    """Determine whether to proceed to testing, export, or pause for approval after code gen."""
     stages = state.get("stages", DEFAULT_WORKFLOW_STAGES)
     if "test" in stages:
+        if not state.get("test_approved"):
+            return "approval_gate"
         return "test_agent"
     if "export" in stages:
+        if not state.get("export_approved"):
+            return "approval_gate"
         return "export_agent"
     return "finalize"
 
@@ -648,18 +657,37 @@ def create_apiweaver_graph(
         test_summary = state.get("test_run_summary") or {}
         failed_tests = test_summary.get("failed", 0)
         total_tests = test_summary.get("total", 0)
+        stages = state.get("stages", DEFAULT_WORKFLOW_STAGES)
+        generated_files = state.get("generated_files", [])
+
         is_repair_exhausted = failed_tests > 0 and len(state.get("repair_attempts", [])) >= 3
         is_export_ready = (
             total_tests > 0
             and failed_tests == 0
             and not state.get("export_approved")
         )
+        is_code_ready = (
+            len(generated_files) > 0
+            and not state.get("test_approved")
+            and "test" in stages
+        )
+
         if is_export_ready:
             reason = f"All {total_tests} sandbox tests verified. MCP is ready to ship. Workflow paused awaiting user approval to export Certified MCP Bundle."
+            progress = 85
+            event_reason = "export_approval_required"
         elif is_repair_exhausted:
             reason = f"Self-healing repair exhausted (3/3 attempts failed; {failed_tests} tests failing). Workflow paused awaiting human review"
+            progress = 80
+            event_reason = "test_repair_exhausted"
+        elif is_code_ready:
+            reason = f"FastMCP server files generated ({len(generated_files)} files). Workflow paused awaiting code review in Stage 3 and approval to run Sandbox Tests."
+            progress = 60
+            event_reason = "code_review_required"
         else:
             reason = "Human approval gate reached. Workflow paused awaiting project owner sign-off"
+            progress = state.get("progress_percent", 35)
+            event_reason = "human_approval_required"
 
         terminal_logger.log_idle(
             "approval_gate",
@@ -671,7 +699,7 @@ def create_apiweaver_graph(
         updates: dict[str, Any] = {
             "status": WorkflowStatus.PAUSED_FOR_APPROVAL,
             "current_node": "approval_gate",
-            "progress_percent": 85 if is_export_ready else (80 if is_repair_exhausted else state.get("progress_percent", 30)),
+            "progress_percent": progress,
         }
 
         if event_publisher and run_id:
@@ -680,16 +708,12 @@ def create_apiweaver_graph(
                 project_id=state.get("project_id"),
                 event_type="workflow.paused",
                 payload={
-                    "reason": (
-                        "export_approval_required"
-                        if is_export_ready
-                        else "test_repair_exhausted"
-                        if is_repair_exhausted
-                        else "human_approval_required"
-                    )
+                    "reason": event_reason,
+                    "is_code_ready": is_code_ready,
+                    "is_export_ready": is_export_ready,
+                    "progress_percent": progress,
                 },
             )
-
 
         await _save_checkpoint({**state, **updates}, "approval_gate")
 
@@ -718,6 +742,64 @@ def create_apiweaver_graph(
         # Same rule as check_budget: this used to ignore DEFAULT_TOKEN_BUDGET from settings.
         budget = token_budget(state)
 
+        async def _persist_codegen_files(files_to_persist: list[dict[str, Any]]) -> None:
+            if not (session_factory and run_id and files_to_persist):
+                return
+            try:
+                async with session_factory() as session:
+                    from app.models.codegen import CodeGenerationRun, GeneratedFile
+                    from app.models.enums import GeneratedFileType
+                    run_uuid = uuid.UUID(str(run_id))
+                    existing_run = await session.scalar(
+                        select(CodeGenerationRun).where(CodeGenerationRun.workflow_run_id == run_uuid)
+                    )
+                    if existing_run is None:
+                        primary_lang = target_langs[0] if (target_langs and target_langs[0] in DEFAULT_TARGET_LANGUAGES) else DEFAULT_TARGET_LANGUAGES[0]
+                        existing_run = CodeGenerationRun(
+                            workflow_run_id=run_uuid,
+                            target_language=primary_lang,
+                            status="completed",
+                        )
+                        session.add(existing_run)
+                        await session.flush()
+
+                    existing_entries: set[tuple[Any, Any]] = {
+                        tuple(row)
+                        for row in (await session.execute(
+                            select(GeneratedFile.language, GeneratedFile.file_path).where(GeneratedFile.code_generation_run_id == existing_run.id)
+                        )).all()
+                    }
+
+                    for gf in files_to_persist:
+                        fp = gf.get("file_path", "")
+                        lang = gf.get("language") or ("python" if fp.endswith(".py") else "node")
+                        s3_key = gf.get("content_s3_key", "")
+                        entry_key = (lang, fp)
+                        if fp and s3_key and entry_key not in existing_entries:
+                            file_type_val = GeneratedFileType.SDK.value
+                            if "test" in fp.lower():
+                                file_type_val = GeneratedFileType.TEST.value
+                            elif "docker" in fp.lower():
+                                file_type_val = GeneratedFileType.DOCKERFILE.value
+                            elif "readme" in fp.lower():
+                                file_type_val = GeneratedFileType.README.value
+
+                            session.add(
+                                GeneratedFile(
+                                    code_generation_run_id=existing_run.id,
+                                    file_path=fp,
+                                    content_s3_key=s3_key,
+                                    language=lang,
+                                    file_type=file_type_val,
+                                    size_bytes=gf.get("size_bytes", 0),
+                                )
+                            )
+                            existing_entries.add(entry_key)
+                    await session.commit()
+            except Exception as exc:
+                pipeline_error_total.labels(subsystem="codegen_persist", error_type=type(exc).__name__).inc()
+                logger.error("codegen_files_persist_failed", error=str(exc), exc_info=True)
+
         try:
             for phase in phases:
                 if total_tokens >= budget:
@@ -734,10 +816,6 @@ def create_apiweaver_graph(
                 )
 
                 if phase_result.get("status") == "failed":
-                    # run_code_agent reports its own failures ("Phase N not found", "no
-                    # spec") as a status, not an exception. Reading only generated_files
-                    # here reported success, and the run then failed later in testing
-                    # with "No generated files to test" and the real cause lost.
                     reasons = "; ".join(str(e) for e in phase_result.get("errors") or [])
                     raise RuntimeError(
                         f"Code generation phase {phase_num} failed: {reasons or 'unknown error'}"
@@ -759,6 +837,10 @@ def create_apiweaver_graph(
                         generated_files.append(nf)
                 total_tokens = phase_result.get("total_tokens_used", total_tokens)
                 await _emit_thought(state, "code_agent", f"Phase {phase_num}/{len(phases)} complete ({len(generated_files)} cumulative file(s) generated).", level="success", action="phase_complete", step=phase_num, total_steps=len(phases))
+
+                # Incrementally persist files as each phase completes so they stream live to the UI
+                await _persist_codegen_files(generated_files)
+
                 if total_tokens >= budget:
                     raise RuntimeError(f"token_budget_exceeded: {total_tokens}/{budget}")
 
@@ -767,9 +849,6 @@ def create_apiweaver_graph(
                 await _emit_thought(state, "code_agent", "Running multi-file consistency, typing, and import alignment pass...", action="codegen_consistency")
                 from app.workflows.agents import code_agent as code_agent_module
 
-                # Optional polish over files every phase already produced: a
-                # truncated reply, bad JSON or an open LLM circuit here must not fail
-                # a run whose generation succeeded. Keep the phase output instead.
                 try:
                     consistency_result = await code_agent_module.run_code_agent(
                         {**state, "generated_files": generated_files, "total_tokens_used": total_tokens},  # type: ignore[misc]
@@ -796,6 +875,10 @@ def create_apiweaver_graph(
                 ):
                     generated_files = consistency_result["generated_files"]
                 total_tokens = consistency_result.get("total_tokens_used", total_tokens)
+
+                # Persist consistent code changes
+                await _persist_codegen_files(generated_files)
+
                 if total_tokens >= budget:
                     raise RuntimeError(f"token_budget_exceeded: {total_tokens}/{budget}")
         except Exception as exc:
@@ -1447,6 +1530,7 @@ def create_apiweaver_graph(
         {
             "doc_agent": "doc_agent",
             "planner_agent": "planner_agent",
+            "approval_gate": "approval_gate",
             "code_agent": "code_agent",
             "test_agent": "test_agent",
             "export_agent": "export_agent",
@@ -1471,6 +1555,7 @@ def create_apiweaver_graph(
         "code_agent",
         route_after_code,
         {
+            "approval_gate": "approval_gate",
             "test_agent": "test_agent",
             "export_agent": "export_agent",
             "finalize": "finalize",

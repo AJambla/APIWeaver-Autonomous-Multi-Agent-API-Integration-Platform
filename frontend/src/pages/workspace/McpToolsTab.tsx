@@ -110,24 +110,39 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
     try {
       const fileList = await apiFetch<GeneratedFileMeta[]>(`/projects/${projectId}/files`);
       setFiles(fileList || []);
-      const contents: Record<string, string> = {};
-      for (const f of fileList || []) {
-        const name = f.file_path.split('/').pop() || f.file_path;
-        try {
-          const res = await apiFetch<{ content: string }>(`/projects/${projectId}/files/${f.id}/content`);
-          if (res && res.content) {
-            contents[name] = res.content;
-            contents[f.file_path] = res.content;
-          }
-        } catch {
-          // File content not ready yet
-        }
-      }
-      setFileContents(prev => ({ ...prev, ...contents }));
     } catch {
       // Not ready yet
     }
   }, [projectId]);
+
+  // Load content of currently selected file on demand
+  useEffect(() => {
+    if (!projectId || !selectedFile || files.length === 0) return;
+    if (fileContents[selectedFile]) return;
+
+    const matched = files.find(
+      f => f.file_path === selectedFile || f.file_path.split('/').pop() === selectedFile
+    );
+    if (!matched) return;
+
+    let cancelled = false;
+    apiFetch<{ content: string }>(`/projects/${projectId}/files/${matched.id}/content`)
+      .then(res => {
+        if (!cancelled && res && res.content) {
+          const name = matched.file_path.split('/').pop() || matched.file_path;
+          setFileContents(prev => ({
+            ...prev,
+            [name]: res.content,
+            [matched.file_path]: res.content,
+          }));
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, selectedFile, files, fileContents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -210,6 +225,14 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
   const specTitle = useMemo(() => {
     return spec?.title || rawSpec.info?.title || project?.name || 'OpenAPI Spec';
   }, [spec, rawSpec, project]);
+
+  // Awaiting test approval gate (Stage 03 complete, waiting for human sign-off before Stage 04 tests)
+  const isAwaitingTestApproval = useMemo(() => {
+    return (
+      activeRun?.status === 'paused_for_approval' &&
+      (activeRun?.progress_percent === 60 || (files.length > 0 && (activeRun?.progress_percent ?? 0) < 80))
+    );
+  }, [activeRun?.status, activeRun?.progress_percent, files.length]);
 
   const authSchemeText = useMemo(() => {
     const authObj = rawSpec.components?.securitySchemes ?? rawSpec.securityDefinitions ?? {};
@@ -644,17 +667,54 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
                     onContinueToVerify();
                   }
                 }}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500 hover:bg-emerald-400 text-neutral-950 text-xs font-semibold shadow-md shadow-emerald-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border text-xs font-semibold shadow-md transition-all hover:scale-[1.02] active:scale-[0.98] ${
+                  isAwaitingTestApproval
+                    ? 'border-emerald-500/50 bg-emerald-500 hover:bg-emerald-400 text-neutral-950 shadow-emerald-500/25'
+                    : 'border-emerald-500/40 bg-emerald-500 hover:bg-emerald-400 text-neutral-950 shadow-emerald-500/20'
+                }`}
               >
                 <FlaskConical className="h-3.5 w-3.5" />
-                <span>Proceed to Test</span>
+                <span>{isAwaitingTestApproval ? 'Approve & Run Tests' : 'Proceed to Test'}</span>
               </button>
             )}
           </div>
         </div>
 
+        {/* Stage 03 Code Review & Approval Gate Banner */}
+        {isAwaitingTestApproval && (
+          <div className="rounded-xl border border-amber-500/40 bg-gradient-to-r from-amber-950/40 via-amber-900/20 to-black/60 p-4 flex flex-wrap items-center justify-between gap-4 shadow-xl shrink-0 animate-in fade-in slide-in-from-top-2">
+            <div className="flex items-center gap-3.5">
+              <div className="h-10 w-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
+                <ShieldCheck className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-white">Stage 03 Complete — Code Review & Test Approval Required</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    {files.length} files synthesized
+                  </span>
+                </div>
+                <p className="text-xs text-neutral-300 mt-1 max-w-2xl">
+                  FastMCP server source files, tool bindings, and test fixtures have been synthesized and AST-validated. Review or edit the code in the editor below, then approve to start Stage 04 Docker Sandbox verification.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (onProceedToTest) onProceedToTest();
+                else onContinueToVerify();
+              }}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-emerald-500/50 bg-emerald-500 hover:bg-emerald-400 text-neutral-950 text-xs font-bold shadow-lg shadow-emerald-500/25 transition-all hover:scale-[1.02] active:scale-[0.98]"
+            >
+              <FlaskConical className="h-4 w-4" />
+              <span>Approve & Run Tests →</span>
+            </button>
+          </div>
+        )}
+
         {/* Real-time Status Banner */}
-        {files.length > 0 && !runIsLive && (
+        {files.length > 0 && !runIsLive && !isAwaitingTestApproval && (
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-lg shrink-0">
             <div className="flex items-center gap-3">
               <div className="h-9 w-9 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0">
@@ -1441,7 +1501,7 @@ export const McpToolsTab: React.FC<McpToolsTabProps> = ({
           {files.length > 0 ? (
             <>
               <FlaskConical className="h-4 w-4" />
-              <span>Proceed to Test</span>
+              <span>{isAwaitingTestApproval ? 'Approve & Run Tests' : 'Proceed to Test'}</span>
             </>
           ) : (
             <span>Continue to Verify</span>
