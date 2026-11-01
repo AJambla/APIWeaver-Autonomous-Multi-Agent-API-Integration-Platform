@@ -49,7 +49,10 @@ class RunWorkflow(AsyncTask):
         from app.workflows.state import WorkflowState
 
         settings = get_settings()
-        engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+        engine_kwargs: dict[str, Any] = {"pool_pre_ping": True}
+        if settings.database_url.startswith("postgresql+asyncpg://"):
+            engine_kwargs["connect_args"] = {"statement_cache_size": 0}
+        engine = create_async_engine(settings.database_url, **engine_kwargs)
         redis_client = aioredis.from_url(settings.redis_url)
         try:
             session_factory = async_sessionmaker(
@@ -93,7 +96,11 @@ async def _mark_run_failed(run_id: str, reason: str) -> None:
     from app.models.enums import WorkflowStatus
     from app.models.workflow import WorkflowRun
 
-    engine = create_async_engine(get_settings().database_url)
+    settings = get_settings()
+    engine_kwargs: dict[str, Any] = {}
+    if settings.database_url.startswith("postgresql+asyncpg://"):
+        engine_kwargs["connect_args"] = {"statement_cache_size": 0}
+    engine = create_async_engine(settings.database_url, **engine_kwargs)
     try:
         async with async_sessionmaker(bind=engine, expire_on_commit=False)() as session:
             await session.execute(
