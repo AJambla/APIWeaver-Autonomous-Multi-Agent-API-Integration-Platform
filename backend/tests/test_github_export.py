@@ -9,6 +9,10 @@ import pytest
 from app.workflows.agents.export_agent import ExportAgent
 from app.workflows.state import WorkflowState
 
+pytestmark = pytest.mark.skip(
+    reason="GitHub export packaging was pruned in refactor(export) c2123a1 in favor of FastMCP and Docs"
+)
+
 
 class TestGitHubExport:
     """Tests for GitHub export packaging."""
