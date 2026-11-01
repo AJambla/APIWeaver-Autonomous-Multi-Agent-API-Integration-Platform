@@ -341,14 +341,12 @@ export const ProjectWorkspace: React.FC = () => {
 
   const handleApplyWeaverCode = useCallback((filePath: string, newContent: string) => {
     const fileName = filePath.split('/').pop() || filePath;
-    if (id) {
-      localStorage.setItem(`aw_mcp_edit_${id}_${fileName}`, newContent);
-    }
     if (fileName.includes('spec')) {
       setSpecContent(newContent);
     }
     setExternalFileUpdate({ file: fileName, content: newContent, timestamp: Date.now() });
-  }, [id]);
+    loadProjectData();
+  }, [loadProjectData]);
 
   const loadProjectData = useCallback(async () => {
     if (!id) return;
