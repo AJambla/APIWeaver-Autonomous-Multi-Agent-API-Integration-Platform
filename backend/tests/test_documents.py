@@ -470,6 +470,9 @@ async def test_fetch_spec_connects_to_the_address_it_vetted(monkeypatch) -> None
         ("169.254.169.254", False),
         ("100.100.100.200", False),  # CGNAT range, missed before
         ("::ffff:10.0.0.1", False),  # IPv4-mapped private
+        ("::127.0.0.1", False),  # IPv4-compatible IPv6 loopback
+        ("::169.254.169.254", False),  # IPv4-compatible IPv6 metadata
+        ("2002:7f00:1::", False),  # 6to4 loopback
         ("127.0.0.1", False),
         ("224.0.1.1", False),
     ],

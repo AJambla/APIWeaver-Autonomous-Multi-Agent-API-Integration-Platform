@@ -168,12 +168,18 @@ def _is_public_address(address: str) -> bool:
 
     `is_global` also excludes ranges the old private/loopback/link-local list missed,
     such as 100.64.0.0/10 (carrier-grade NAT, home of some cloud metadata services). An
-    IPv4-mapped IPv6 address (::ffff:10.0.0.1) is judged by the IPv4 address it carries.
+    IPv4-mapped, IPv4-compatible (::/96), or 6to4 (2002::/16) IPv6 address is judged
+    by the IPv4 address it carries.
     """
     ip = ipaddress.ip_address(address.split("%", 1)[0])
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return ip.is_global and not ip.is_multicast
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip.sixtofour is not None:
+            ip = ip.sixtofour
+        elif int(ip) <= 0xFFFFFFFF:
+            ip = ipaddress.IPv4Address(int(ip))
+    return ip.is_global and not ip.is_multicast and not ip.is_private and not ip.is_loopback and not ip.is_link_local
 
 
 async def resolve_public_address(hostname: str, port: int) -> str:
