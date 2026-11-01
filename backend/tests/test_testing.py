@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -169,6 +169,8 @@ class User(BaseModel):
             {"file_path": "client.py", "content_s3_key": "s3/client.py", "language": "python"}
         ]
         vetting = AsyncMock()
+        mock_docker = MagicMock()
+        mock_docker.ping.return_value = True
         with (
             patch("app.workflows.agents.test_agent.get_settings") as mock_settings,
             patch("app.workflows.agents.test_agent.assert_public_target", new=vetting),
@@ -176,10 +178,13 @@ class User(BaseModel):
                 "app.workflows.agents.test_agent.storage_service.download",
                 new=AsyncMock(return_value=b"class Client: pass\n"),
             ),
+            patch("docker.from_env", return_value=mock_docker),
         ):
             mock_s = mock_settings.return_value
+            mock_s.docker_host = None
             mock_s.sandbox_network_enabled = True
             mock_s.sandbox_image = "python:3.12-slim"
+            mock_s.sandbox_backend = "docker"
             executor = await _create_sandbox(
                 state, generated_files, {"base_url": "http://169.254.169.254"}
             )
@@ -203,16 +208,22 @@ class User(BaseModel):
         generated_files = [
             {"file_path": "client.ts", "content_s3_key": "s3/client.ts", "language": "node"}
         ]
-        with patch("app.workflows.agents.test_agent.get_settings") as mock_settings:
+        mock_docker = MagicMock()
+        mock_docker.ping.return_value = True
+        with (
+            patch("app.workflows.agents.test_agent.get_settings") as mock_settings,
+            patch("docker.from_env", return_value=mock_docker),
+            patch("app.workflows.agents.test_agent.storage_service.download", new=AsyncMock(return_value=b"export class Client {}")),
+        ):
             mock_s = mock_settings.return_value
+            mock_s.docker_host = None
             mock_s.sandbox_backend = "docker"
             mock_s.sandbox_network_enabled = False
             mock_s.sandbox_node_image = "node:22-alpine"
-            with patch("app.workflows.agents.test_agent.storage_service.download", new=AsyncMock(return_value=b"export class Client {}")):
-                executor = await _create_sandbox(state, generated_files, {"base_url": "http://api.test"})
-                assert isinstance(executor, DockerSandboxExecutor)
-                assert executor._language == "node"
-                await executor.cleanup()
+            executor = await _create_sandbox(state, generated_files, {"base_url": "http://api.test"})
+            assert isinstance(executor, DockerSandboxExecutor)
+            assert executor._language == "node"
+            await executor.cleanup()
 
 
 class TestTestingAPI:
