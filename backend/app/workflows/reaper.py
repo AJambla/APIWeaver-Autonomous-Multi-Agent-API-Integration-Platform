@@ -57,10 +57,25 @@ async def reap_stale_runs(
                 completed_at=now,
                 current_node="executor_lost",
             )
-            .returning(WorkflowRun.id)
+            .returning(WorkflowRun.id, WorkflowRun.project_id)
             .execution_options(synchronize_session=False)
         )
-        reaped = [str(run_id) for run_id in result.scalars()]
+        reaped_rows = result.all()
+        reaped = [str(row[0]) for row in reaped_rows]
+        project_ids = {row[1] for row in reaped_rows if row[1] is not None}
+        if project_ids:
+            from app.models.enums import ProjectStatus
+            from app.models.project import Project
+
+            await session.execute(
+                update(Project)
+                .where(
+                    Project.id.in_(project_ids),
+                    Project.status.in_([ProjectStatus.BUILDING, ProjectStatus.TESTING, ProjectStatus.PLANNING]),
+                )
+                .values(status=ProjectStatus.FAILED)
+                .execution_options(synchronize_session=False)
+            )
         await session.commit()
 
     if reaped:
