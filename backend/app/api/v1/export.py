@@ -102,6 +102,7 @@ async def trigger_export(
         "organization_id": str(project.organization_id),
         "workflow_run_id": str(run.id),
         "stages": ["export"],
+        "export_approved": True,
         "target_languages": [str(lang) for lang in payload.target_languages or DEFAULT_TARGET_LANGUAGES],
         "normalized_spec": normalized_spec,
         "generated_files": generated_files,

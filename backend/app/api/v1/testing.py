@@ -105,6 +105,7 @@ async def trigger_test(
         "workflow_run_id": str(run.id),
         "environment": env,
         "stages": ["test"],
+        "test_approved": True,
         "target_languages": list(DEFAULT_TARGET_LANGUAGES),
         "normalized_spec": normalized_spec,
         "generated_files": generated_files,
