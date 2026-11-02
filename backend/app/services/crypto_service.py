@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -54,11 +55,11 @@ class CryptoService:
         storage_dir: str | Path | None = None,
     ) -> None:
         if key is None:
-            # Deterministic dev fallback key if not provided
-            key = hashlib.sha256(b"apiweaver-default-insecure-dev-encryption-key").digest()
+            # Generate an ephemeral random 32-byte key in memory on dev boot (SEC-LOW-02)
+            key = secrets.token_bytes(32)
             logger.warning(
-                "using_insecure_dev_encryption_key",
-                message="APP_ENCRYPTION_KEY is not set. Using insecure default development key.",
+                "using_ephemeral_dev_encryption_key",
+                message="APP_ENCRYPTION_KEY is not set. Using ephemeral in-memory random key.",
             )
         elif len(key) != 32:
             # Derive 32-byte key via SHA-256

@@ -71,3 +71,15 @@ async def test_crypto_service_storage_roundtrip(tmp_path: Path):
     await svc.delete_secret(path)
     assert await svc.read_secret(path) is None
     assert not target_file.exists()
+
+
+def test_crypto_service_ephemeral_dev_key(tmp_path: Path):
+    svc1 = CryptoService(storage_dir=tmp_path)
+    svc2 = CryptoService(storage_dir=tmp_path)
+    assert len(svc1._key) == 32
+    assert len(svc2._key) == 32
+    # Two unconfigured instances must generate different ephemeral keys
+    assert svc1._key != svc2._key
+    encrypted = svc1.encrypt("secret_value")
+    assert svc1.decrypt(encrypted) == "secret_value"
+
