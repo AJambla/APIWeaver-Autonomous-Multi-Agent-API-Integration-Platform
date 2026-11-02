@@ -26,7 +26,8 @@ logger = get_logger(__name__)
 
 def sanitize_filename(filename: str) -> str:
     """Sanitize uploaded document filename to prevent path traversal and injection."""
-    base = Path(filename).name.strip()
+    normalized = filename.replace("\\", "/")
+    base = Path(normalized).name.strip()
     base = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", base)
     base = base.replace("..", "").strip(". ")
     if not base:

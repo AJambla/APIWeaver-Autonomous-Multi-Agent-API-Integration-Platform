@@ -120,6 +120,8 @@ def test_strip_ansi_in_logging():
 
 
 def test_otlp_tls_configurability(monkeypatch):
+    from opentelemetry.sdk.trace.export import SpanExportResult
+
     import app.core.telemetry as tel_module
     from app.core.telemetry import _build_tracer_provider
     tel_module._tracer_provider = None
@@ -130,13 +132,23 @@ def test_otlp_tls_configurability(monkeypatch):
         def __init__(self, endpoint, insecure):
             captured_insecure.append(insecure)
 
+        def export(self, spans):
+            return SpanExportResult.SUCCESS
+
+        def shutdown(self):
+            pass
+
     monkeypatch.setattr("opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter", DummyExporter)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com:4317")
 
     provider = _build_tracer_provider()
-    assert provider is not None
-    assert captured_insecure == [False]
-    tel_module._tracer_provider = None
+    try:
+        assert provider is not None
+        assert captured_insecure == [False]
+    finally:
+        if provider:
+            provider.shutdown()
+        tel_module._tracer_provider = None
 
 
 def test_http_instrumentation_from_create_app_emits_server_spans(monkeypatch):
