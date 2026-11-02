@@ -12,14 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.deps import client_ip, get_current_principal, get_db, utc_now
-from app.core.errors import ConflictError
+from app.core.errors import ConflictError, ForbiddenError
 from app.models.audit import AuditAction
 from app.models.enums import ActorType, OrgRole, ProjectRole, ProjectStatus
 from app.models.organization import OrganizationMember
 from app.models.project import Project, ProjectMember
 from app.models.spec import APISpec, Endpoint
 from app.models.workflow import WorkflowRun
-from app.rbac.enforce import assert_org_permission, require_project_permission
+from app.rbac.enforce import assert_org_permission, require_project_permission, resolve_org_role
 from app.rbac.policy import Permission, Principal
 from app.schemas.common import Page, PaginationMeta, decode_cursor, encode_cursor
 from app.schemas.project import (
@@ -240,6 +240,9 @@ async def archive_project(
     """Soft-deletes per `API.md §6.1`, or permanently deletes when `permanent=true`."""
     res = ProjectResponse.model_validate(project)
     if permanent:
+        org_role = await resolve_org_role(session, principal, project.organization_id)
+        if org_role != OrgRole.OWNER:
+            raise ForbiddenError("Permanent project deletion requires organization Owner role.")
         await audit_service.record(
             session,
             action=AuditAction.PROJECT_ARCHIVED,

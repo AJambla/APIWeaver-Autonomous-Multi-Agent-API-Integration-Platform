@@ -318,3 +318,33 @@ async def test_successful_requests_never_count_as_failures(
     for _ in range(AUTH_FAILURES_PER_MINUTE + 5):
         res = await client.get("/api/v1/projects", headers=seed["owner_headers"])
         assert res.status_code == 200
+
+
+async def test_permanent_project_deletion_requires_org_owner(
+    client: AsyncClient, session_factory, test_settings
+) -> None:
+    """Only OrgRole.OWNER can permanently delete; OrgRole.ADMIN can only soft-archive (SEC-LOW-11)."""
+    seed = await _seed(session_factory, test_settings)
+    org = seed["org"]
+    async with session_factory() as session:
+        admin_user = await make_user(session, email=f"adm-{uuid.uuid4().hex[:8]}@example.com")
+        await add_org_member(session, org=org, user=admin_user, role=OrgRole.ADMIN)
+        await session.commit()
+        admin_token = create_access_token(user_id=admin_user.id, org_id=org.id, role=OrgRole.ADMIN, settings=test_settings)
+        admin_headers = {"Authorization": f"Bearer {admin_token.token}"}
+
+    project_a_id = seed["project_a"].id
+    # Admin tries permanent deletion -> 403 Forbidden
+    res_admin_perm = await client.delete(f"/api/v1/projects/{project_a_id}?permanent=true", headers=admin_headers)
+    assert res_admin_perm.status_code == 403
+    assert "Permanent project deletion requires organization Owner role" in res_admin_perm.text
+
+    # Admin soft-archives -> 200 OK
+    res_admin_archive = await client.delete(f"/api/v1/projects/{project_a_id}", headers=admin_headers)
+    assert res_admin_archive.status_code in (200, 204)
+
+    # Owner permanently deletes project_b -> 200 OK
+    project_b_id = seed["project_b"].id
+    res_owner_perm = await client.delete(f"/api/v1/projects/{project_b_id}?permanent=true", headers=seed["owner_headers"])
+    assert res_owner_perm.status_code == 200
+
