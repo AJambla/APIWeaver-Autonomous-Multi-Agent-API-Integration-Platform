@@ -204,20 +204,18 @@ async def resolve_public_address(hostname: str, port: int) -> str:
     return addresses[0]
 
 
-async def assert_public_target(url: str | None, *, allow_private: bool = False) -> None:
+async def assert_public_target(url: str | None, *, allow_private: bool = False) -> str | None:
     """Refuse live tests whose target resolves to a private, loopback or metadata address.
 
-    Live mode gives generated (LLM-written, spec-influenced) code network access; without
-    this check a spec's `servers[0].url` could aim it at the host, the cluster, or the
-    cloud metadata service (169.254.169.254).
+    Returns the validated public IP address for DNS rebinding protection.
     """
     parts = urlsplit(url or "")
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError(f"live testing needs an absolute http(s) base URL, got {url!r}")
     if allow_private:
-        return
+        return None
     default_port = 443 if parts.scheme == "https" else 80
-    await resolve_public_address(parts.hostname, parts.port or default_port)
+    return await resolve_public_address(parts.hostname, parts.port or default_port)
 
 
 def reap_orphaned_sandboxes(docker_client: Any, *, max_age_seconds: int) -> int:
@@ -287,6 +285,7 @@ class DockerSandboxExecutor:
         self._client_file: str | None = None
         self._language: str = "python"
         self._base_url: str | None = None
+        self._pinned_ip: str | None = None
         self._api_key: str | None = None
         self._images_checked: set[str] = set()
 
@@ -375,6 +374,23 @@ class DockerSandboxExecutor:
             for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
                 environment[key] = proxy
             environment["NODE_USE_ENV_PROXY"] = "1"
+        if self._pinned_ip and self._base_url:
+            hostname = urlsplit(self._base_url).hostname
+            if hostname:
+                options["extra_hosts"] = {hostname: self._pinned_ip}
+        elif self._base_url and not getattr(self._settings, "sandbox_allow_private_targets", False):
+            # Pin resolved host IP to defend against DNS rebinding (SEC-MED-03)
+            try:
+                parts = urlsplit(self._base_url)
+                if parts.hostname:
+                    default_port = 443 if parts.scheme == "https" else 80
+                    import socket
+                    addr_info = socket.getaddrinfo(parts.hostname, parts.port or default_port, family=socket.AF_INET)
+                    if addr_info:
+                        resolved_ip = addr_info[0][4][0]
+                        options["extra_hosts"] = {parts.hostname: resolved_ip}
+            except Exception as exc:
+                logger.warning("dns_pinning_failed", url=self._base_url, error=str(exc))
         return options
 
     def _create_tar_archive(self, workspace: Path) -> io.BytesIO:
@@ -533,11 +549,13 @@ class DockerSandboxExecutor:
         base_url: str | None = None,
         api_key: str | None = None,
         language: str | None = None,
+        pinned_ip: str | None = None,
     ) -> None:
         """Stage generated files into a host workspace the container will bind."""
         # A second load must not leak the first workspace.
         await self.cleanup()
         self._base_url = base_url
+        self._pinned_ip = pinned_ip
         self._api_key = api_key
         self._workspace = await asyncio.to_thread(self._stage, project_id, files)
 

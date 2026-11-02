@@ -841,3 +841,16 @@ def test_bind_arguments_with_path_and_body():
     assert kwargs.get("pet_id") == 42
     assert kwargs.get("pet_payload") == {"name": "fido"}
 
+
+
+def test_sandbox_network_options_pins_host_ip_to_prevent_dns_rebinding():
+    settings = _make_settings(sandbox_network_enabled=True)
+    executor = DockerSandboxExecutor(settings, network_enabled=True)
+    executor._base_url = "https://api.example.com/v1"
+    executor._pinned_ip = "93.184.216.34"
+
+    env = {}
+    options = executor._network_options(env)
+    assert options.get("network_disabled") is False
+    assert "extra_hosts" in options
+    assert options["extra_hosts"] == {"api.example.com": "93.184.216.34"}
