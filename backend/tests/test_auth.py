@@ -619,3 +619,13 @@ async def test_new_passwords_need_eight_characters(client: AsyncClient) -> None:
         },
     )
     assert res.status_code in (400, 422), res.text
+
+
+async def test_refresh_via_httponly_cookie_without_body(client: AsyncClient) -> None:
+    await register(client)
+    assert 'refresh_token' in client.cookies
+    response = await client.post('/api/v1/auth/refresh', json={})
+    assert response.status_code == 200
+    body = response.json()
+    assert 'access_token' in body
+    assert body['token_type'] == 'bearer'

@@ -84,9 +84,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       body: JSON.stringify({ email, password }),
     });
     sessionStorage.setItem('access_token', tokens.access_token);
-    if (tokens.refresh_token) {
-      sessionStorage.setItem('refresh_token', tokens.refresh_token);
-    }
     const me = await apiFetch<MeResponse>('/auth/me');
     setCurrentUser(me);
   };
@@ -106,19 +103,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }),
     });
     sessionStorage.setItem('access_token', tokens.access_token);
-    if (tokens.refresh_token) {
-      sessionStorage.setItem('refresh_token', tokens.refresh_token);
-    }
     const me = await apiFetch<MeResponse>('/auth/me');
     setCurrentUser(me);
   };
 
   const logout = async () => {
-    const refreshToken = sessionStorage.getItem('refresh_token');
     try {
       await apiFetch('/auth/logout', {
         method: 'POST',
-        body: JSON.stringify({ refresh_token: refreshToken }),
+        body: JSON.stringify({}),
       });
     } catch {
       // Server-side revocation failed — clear local state regardless.

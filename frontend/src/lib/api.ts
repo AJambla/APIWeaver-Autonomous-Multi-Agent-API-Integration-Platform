@@ -24,13 +24,13 @@ export class SessionExpiredError extends Error {
 }
 
 async function rotateTokens(): Promise<string> {
-  const refreshToken = sessionStorage.getItem('refresh_token');
   // A network error propagates as-is (not a SessionExpiredError): the session survives it.
+  // Refresh token is maintained securely in HttpOnly cookie to mitigate XSS theft.
   const refreshResponse = await fetch(`${API_PREFIX}/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    body: JSON.stringify(refreshToken ? { refresh_token: refreshToken } : {}),
+    body: JSON.stringify({}),
   });
   if ([400, 401, 403].includes(refreshResponse.status)) {
     throw new SessionExpiredError();
@@ -41,9 +41,6 @@ async function rotateTokens(): Promise<string> {
   }
   const data = (await refreshResponse.json()) as { access_token: string; refresh_token?: string };
   sessionStorage.setItem('access_token', data.access_token);
-  if (data.refresh_token) {
-    sessionStorage.setItem('refresh_token', data.refresh_token);
-  }
   return data.access_token;
 }
 
