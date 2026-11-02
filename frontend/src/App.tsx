@@ -16,6 +16,7 @@ const RunsPage = React.lazy(() => import('./pages/RunsPage').then(m => ({ defaul
 const RunDetailPage = React.lazy(() => import('./pages/RunDetailPage').then(m => ({ default: m.RunDetailPage })));
 const SettingsPage = React.lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const ProjectWorkspace = React.lazy(() => import('./pages/ProjectWorkspace').then(m => ({ default: m.ProjectWorkspace })));
+const NotFoundPage = React.lazy(() => import('./pages/NotFoundPage').then(m => ({ default: m.NotFoundPage })));
 
 const PageFallback: React.FC = () => (
   <div className="min-h-[50vh] flex items-center justify-center">
@@ -89,7 +90,7 @@ export const App: React.FC = () => {
                 </ProtectedRoute>
               }
             />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<RouteErrorBoundary><NotFoundPage /></RouteErrorBoundary>} />
           </Routes>
         </Suspense>
       </BrowserRouter>
