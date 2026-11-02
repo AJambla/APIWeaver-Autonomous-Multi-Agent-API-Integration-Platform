@@ -37,6 +37,11 @@ data "aws_iam_policy_document" "s3_access" {
       "${aws_s3_bucket.artifacts.arn}/*"
     ]
   }
+
+  statement {
+    actions   = ["s3:ListAllMyBuckets"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "s3_access" {
