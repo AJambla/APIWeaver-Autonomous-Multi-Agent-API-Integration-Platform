@@ -88,22 +88,28 @@ class HttpQdrantClient:
 
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.base_url = settings.qdrant_url.rstrip("/")
+        self.api_key = getattr(settings, "qdrant_api_key", None)
         self.default_collection = getattr(settings, "qdrant_collection_name", DEFAULT_COLLECTION)
         self.timeout = httpx.Timeout(getattr(settings, "qdrant_timeout_seconds", 10.0))
         self.dimensions = settings.embedding_dimensions
         self._client = client
         self._owns_client = client is None
+        if self.api_key and self._client is not None:
+            self._client.headers["api-key"] = self.api_key
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout)
+            headers = {}
+            if self.api_key:
+                headers["api-key"] = self.api_key
+            self._client = httpx.AsyncClient(timeout=self.timeout, headers=headers)
             self._owns_client = True
         return self._client
 
     async def ping(self) -> bool:
         client = self._get_client()
         try:
-            res = await client.get(f"{self.base_url}/collections", timeout=1.0)
+            res = await client.get(f"{self.base_url}/collections", timeout=5.0)
             return res.status_code == 200
         except Exception:
             return False
