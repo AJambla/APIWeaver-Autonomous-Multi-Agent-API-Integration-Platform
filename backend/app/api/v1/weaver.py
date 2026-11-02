@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.deps import get_current_principal, get_db
+from app.core.errors import ValidationError
 from app.core.logging import get_logger
 from app.models.codegen import CodeGenerationRun, GeneratedFile
 from app.models.project import Project
@@ -27,7 +28,7 @@ from app.schemas.weaver import (
     WeaverChatRequest,
     WeaverChatResponse,
 )
-from app.services.storage_service import storage_service
+from app.services.storage_service import storage_service, validate_storage_key
 from app.workflows.llm import LLMClient
 
 logger = get_logger(__name__)
@@ -322,6 +323,10 @@ async def weaver_apply_change(
 
     # Persist the file to object storage
     clean_path = file_path.lstrip("/").replace("\\", "/")
+    try:
+        validate_storage_key(clean_path)
+    except ValueError as exc:
+        raise ValidationError(f"Invalid file path: {exc}") from exc
     content_bytes = content.encode("utf-8")
     s3_key = f"projects/{project.id}/generated/{clean_path}"
     await storage_service.upload(s3_key, content_bytes)
@@ -331,7 +336,7 @@ async def weaver_apply_change(
         select(CodeGenerationRun.id)
         .join(WorkflowRun, CodeGenerationRun.workflow_run_id == WorkflowRun.id)
         .where(WorkflowRun.project_id == project.id)
-        .order_by(CodeGenerationRun.created_at.desc())
+        .order_by(WorkflowRun.created_at.desc())
         .limit(1)
     )
     cgen_id = await session.scalar(cgen_stmt)
