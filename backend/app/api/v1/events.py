@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_principal, get_db, get_stream_redis
-from app.core.errors import NotFoundError, UnprocessableEntityError
+from app.core.errors import NotFoundError, RateLimitExceededError, UnprocessableEntityError
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
 from app.models.enums import WorkflowStatus
@@ -121,6 +121,9 @@ async def _stream_redis_events(
             yield ": heartbeat\n\n"
 
 
+MAX_CONCURRENT_SSE_PER_CALLER = 5
+
+
 @router.get("/workflows/{run_id}/sse", response_class=StreamingResponse)
 async def stream_workflow_events(
     run_id: Any,
@@ -135,16 +138,33 @@ async def stream_workflow_events(
         # XREAD rejects anything else, and the generator used to retry that error once a
         # second for as long as the client stayed connected.
         raise UnprocessableEntityError("last_event_id must be a Redis stream id like 0-0.")
+
+    caller_id = str(principal.user_id or principal.organization_id or "anonymous")
+    conn_key = f"ratelimit:sse:conn:{caller_id}"
+    active = await redis_client.incr(conn_key)
+    await redis_client.expire(conn_key, SSE_MAX_SECONDS + 60)
+    if active > MAX_CONCURRENT_SSE_PER_CALLER:
+        await redis_client.decr(conn_key)
+        raise RateLimitExceededError(30)
+
     # The canonical id, not the raw path segment: an upper-case or brace-wrapped UUID
     # passed the access check above but named a stream nobody writes to.
     stream_key = f"workflow_events:{run.id}"
     finished_status = run.status if run.status in _TERMINAL_EVENT_FOR_STATUS else None
 
     async def event_generator() -> AsyncIterator[str]:
-        async for chunk in _stream_redis_events(
-            redis_client, stream_key, last_event_id, finished_status=finished_status
-        ):
-            yield chunk
+        try:
+            async for chunk in _stream_redis_events(
+                redis_client, stream_key, last_event_id, finished_status=finished_status
+            ):
+                yield chunk
+        finally:
+            try:
+                curr = await redis_client.decr(conn_key)
+                if curr < 0:
+                    await redis_client.set(conn_key, 0)
+            except Exception:
+                pass
 
     return StreamingResponse(
         event_generator(),

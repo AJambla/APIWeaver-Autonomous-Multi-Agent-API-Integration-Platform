@@ -109,6 +109,16 @@ class FakeRedis:
         self._store[key] = (str(current), expires_at)
         return current
 
+    async def decr(self, key: str) -> int:
+        current = int(self._live(key) or 0) - 1
+        _, expires_at = self._store.get(key, ("", None))
+        self._store[key] = (str(current), expires_at)
+        return current
+
+    async def set(self, key: str, value: Any, ex: int | None = None) -> None:
+        expires_at = time.time() + ex if ex is not None else None
+        self._store[key] = (str(value), expires_at)
+
     async def expire(self, key: str, ttl: int) -> None:
         if (value := self._live(key)) is not None:
             self._store[key] = (value, time.time() + ttl)

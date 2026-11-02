@@ -253,3 +253,33 @@ async def test_sse_rejects_a_malformed_last_event_id_and_uses_the_canonical_stre
     ok = await client.get(f"/api/v1/workflows/{run_id.upper()}/sse", headers=headers)
     assert ok.status_code == 200, ok.text
     assert keys == [f"workflow_events:{run_id}"]
+
+
+@pytest.mark.asyncio
+async def test_sse_enforces_concurrent_connection_limit(client, fake_redis, monkeypatch):
+    from app.api.v1 import events as events_module
+
+    async def capture(*args, **kwargs):
+        yield ": heartbeat\n\n"
+
+    monkeypatch.setattr(events_module, "_stream_redis_events", capture)
+    project_id, _, headers = await _setup_project(client)
+    run = await client.post(
+        f"/api/v1/projects/{project_id}/workflows",
+        json={"stages": ["plan"], "target_languages": ["python"]},
+        headers=headers,
+    )
+    run_id = run.json()["workflow_run_id"]
+
+    # Get caller principal ID from token to seed conn_key
+    me = await client.get("/api/v1/auth/me", headers=headers)
+    user_id = me.json()["user"]["id"]
+    conn_key = f"ratelimit:sse:conn:{user_id}"
+
+    # Artificially set 5 active connections in Redis
+    await fake_redis.set(conn_key, 5)
+
+    # 6th attempt should be rejected with 429
+    res = await client.get(f"/api/v1/workflows/{run_id}/sse", headers=headers)
+    assert res.status_code == 429
+    assert "Retry-After" in res.headers
