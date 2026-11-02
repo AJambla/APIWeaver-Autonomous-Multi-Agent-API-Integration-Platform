@@ -17,7 +17,7 @@ from app.core.constants import DEFAULT_EXPORT_TYPES
 from app.core.logging import get_logger
 from app.core.metrics import pipeline_error_total
 from app.services.safety_service import classify_safety
-from app.services.storage_service import storage_service
+from app.services.storage_service import storage_service, validate_storage_key
 from app.services.verification_service import (
     OverallStatus,
     VerificationStatus,
@@ -519,8 +519,16 @@ Add to `.cursor/mcp.json`:
 
             has_tools_in_zip = False
             for gf in generated_files or []:
-                file_path = gf.get("file_path") or gf.get("path")
-                if not file_path or file_path in ("server.py", "manifest.json", "requirements.txt", "README.md", "VERIFICATION_REPORT.md", "VERIFICATION_REPORT.json"):
+                raw_path = gf.get("file_path") or gf.get("path")
+                if not raw_path:
+                    continue
+                try:
+                    file_path = validate_storage_key(raw_path)
+                except ValueError:
+                    logger.warning("mcp_bundle_unsafe_path_skipped", file_path=raw_path)
+                    continue
+
+                if file_path in ("server.py", "manifest.json", "requirements.txt", "README.md", "VERIFICATION_REPORT.md", "VERIFICATION_REPORT.json"):
                     continue
                 content = gf.get("content")
                 if content is None and gf.get("content_s3_key"):
