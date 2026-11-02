@@ -185,7 +185,7 @@ class LocalFileSystemObjectStorage:
         safe_key = validate_storage_key(key)
         prefix = bucket if bucket else ""
         target = (self._base_dir / prefix / safe_key).resolve()
-        if not str(target).startswith(str(self._base_dir)):
+        if not target.is_relative_to(self._base_dir):
             raise ValueError(f"Unsafe path traversal detected: {key}")
         return target
 
