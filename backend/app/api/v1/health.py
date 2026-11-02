@@ -21,7 +21,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.deps import get_current_principal, get_db, get_redis
+from app.core.deps import get_current_principal, get_db, get_object_storage, get_redis
+from app.services.qdrant_service import create_qdrant_client
 from app.core.errors import APIError
 from app.core.logging import get_logger
 from app.rbac.enforce import require_own_org_permission
@@ -45,6 +46,8 @@ async def readyz(
     response: Response,
     session: AsyncSession = Depends(get_db),
     redis_client: aioredis.Redis = Depends(get_redis),
+    storage: Any = Depends(get_object_storage),
+    qdrant: Any = Depends(create_qdrant_client),
 ) -> dict[str, Any]:
     """503 unless every hard dependency answers."""
     checks: dict[str, str] = {}
@@ -63,6 +66,26 @@ async def readyz(
     except Exception as exc:  # noqa: BLE001
         logger.warning("readiness_check_failed", dependency="redis", error=str(exc))
         checks["redis"] = "unavailable"
+
+    try:
+        if hasattr(qdrant, "ping"):
+            res = await qdrant.ping()
+            checks["qdrant"] = "ok" if res else "unavailable"
+        else:
+            checks["qdrant"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("readiness_check_failed", dependency="qdrant", error=str(exc))
+        checks["qdrant"] = "unavailable"
+
+    try:
+        if hasattr(storage, "ping"):
+            res = await storage.ping()
+            checks["s3"] = "ok" if res else "unavailable"
+        else:
+            checks["s3"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("readiness_check_failed", dependency="s3", error=str(exc))
+        checks["s3"] = "unavailable"
 
     ready = all(state == "ok" for state in checks.values())
     if not ready:

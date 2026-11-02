@@ -34,7 +34,41 @@ async def test_readyz_reports_dependencies(client: AsyncClient) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ready"
-    assert body["checks"] == {"postgres": "ok", "redis": "ok"}
+    assert body["checks"] == {"postgres": "ok", "redis": "ok", "qdrant": "ok", "s3": "ok"}
+
+
+async def test_readyz_returns_503_when_qdrant_is_down(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    from app.services.qdrant_service import create_qdrant_client
+    fake_qdrant = app.dependency_overrides[create_qdrant_client]()
+
+    async def failing_qdrant_ping() -> bool:
+        return False
+
+    fake_qdrant.ping = failing_qdrant_ping
+    response = await client.get("/readyz")
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "not_ready"
+    assert body["checks"]["qdrant"] == "unavailable"
+
+
+async def test_readyz_returns_503_when_s3_is_down(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    from app.core.deps import get_object_storage
+    fake_storage = app.dependency_overrides[get_object_storage]()
+
+    async def failing_s3_ping() -> bool:
+        return False
+
+    fake_storage.ping = failing_s3_ping
+    response = await client.get("/readyz")
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "not_ready"
+    assert body["checks"]["s3"] == "unavailable" 
 
 
 async def test_readyz_returns_503_when_a_dependency_is_down(

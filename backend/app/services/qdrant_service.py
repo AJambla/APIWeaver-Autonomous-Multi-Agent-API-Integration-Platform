@@ -100,6 +100,14 @@ class HttpQdrantClient:
             self._owns_client = True
         return self._client
 
+    async def ping(self) -> bool:
+        client = self._get_client()
+        try:
+            res = await client.get(f"{self.base_url}/collections", timeout=1.0)
+            return res.status_code == 200
+        except Exception:
+            return False
+
     async def aclose(self) -> None:
         if self._owns_client and self._client is not None and not self._client.is_closed:
             await self._client.aclose()

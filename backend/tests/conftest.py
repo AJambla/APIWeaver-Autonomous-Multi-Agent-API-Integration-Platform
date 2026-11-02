@@ -145,6 +145,9 @@ class FakeObjectStorage:
     async def delete(self, *, key: str) -> None:
         self.objects.pop(key, None)
 
+    async def ping(self) -> bool:
+        return True
+
 
 class FakePipeline:
     """Collects queued commands and runs them in order on execute()."""

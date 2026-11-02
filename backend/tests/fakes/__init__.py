@@ -43,6 +43,9 @@ class FakeQdrantClient:
     def __init__(self) -> None:
         self._points: dict[str, list[dict[str, Any]]] = {}
 
+    async def ping(self) -> bool:
+        return True
+
     async def ensure_collection(self, collection_name: str = DEFAULT_COLLECTION) -> None:
         if collection_name not in self._points:
             self._points[collection_name] = []

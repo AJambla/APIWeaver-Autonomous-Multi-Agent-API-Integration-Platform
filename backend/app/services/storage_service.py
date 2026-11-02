@@ -164,6 +164,15 @@ class AsyncS3ObjectStorage:
         s3_download_bytes_total.inc(len(result))
         return result
 
+    async def ping(self) -> bool:
+        try:
+            async with await self._get_client() as client:
+                await client.list_buckets()
+                return True
+        except Exception as exc:
+            logger.warning("s3_ping_failed", error=str(exc))
+            return False
+
 
 class LocalFileSystemObjectStorage:
     """Local filesystem storage client for development (MinIO-free)."""
