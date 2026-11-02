@@ -81,7 +81,7 @@ resource "aws_cloudfront_distribution" "frontend" {
     error_caching_min_ttl = 10
   }
 
-  price_class = "PriceClass_100" # Use NA & Europe edge locations for lowest cost
+  price_class = "PriceClass_200" # Includes Asia Pacific (Mumbai, Delhi, Chennai, etc.), Europe & NA edge locations
 
   restrictions {
     geo_restriction {
