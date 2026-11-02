@@ -46,6 +46,7 @@ def _request(
     forwarded_for: str | None = None,
     peer: str | None = PEER,
     api_key: str | None = None,
+    authorization: str | None = None,
     path: str = "/api/v1/auth/login",
 ) -> Request:
     headers = []
@@ -53,6 +54,8 @@ def _request(
         headers.append((b"x-forwarded-for", forwarded_for.encode()))
     if api_key is not None:
         headers.append((b"x-api-key", api_key.encode()))
+    if authorization is not None:
+        headers.append((b"authorization", authorization.encode()))
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -353,3 +356,33 @@ async def test_upload_audits_the_proxied_address_too(
             select(AuditLog.ip_address).where(AuditLog.action == "document.uploaded")
         )
     assert audited == "203.0.113.9"
+
+
+def test_jwt_identity_is_hashed_and_isolates_nat_users(limiter_settings: Settings) -> None:
+    api_path = "/api/v1/projects"
+    user_a = _request(
+        forwarded_for="203.0.113.9",
+        authorization="Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.usera",
+        path=api_path,
+    )
+    user_b = _request(
+        forwarded_for="203.0.113.9",
+        authorization="Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.userb",
+        path=api_path,
+    )
+    login_attempt = _request(
+        forwarded_for="203.0.113.9",
+        authorization="Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.usera",
+        path="/api/v1/auth/login",
+    )
+
+    ident_a = _client_identity(user_a)
+    ident_b = _client_identity(user_b)
+    ident_login = _client_identity(login_attempt)
+
+    assert ident_a.startswith("jwt:")
+    assert ident_b.startswith("jwt:")
+    assert ident_a != ident_b
+    assert "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9" not in ident_a
+    # Credential path falls back to IP to prevent credential spraying bypasses
+    assert ident_login.startswith("ip:")

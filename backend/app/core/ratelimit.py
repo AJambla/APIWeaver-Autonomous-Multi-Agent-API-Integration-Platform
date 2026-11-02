@@ -169,10 +169,20 @@ def _client_identity(request: Request) -> str:
     # keying them on an arbitrary X-API-Key header let a caller mint a fresh bucket per
     # request (any random value) and brute-force logins without limit.
     is_credential_path = request.url.path.startswith(_CREDENTIAL_PATH_PREFIXES)
-    if not is_credential_path and (api_key := request.headers.get("x-api-key")):
-        from app.core.security import hash_opaque_token
+    if not is_credential_path:
+        if api_key := request.headers.get("x-api-key"):
+            from app.core.security import hash_opaque_token
 
-        return f"key:{hash_opaque_token(api_key)[:16]}"
+            return f"key:{hash_opaque_token(api_key.strip())[:16]}"
+
+        if auth := request.headers.get("authorization"):
+            trimmed = auth.strip()
+            if trimmed.lower().startswith("bearer "):
+                token = trimmed[7:].strip()
+                if token:
+                    from app.core.security import hash_opaque_token
+
+                    return f"jwt:{hash_opaque_token(token)[:16]}"
 
     return _ip_identity(request)
 
