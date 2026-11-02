@@ -28,11 +28,10 @@ COPY --from=builder /app/requirements.txt .
 # Hashes come from poetry.lock; a substituted wheel fails this build.
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
-# Create non-root user and ensure docker and root groups exist for socket access
+# Create non-root user and ensure docker group exists for socket access
 RUN (groupadd -g 999 docker || groupadd docker || true) && \
     useradd -m -s /bin/bash appuser && \
     (usermod -aG docker appuser || true) && \
-    (usermod -aG root appuser || true) && \
     mkdir -p /tmp/prometheus-multiproc && \
     chown -R appuser:appuser /tmp/prometheus-multiproc && \
     chmod 777 /tmp/prometheus-multiproc

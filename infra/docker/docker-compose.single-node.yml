@@ -183,7 +183,6 @@ services:
     build:
       context: ../..
       dockerfile: agent_worker/Dockerfile
-    user: "0:0"
     volumes:
       - ../../secrets:/app/secrets:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -191,7 +190,6 @@ services:
       - ../../backend:/app/backend
       - ../../agent_worker:/app/agent_worker
     group_add:
-      - "0"
       - "${DOCKER_GID:-999}"
     env_file:
       - path: ../../.env
@@ -208,7 +206,6 @@ services:
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
       DOCKER_HOST: unix:///var/run/docker.sock
       APIWEAVER_IN_DOCKER: "true"
-      C_FORCE_ROOT: "true"
       PYTHONPATH: /app/backend:/app
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus-multiproc
       WORKER_METRICS_PORT: "9808"
@@ -231,7 +228,7 @@ services:
   web:
     image: apiweaver/web:latest
     build:
-      context: ../../frontend
+      context: ../../Frontend
       dockerfile: Dockerfile
     ports:
       - "3000:8080"
