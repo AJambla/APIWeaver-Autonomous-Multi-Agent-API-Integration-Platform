@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.deps import denylist_jti
-from app.core.errors import ConflictError, ErrorCode, UnauthenticatedError
+from app.core.errors import ConflictError, ErrorCode, UnauthenticatedError, ValidationError
 from app.core.logging import get_logger
 from app.core.metrics import auth_failure_total, auth_success_total
 from app.core.security import (
@@ -523,3 +523,101 @@ async def logout(
         ip_address=context.ip_address,
         user_agent=context.user_agent,
     )
+
+
+
+PASSWORD_RESET_TOKEN_TTL_SECONDS = 900  # 15 minutes
+
+
+async def request_password_reset(
+    session: AsyncSession,
+    redis_client: aioredis.Redis,
+    email: str,
+    context: RequestContext,
+) -> str | None:
+    """Generate high-entropy single-use password reset token with 15m expiration.
+
+    Returns the plaintext token if user exists (to dispatch via email or test),
+    or None if user does not exist (maintaining constant response contract).
+    """
+    normalized = unicodedata.normalize("NFKC", email.strip().lower())
+    result = await session.execute(
+        select(User).where(func.lower(User.email) == normalized)
+    )
+    user = result.scalar_one_or_none()
+
+    if user is None or user.password_hash is None:
+        logger.info("password_reset_unknown_email", email=normalized)
+        return None
+
+    plaintext_token = generate_opaque_token()
+    token_hash = hash_opaque_token(plaintext_token)
+    redis_key = f"auth:pwd_reset:{token_hash}"
+
+    await redis_client.set(redis_key, str(user.id), ex=PASSWORD_RESET_TOKEN_TTL_SECONDS)
+
+    await audit_service.record(
+        session,
+        action="user.password_reset_requested",
+        actor_type=ActorType.USER,
+        organization_id=None,
+        actor_user_id=user.id,
+        resource_type="user",
+        resource_id=str(user.id),
+        ip_address=context.ip_address,
+        user_agent=context.user_agent,
+    )
+
+    return plaintext_token
+
+
+async def reset_password(
+    session: AsyncSession,
+    redis_client: aioredis.Redis,
+    token: str,
+    new_password: str,
+    context: RequestContext,
+) -> None:
+    """Verify reset token, update user password, invalidate all existing sessions, and revoke token."""
+    token_hash = hash_opaque_token(token)
+    redis_key = f"auth:pwd_reset:{token_hash}"
+
+    user_id_raw = await redis_client.get(redis_key)
+    if not user_id_raw:
+        raise ValidationError("Invalid or expired password reset token.")
+
+    user_id_str = user_id_raw.decode("utf-8") if isinstance(user_id_raw, bytes) else str(user_id_raw)
+    try:
+        user_id = uuid.UUID(user_id_str)
+    except ValueError:
+        raise ValidationError("Invalid reset token payload.")
+
+    user = await session.get(User, user_id)
+    if user is None or user.password_hash is None:
+        raise ValidationError("User not found or inactive.")
+
+    # Re-hash password with Argon2id
+    user.password_hash = await hash_password_async(new_password)
+
+    # Invalidate all active refresh token families for user
+    user_families = await session.execute(
+        select(RefreshToken.family_id).where(RefreshToken.user_id == user.id).distinct()
+    )
+    for fam in user_families.scalars().all():
+        await _revoke_family(session, fam)
+
+    # Delete token from Redis (single-use)
+    await redis_client.delete(redis_key)
+
+    await audit_service.record(
+        session,
+        action="user.password_reset_completed",
+        actor_type=ActorType.USER,
+        organization_id=None,
+        actor_user_id=user.id,
+        resource_type="user",
+        resource_id=str(user.id),
+        ip_address=context.ip_address,
+        user_agent=context.user_agent,
+    )
+    await session.commit()

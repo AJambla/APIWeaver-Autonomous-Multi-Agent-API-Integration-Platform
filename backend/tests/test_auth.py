@@ -629,3 +629,109 @@ async def test_refresh_via_httponly_cookie_without_body(client: AsyncClient) -> 
     body = response.json()
     assert 'access_token' in body
     assert body['token_type'] == 'bearer'
+
+
+
+async def test_forgot_password_anti_enumeration(client: AsyncClient) -> None:
+    """Both registered and unregistered emails return identical 200 response (SEC-LOW-01)."""
+    # Unregistered email
+    unreg = await client.post(
+        "/api/v1/auth/forgot-password",
+        json={"email": "nobody_exists_here_ever@example.com"},
+    )
+    assert unreg.status_code == 200
+    assert "If this email is registered" in unreg.json()["message"]
+
+    # Registered email
+    email = f"user-{uuid.uuid4().hex[:8]}@example.com"
+    await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": email,
+            "password": "InitialPassword123!",
+            "full_name": "Reset User",
+            "organization_name": "Reset Org",
+        },
+    )
+    reg = await client.post(
+        "/api/v1/auth/forgot-password",
+        json={"email": email},
+    )
+    assert reg.status_code == 200
+    assert "If this email is registered" in reg.json()["message"]
+
+
+async def test_password_reset_flow_and_session_invalidation(
+    client: AsyncClient, fake_redis, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Full reset cycle: token verification, password update, and session revocation (SEC-LOW-01)."""
+    email = f"resetflow-{uuid.uuid4().hex[:8]}@example.com"
+    reg = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": email,
+            "password": "OldPassword123!",
+            "full_name": "Flow User",
+            "organization_name": "Flow Org",
+        },
+    )
+    assert reg.status_code == 201
+    old_refresh = client.cookies.get("refresh_token")
+
+    # Request reset
+    await client.post("/api/v1/auth/forgot-password", json={"email": email})
+
+    # Find the reset token stored in fake_redis
+    reset_keys = [k for k in fake_redis._store.keys() if k.startswith("auth:pwd_reset:")]
+    assert len(reset_keys) >= 1
+    # We can invoke reset using a valid token directly via auth_service or test token
+    from app.services.auth_service import request_password_reset, RequestContext
+    async with session_factory() as session:
+        token = await request_password_reset(
+            session, fake_redis, email, RequestContext(ip_address="127.0.0.1", user_agent="test")
+        )
+    assert token is not None
+
+    # Invalid token test
+    bad = await client.post(
+        "/api/v1/auth/reset-password",
+        json={"token": "invalid-token-123456789", "new_password": "NewSecurePassword123!"},
+    )
+    assert bad.status_code in (400, 422)
+
+    # Valid reset
+    good = await client.post(
+        "/api/v1/auth/reset-password",
+        json={"token": token, "new_password": "NewSecurePassword123!"},
+    )
+    assert good.status_code == 200
+    assert "successfully reset" in good.json()["message"]
+
+    # Old password fails
+    old_login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "OldPassword123!"},
+    )
+    assert old_login.status_code == 401
+
+    # New password succeeds
+    new_login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "NewSecurePassword123!"},
+    )
+    assert new_login.status_code == 200
+
+    # Old refresh token session was revoked
+    if old_refresh:
+        stale_refresh = await client.post(
+            "/api/v1/auth/refresh",
+            json={"refresh_token": old_refresh},
+        )
+        assert stale_refresh.status_code == 401
+
+    # Re-using the same token fails (single-use)
+    reuse = await client.post(
+        "/api/v1/auth/reset-password",
+        json={"token": token, "new_password": "AnotherPassword123!"},
+    )
+    assert reuse.status_code in (400, 422)

@@ -74,3 +74,30 @@ class MembershipResponse(ResponseModel):
 class MeResponse(ResponseModel):
     user: UserResponse
     organizations: list[MembershipResponse]
+
+
+class ForgotPasswordRequest(StrictModel):
+    email: EmailStr
+
+
+class ForgotPasswordResponse(ResponseModel):
+    message: str
+
+
+class ResetPasswordRequest(StrictModel):
+    token: str = Field(min_length=16, max_length=512)
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=256)
+
+    @field_validator("new_password")
+    @classmethod
+    def _reject_trivial(cls, value: str) -> str:
+        if value.strip() != value:
+            raise ValueError("password must not begin or end with whitespace")
+        if len(set(value)) < 5:
+            raise ValueError("password is too repetitive")
+        return value
+
+
+class ResetPasswordResponse(ResponseModel):
+    message: str
+

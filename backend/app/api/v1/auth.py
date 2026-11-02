@@ -20,12 +20,16 @@ from app.models.organization import Organization, OrganizationMember
 from app.models.user import User
 from app.rbac.policy import Principal
 from app.schemas.auth import (
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginRequest,
     LogoutRequest,
     MembershipResponse,
     MeResponse,
     RefreshRequest,
     RegisterRequest,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
     TokenResponse,
     UserResponse,
 )
@@ -212,3 +216,55 @@ async def me(
     ]
 
     return MeResponse(user=UserResponse.model_validate(user), organizations=memberships)
+
+
+
+@router.post(
+    "/forgot-password",
+    response_model=ForgotPasswordResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Request password reset instructions",
+)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
+) -> ForgotPasswordResponse:
+    """Generate password reset token. Anti-enumeration: returns identical message whether account exists or not."""
+    await auth_service.request_password_reset(
+        session,
+        redis_client,
+        email=payload.email,
+        context=_context(request, settings),
+    )
+    return ForgotPasswordResponse(
+        message="If this email is registered, password reset instructions have been generated."
+    )
+
+
+@router.post(
+    "/reset-password",
+    response_model=ResetPasswordResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Reset password using valid reset token",
+)
+async def reset_password(
+    payload: ResetPasswordRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
+) -> ResetPasswordResponse:
+    """Verify reset token and update user password."""
+    await auth_service.reset_password(
+        session,
+        redis_client,
+        token=payload.token,
+        new_password=payload.new_password,
+        context=_context(request, settings),
+    )
+    return ResetPasswordResponse(
+        message="Password has been successfully reset. Please sign in with your new password."
+    )
