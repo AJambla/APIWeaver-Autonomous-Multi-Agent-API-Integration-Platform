@@ -17,6 +17,8 @@ const RunDetailPage = React.lazy(() => import('./pages/RunDetailPage').then(m =>
 const SettingsPage = React.lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const ProjectWorkspace = React.lazy(() => import('./pages/ProjectWorkspace').then(m => ({ default: m.ProjectWorkspace })));
 const NotFoundPage = React.lazy(() => import('./pages/NotFoundPage').then(m => ({ default: m.NotFoundPage })));
+const TermsPage = React.lazy(() => import('./pages/TermsPage').then(m => ({ default: m.TermsPage })));
+const PrivacyPage = React.lazy(() => import('./pages/PrivacyPage').then(m => ({ default: m.PrivacyPage })));
 
 const PageFallback: React.FC = () => (
   <div className="min-h-[50vh] flex items-center justify-center">
@@ -61,6 +63,8 @@ export const App: React.FC = () => {
             <Route path="/" element={<RouteErrorBoundary><LandingPage /></RouteErrorBoundary>} />
             <Route path="/login" element={<RouteErrorBoundary><LoginPage /></RouteErrorBoundary>} />
             <Route path="/register" element={<RouteErrorBoundary><RegisterPage /></RouteErrorBoundary>} />
+            <Route path="/terms" element={<RouteErrorBoundary><TermsPage /></RouteErrorBoundary>} />
+            <Route path="/privacy" element={<RouteErrorBoundary><PrivacyPage /></RouteErrorBoundary>} />
             <Route
               path="/dashboard"
               element={

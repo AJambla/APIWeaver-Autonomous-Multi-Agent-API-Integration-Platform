@@ -216,8 +216,9 @@ export const LandingPage: React.FC = () => {
             <span className="text-neutral-400">© 2026 API Weaver. </span>
           </div>
           <div className="flex items-center gap-6 text-neutral-400">
+            <Link to="/terms" className="hover:text-white transition-colors">Terms of Service</Link>
+            <Link to="/privacy" className="hover:text-white transition-colors">Privacy Policy</Link>
             <a href="https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/tree/main/Project-docs" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">Documentation</a>
-            <a href="https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/blob/main/Project-docs/API.md" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">API Reference</a>
             <a href="https://github.com/AJambla/APIWeaver-Autonomous-Multi-Agent-API-Integration-Platform/blob/main/Project-docs/Security.md" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">Security</a>
           </div>
         </div>
