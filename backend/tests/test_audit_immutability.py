@@ -85,6 +85,41 @@ def test_migration_extends_the_single_head() -> None:
     assert [rev for rev, parent in chain.items() if parent is None] == ["0001"]
 
 
+def test_downgrade_drops_triggers_before_dropping_audit_logs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PostgreSQL requires the table to exist when dropping a trigger on it.
+    If `op.drop_table('audit_logs')` runs before `DROP TRIGGER ... ON audit_logs`,
+    PostgreSQL raises UndefinedTable and aborts the rollback.
+    """
+    spec = importlib.util.spec_from_file_location("audit_m0001", _MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    order: list[str] = []
+    monkeypatch.setattr(module.op, "f", lambda name: name)
+    monkeypatch.setattr(module.op, "get_bind", lambda: _DummyBind())
+    monkeypatch.setattr(module.op, "execute", lambda sql, *args, **kw: order.append(f"execute:{sql}"))
+    monkeypatch.setattr(module.op, "drop_table", lambda name, *args, **kw: order.append(f"drop_table:{name}"))
+    for noop_op in ("create_table", "create_index", "drop_index", "add_column", "drop_column"):
+        if hasattr(module.op, noop_op):
+            monkeypatch.setattr(module.op, noop_op, lambda *args, **kw: None)
+
+    module.downgrade()
+
+    trigger_drop_indices = [
+        idx for idx, item in enumerate(order)
+        if "DROP TRIGGER" in item and "audit_logs" in item
+    ]
+    assert trigger_drop_indices, "Expected DROP TRIGGER ON audit_logs in downgrade"
+    table_drop_index = order.index("drop_table:audit_logs")
+
+    for trig_idx in trigger_drop_indices:
+        assert trig_idx < table_drop_index, (
+            f"Trigger drop at step {trig_idx} occurred after table drop at step {table_drop_index}. "
+            "In PostgreSQL, triggers must be dropped before dropping the table."
+        )
+
+
 def test_guard_is_a_row_trigger_on_update_and_delete(monkeypatch: pytest.MonkeyPatch) -> None:
     function, update_trigger, delete_trigger = _emitted("upgrade", monkeypatch)
 
