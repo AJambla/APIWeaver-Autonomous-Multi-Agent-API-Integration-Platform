@@ -71,6 +71,16 @@ async def trigger_workflow(
         .limit(1)
     )
 
+    # Serialize workflow triggers per project to prevent concurrent race conditions
+    await session.execute(
+        select(Project.id).where(Project.id == project.id).with_for_update()
+    )
+    await session.execute(
+        update(Project)
+        .where(Project.id == project.id)
+        .values(updated_at=datetime.datetime.now(datetime.UTC))
+    )
+
     # Supersede any active or paused runs for this project
     stale_runs = (
         await session.scalars(
@@ -82,6 +92,7 @@ async def trigger_workflow(
                     WorkflowStatus.PAUSED_FOR_APPROVAL,
                 ]),
             )
+            .with_for_update()
         )
     ).all()
     for stale in stale_runs:

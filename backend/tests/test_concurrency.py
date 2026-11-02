@@ -11,6 +11,7 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -173,3 +174,62 @@ async def test_approval_resumes_with_the_requested_post_plan_stages(
 
     assert res.status_code == 200, res.text
     assert states[0]["stages"] == resumed
+
+
+@pytest.mark.concurrent_db
+async def test_concurrent_workflow_triggers_serialize_per_project(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    test_settings: Settings,
+    monkeypatch,
+) -> None:
+    """Concurrent workflow triggers on the same project must be serialized by row locking.
+    The latest trigger supersedes earlier queued ones, so only 1 remains QUEUED.
+    """
+    from app.api.v1 import workflows as workflows_module
+
+    dispatched: list[dict] = []
+
+    async def fake_dispatch(**kwargs):
+        dispatched.append(kwargs)
+
+    monkeypatch.setattr(workflows_module, "dispatch_run", fake_dispatch)
+
+    async with session_factory() as session:
+        owner = await make_user(session, email=f"wf-race-{uuid.uuid4().hex[:8]}@example.com")
+        org = await make_org(session, name=f"WF Race {uuid.uuid4().hex[:6]}")
+        await add_org_member(session, org=org, user=owner, role=OrgRole.OWNER)
+        project = await make_project(session, org=org)
+        await session.commit()
+
+    token = create_access_token(
+        user_id=owner.id, org_id=org.id, role=OrgRole.OWNER, settings=test_settings
+    )
+
+    responses = await asyncio.gather(
+        *(
+            client.post(
+                f"/api/v1/projects/{project.id}/workflows",
+                json={"stages": ["plan"], "target_languages": ["python"]},
+                headers={"Authorization": f"Bearer {token.token}"},
+            )
+            for _ in range(4)
+        )
+    )
+
+    assert all(r.status_code == 202 for r in responses), [r.status_code for r in responses]
+
+    async with session_factory() as session:
+        runs = (
+            await session.scalars(
+                select(WorkflowRun)
+                .where(WorkflowRun.project_id == project.id)
+                .order_by(WorkflowRun.created_at.asc())
+            )
+        ).all()
+        assert len(runs) == 4
+        queued_runs = [r for r in runs if r.status == WorkflowStatus.QUEUED]
+        cancelled_runs = [r for r in runs if r.status == WorkflowStatus.CANCELLED]
+        assert len(queued_runs) == 1, f"Expected exactly 1 queued run, found: {[r.status for r in runs]}"
+        assert len(cancelled_runs) == 3
+
