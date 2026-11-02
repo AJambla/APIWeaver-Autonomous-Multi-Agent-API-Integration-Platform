@@ -81,7 +81,14 @@ async def _commit_before_raising(session: AsyncSession) -> None:
     Both write only rows that describe the failure, so committing them and then raising
     leaves no half-finished business operation behind.
     """
-    await session.commit()
+    try:
+        await session.commit()
+    except Exception as exc:
+        logger.warning("commit_before_raising_failed", error=str(exc))
+        try:
+            await session.rollback()
+        except Exception:
+            pass
 
 
 def slugify(value: str) -> str:

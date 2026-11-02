@@ -36,6 +36,7 @@ async def _register(client: AsyncClient) -> dict:
     return {"email": email, **res.json()}
 
 
+@pytest.mark.concurrent_db
 async def test_concurrent_redemptions_of_one_refresh_token_mint_one_successor(
     client: AsyncClient,
 ) -> None:
@@ -71,6 +72,7 @@ async def test_parallel_wrong_passwords_still_lock_the_account(client: AsyncClie
     assert res.status_code == 401, res.text
 
 
+@pytest.mark.concurrent_db
 async def test_an_approval_gate_can_be_answered_once(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
