@@ -85,7 +85,8 @@ jobs:
     name: Deploy to EC2 via AWS SSM
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    # Skip deployment step gracefully if AWS credentials are not configured in GitHub Secrets yet
+    if: ${{ github.ref == 'refs/heads/main' && secrets.AWS_ACCESS_KEY_ID != '' }}
 
     steps:
       - name: Checkout repository

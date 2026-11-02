@@ -15,6 +15,8 @@ jobs:
   deploy-frontend:
     name: Build & Deploy Frontend SPA
     runs-on: ubuntu-latest
+    # Skip deployment gracefully if AWS credentials are not configured in GitHub Secrets yet
+    if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
     defaults:
       run:
         working-directory: frontend

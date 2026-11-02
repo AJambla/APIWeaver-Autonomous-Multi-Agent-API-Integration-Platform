@@ -2,7 +2,7 @@
 # APIWeaver Sweet Spot Deployment - Example Variable Configuration
 # ==============================================================================
 
-aws_region  = "us-east-1"
+aws_region  = "ap-south-1"
 environment = "production"
 app_name    = "apiweaver"
 
