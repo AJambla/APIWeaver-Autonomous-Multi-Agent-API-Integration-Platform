@@ -15,8 +15,6 @@ jobs:
   deploy-frontend:
     name: Build & Deploy Frontend SPA
     runs-on: ubuntu-latest
-    # Skip deployment gracefully if AWS credentials are not configured in GitHub Secrets yet
-    if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
     defaults:
       run:
         working-directory: frontend
@@ -59,8 +57,11 @@ jobs:
           aws s3 cp dist/index.html s3://${{ secrets.S3_FRONTEND_BUCKET }}/index.html --cache-control "no-cache, no-store, must-revalidate"
 
       - name: Invalidate CloudFront edge cache
-        if: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID != '' && secrets.CLOUDFRONT_DISTRIBUTION_ID != 'pending_aws_cloudfront_verification' }}
+        env:
+          DIST_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
         run: |
-          aws cloudfront create-invalidation \
-            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
-            --paths "/*"
+          if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "pending_aws_cloudfront_verification" ]; then
+            aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
+          else
+            echo "CloudFront CDN is pending AWS verification or not set. Skipping cache invalidation."
+          fi
