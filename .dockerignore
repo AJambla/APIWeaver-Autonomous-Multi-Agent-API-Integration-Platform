@@ -53,32 +53,51 @@ __pycache__/
 *.py[cod]
 *.egg-info
 *.pyo
+*.pyd
+.Python
+**/*.egg-info/
+**/*.egg-info
+**/*.egg
 **/__pycache__/
 **/*.py[cod]
 **/*.pyo
-**/*.egg-info/
+**/*.pyd
 
 # Virtual environments
 .venv/
 venv/
 env/
+ENV/
 **/.venv/
 **/venv/
 **/env/
+**/ENV/
 
 # Test and cache directories
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 coverage.xml
+*.cover
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
 .cache/
 .tox/
+.nox/
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
+**/.hypothesis/
 **/.cache/
+**/.tox/
+**/.nox/
+**/.coverage
+**/.coverage.*
+**/htmlcov/
+**/coverage.xml
+**/*.cover
 
 # Logs
 logs/
@@ -90,6 +109,13 @@ logs/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+._*
+.Spotlight-V100
+.Trashes
+**/.DS_Store
+**/Thumbs.db
+**/ehthumbs.db
+**/Desktop.ini
 
 # IDE and editor files
 .idea/
@@ -99,8 +125,15 @@ Desktop.ini
 *~
 **/.idea/
 **/.vscode/
+**/*.swp
+**/*.swo
+**/*~
 
 # AI Assistants & Dev Agent tooling
+.agents/
+.archify/
+.context/
+graphify-out/
 .claude/
 .kilo/
 .cursor/
@@ -109,33 +142,68 @@ Desktop.ini
 .system_generated/
 scratch/
 ui-ux-pro-max-skill/
+**/.agents/
+**/.archify/
+**/.context/
+**/graphify-out/
+**/.claude/
+**/.kilo/
+**/.cursor/
+**/.gemini/
+**/.antigravity/
+**/.system_generated/
+**/scratch/
+**/ui-ux-pro-max-skill/
+
+# Docker build configs and compose files
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+docker-compose*.yaml
+**/Dockerfile*
+**/.dockerignore
+**/docker-compose*.yml
+**/docker-compose*.yaml
 
 # Docker sandbox temporary files
 *apiweaver-sandbox*
 apiweaver_sandbox/
+**/apiweaver_sandbox/
 
 # Documentation and non-essential repository files
 Project-docs/
 monitoring/
 infra/terraform/
+docs/
+.planning/
+**/Project-docs/
+**/monitoring/
+**/docs/
+**/.planning/
 **/README.md
 **/README.txt
 **/*.md
 LICENSE
 SECURITY.md
 CONTRIBUTING.md
+.contextignore
+gen-context.config.json
 
 # Frontend (not needed for backend/agent-worker builds; both casing handled)
 frontend/
 Frontend/
 frontend-*/
 Frontend-*/
+**/frontend/
+**/Frontend/
 
 # Scripts (only backend code needed in agent-worker/backend images)
 scripts/
+**/scripts/
 
 # Database migrations (alembic) - not needed for agent-worker
 backend/alembic/
+**/alembic/
 
 # Local databases and compose volume directories
 *.sqlite
@@ -146,23 +214,45 @@ pgdata/
 redisdata/
 miniodata/
 qdrantdata/
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+**/alembic.db
+**/pgdata/
+**/redisdata/
+**/miniodata/
+**/qdrantdata/
 
-# Local development files
+# Local development files, backups, archives
 *.local
 *.dev
 *.tmp
+*.temp
 *.bak
+*.tar
+*.tar.gz
+*.zip
+*.7z
+*.rar
+**/*.local
+**/*.dev
+**/*.tmp
+**/*.temp
+**/*.bak
+**/*.tar
+**/*.tar.gz
+**/*.zip
+**/*.7z
+**/*.rar
 
 # Storage and uploads
 storage/
 **/storage/
 
-# Documentation and planning artifacts
-docs/
-**/docs/
-.planning/
-**/.planning/
-
 # Tests (not needed in production agent_worker or backend images)
-backend/tests/
+tests/
+tests
 **/tests/
+**/tests
+backend/tests/
+backend/tests
