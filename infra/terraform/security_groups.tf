@@ -6,7 +6,7 @@ resource "aws_security_group" "ec2" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "HTTP for Let's Encrypt validation and HTTPS redirection"
+    description = "HTTP for Lets Encrypt validation and HTTPS redirection"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
