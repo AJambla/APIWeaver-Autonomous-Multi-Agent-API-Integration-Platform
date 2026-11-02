@@ -3244,19 +3244,19 @@ twisted = ["twisted"]
 
 [[package]]
 name = "prometheus-fastapi-instrumentator"
-version = "7.1.0"
+version = "8.1.0"
 description = "Instrument your FastAPI app with Prometheus metrics"
 optional = false
-python-versions = ">=3.8"
+python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "prometheus_fastapi_instrumentator-7.1.0-py3-none-any.whl", hash = "sha256:978130f3c0bb7b8ebcc90d35516a6fe13e02d2eb358c8f83887cdef7020c31e9"},
-    {file = "prometheus_fastapi_instrumentator-7.1.0.tar.gz", hash = "sha256:be7cd61eeea4e5912aeccb4261c6631b3f227d8924542d79eaf5af3f439cbe5e"},
+    {file = "prometheus_fastapi_instrumentator-8.1.0-py3-none-any.whl", hash = "sha256:b9f40b2cff3f7891ca0610b3ae4fc6ec723fd326b04bb659819aaeb821a0fc7d"},
+    {file = "prometheus_fastapi_instrumentator-8.1.0.tar.gz", hash = "sha256:b77f3043665e8d28e2bbd21017506195a43d9adf1d402d01bf95b494b7e560e1"},
 ]
 
 [package.dependencies]
 prometheus-client = ">=0.8.0,<1.0.0"
-starlette = ">=0.30.0,<1.0.0"
+starlette = ">=1.0.0,<2.0.0"
 
 [[package]]
 name = "prompt-toolkit"
@@ -4137,22 +4137,22 @@ sqlcipher = ["sqlcipher3_binary"]
 
 [[package]]
 name = "starlette"
-version = "0.52.1"
+version = "1.10.0"
 description = "The little ASGI library that shines."
 optional = false
-python-versions = ">=3.10"
+python-versions = ">=3.11"
 groups = ["main"]
 files = [
-    {file = "starlette-0.52.1-py3-none-any.whl", hash = "sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74"},
-    {file = "starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933"},
+    {file = "starlette-1.10.0-py3-none-any.whl", hash = "sha256:478c0ab3b4ced6e82719849c118fa406f0278a3499c1a898cd15cd31bdc38ce4"},
+    {file = "starlette-1.10.0.tar.gz", hash = "sha256:b8399098d4c1e3522734f7235dc79b1fc967f96cf139c81e0fa30479e0685f9b"},
 ]
 
 [package.dependencies]
-anyio = ">=3.6.2,<5"
+anyio = ">=4.0.0,<5"
 typing-extensions = {version = ">=4.10.0", markers = "python_version < \"3.13\""}
 
 [package.extras]
-full = ["httpx (>=0.27.0,<0.29.0)", "itsdangerous", "jinja2", "python-multipart (>=0.0.18)", "pyyaml"]
+full = ["httpx (>=0.27.0,<0.29.0)", "httpx2 (>=2.0.0)", "itsdangerous", "jinja2", "opentelemetry-api", "python-multipart (>=0.0.18)", "pyyaml"]
 
 [[package]]
 name = "structlog"
@@ -5264,4 +5264,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "e5576c536f232b14d4048bdc975a9ec041fd2b24bcb69a70731f4f2ea3734d25"
+content-hash = "2c0f45e90614a871827700ba9cfee50e140e54e382da80558aad4eb0f0c46f4f"
