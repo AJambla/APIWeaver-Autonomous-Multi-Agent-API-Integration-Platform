@@ -213,6 +213,14 @@ def _mount_metrics(app: FastAPI, settings: Settings) -> None:
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="A valid metrics token is required.",
                 )
+        else:
+            # In non-production with no token configured, restrict to loopback / local callers (SEC-LOW-05)
+            host = request.client.host if request.client else ""
+            if host and host not in ("127.0.0.1", "::1", "localhost", "testclient", "testserver"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Unauthenticated metrics access is restricted to loopback.",
+                )
         return Response(
             content=generate_latest(metrics_registry),
             media_type=CONTENT_TYPE_LATEST,

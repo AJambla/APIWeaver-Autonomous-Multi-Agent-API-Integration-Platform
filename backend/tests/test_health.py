@@ -228,6 +228,17 @@ async def test_metrics_stays_open_in_development(test_settings: Settings) -> Non
         assert (await http.get("/metrics")).status_code == 200
 
 
+async def test_metrics_rejects_external_hosts_in_development_without_token(
+    test_settings: Settings,
+) -> None:
+    """External callers cannot scrape metrics without METRICS_TOKEN even in dev (SEC-LOW-05)."""
+    transport = ASGITransport(app=create_app(test_settings), client=("198.51.100.5", 54321))
+    async with AsyncClient(transport=transport, base_url="http://testserver") as http:
+        response = await http.get("/metrics")
+        assert response.status_code == 403
+
+
+
 def _boot_settings(base: Settings, **overrides: Any) -> Settings:
     """Construct fresh Settings, because `model_copy` skips validators.
 
