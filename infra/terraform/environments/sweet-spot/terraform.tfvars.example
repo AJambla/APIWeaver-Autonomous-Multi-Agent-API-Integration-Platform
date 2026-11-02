@@ -1,0 +1,22 @@
+# ==============================================================================
+# APIWeaver Sweet Spot Deployment - Example Variable Configuration
+# ==============================================================================
+
+aws_region  = "us-east-1"
+environment = "production"
+app_name    = "apiweaver"
+
+# Compute: t4g.small (Graviton ARM64 - 2 vCPU, 2 GB RAM)
+ec2_instance_type = "t4g.small"
+ec2_volume_size   = 25
+
+# Database: db.t4g.micro (PostgreSQL 16 - Free Tier Eligible)
+rds_instance_class    = "db.t4g.micro"
+rds_allocated_storage = 20
+db_name               = "apiweaver"
+db_username           = "apiweaver_admin"
+
+# (Optional) Custom Domain Configuration:
+# Leave domain_name empty to use the default CloudFront URL and Elastic IP directly.
+# domain_name         = "app.yourdomain.com"
+# acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/your-cert-id"
