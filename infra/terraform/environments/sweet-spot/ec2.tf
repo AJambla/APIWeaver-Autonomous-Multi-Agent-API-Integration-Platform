@@ -22,11 +22,11 @@ data "aws_ami" "ubuntu_arm64" {
 # The Single EC2 Graviton Host (t4g.small - 2 vCPU, 2 GB RAM)
 # Runs Docker Compose (Nginx, FastAPI, Celery, Redis, and Docker Socket Proxy)
 resource "aws_instance" "app_host" {
-  ami                  = data.aws_ami.ubuntu_arm64.id
-  instance_type        = var.ec2_instance_type
-  subnet_id            = aws_subnet.public.id
+  ami                    = data.aws_ami.ubuntu_arm64.id
+  instance_type          = var.ec2_instance_type
+  subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.ec2.id]
-  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
+  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
 
   root_block_device {
     volume_size           = var.ec2_volume_size
