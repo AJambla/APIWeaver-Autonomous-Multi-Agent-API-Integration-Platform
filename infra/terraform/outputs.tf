@@ -1,11 +1,11 @@
 output "frontend_cloudfront_url" {
   description = "Public URL for the APIWeaver React Frontend (CloudFront Edge)"
-  value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
+  value       = var.enable_cloudfront ? "https://${aws_cloudfront_distribution.frontend[0].domain_name}" : "pending_aws_cloudfront_verification"
 }
 
 output "cloudfront_distribution_id" {
   description = "CloudFront Distribution ID for CI/CD cache invalidation"
-  value       = aws_cloudfront_distribution.frontend.id
+  value       = var.enable_cloudfront ? aws_cloudfront_distribution.frontend[0].id : "pending_aws_cloudfront_verification"
 }
 
 output "frontend_s3_bucket" {

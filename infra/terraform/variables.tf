@@ -63,3 +63,9 @@ variable "acm_certificate_arn" {
   type        = string
   default     = ""
 }
+
+variable "enable_cloudfront" {
+  description = "Enable CloudFront CDN distribution for frontend (set false if AWS account is pending CloudFront verification)"
+  type        = bool
+  default     = false
+}

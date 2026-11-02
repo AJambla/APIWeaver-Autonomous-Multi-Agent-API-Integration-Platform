@@ -33,6 +33,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "frontend" {
 
 # CloudFront Origin Access Control (OAC)
 resource "aws_cloudfront_origin_access_control" "frontend" {
+  count                             = var.enable_cloudfront ? 1 : 0
   name                              = "${var.app_name}-${var.environment}-web-oac"
   description                       = "Origin Access Control for APIWeaver Frontend S3"
   origin_access_control_origin_type = "s3"
@@ -42,6 +43,7 @@ resource "aws_cloudfront_origin_access_control" "frontend" {
 
 # CloudFront Edge CDN Distribution (1 TB Free Tier data transfer/month)
 resource "aws_cloudfront_distribution" "frontend" {
+  count               = var.enable_cloudfront ? 1 : 0
   enabled             = true
   is_ipv6_enabled     = true
   default_root_object = "index.html"
@@ -52,7 +54,7 @@ resource "aws_cloudfront_distribution" "frontend" {
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
     origin_id                = "S3-${aws_s3_bucket.frontend.id}"
-    origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
+    origin_access_control_id = aws_cloudfront_origin_access_control.frontend[0].id
   }
 
   default_cache_behavior {
@@ -103,6 +105,8 @@ resource "aws_cloudfront_distribution" "frontend" {
 
 # Allow CloudFront OAC to read from the Frontend S3 bucket
 data "aws_iam_policy_document" "frontend_s3_policy" {
+  count = var.enable_cloudfront ? 1 : 0
+
   statement {
     actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.frontend.arn}/*"]
@@ -115,14 +119,15 @@ data "aws_iam_policy_document" "frontend_s3_policy" {
     condition {
       test     = "StringEquals"
       variable = "AWS:SourceArn"
-      values   = [aws_cloudfront_distribution.frontend.arn]
+      values   = [aws_cloudfront_distribution.frontend[0].arn]
     }
   }
 }
 
 resource "aws_s3_bucket_policy" "frontend" {
+  count  = var.enable_cloudfront ? 1 : 0
   bucket = aws_s3_bucket.frontend.id
-  policy = data.aws_iam_policy_document.frontend_s3_policy.json
+  policy = data.aws_iam_policy_document.frontend_s3_policy[0].json
 }
 
 # ==============================================================================
