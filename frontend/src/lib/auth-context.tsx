@@ -1,4 +1,12 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import {
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  updateProfile,
+} from 'firebase/auth';
+import { auth, googleProvider, isFirebaseConfigured } from './firebase';
 import { AuthTokens, MeResponse, OrganizationMembership, User } from './types';
 import { apiFetch } from './api';
 
@@ -14,6 +22,10 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, fullName?: string, organizationName?: string) => Promise<void>;
   logout: () => Promise<void>;
+  loginWithGoogle: () => Promise<void>;
+  loginWithFirebase: (email: string, password: string) => Promise<{ needsVerification: boolean }>;
+  registerWithFirebase: (email: string, password: string, fullName?: string) => Promise<{ needsVerification: boolean }>;
+  resendVerification: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -107,6 +119,68 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCurrentUser(me);
   };
 
+  const loginWithGoogle = async () => {
+    if (!isFirebaseConfigured() || !auth || !googleProvider) {
+      throw new Error('Google Sign-In is not configured. Please add VITE_FIREBASE_API_KEY and VITE_FIREBASE_PROJECT_ID to your .env file.');
+    }
+    const result = await signInWithPopup(auth, googleProvider);
+    const idToken = await result.user.getIdToken();
+    const tokens = await apiFetch<AuthTokens>('/auth/firebase-login', {
+      method: 'POST',
+      body: JSON.stringify({ id_token: idToken }),
+    });
+    sessionStorage.setItem('access_token', tokens.access_token);
+    const me = await apiFetch<MeResponse>('/auth/me');
+    setCurrentUser(me);
+  };
+
+  const loginWithFirebase = async (email: string, password: string): Promise<{ needsVerification: boolean }> => {
+    if (!isFirebaseConfigured() || !auth) {
+      await login(email, password);
+      return { needsVerification: false };
+    }
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    if (!cred.user.emailVerified) {
+      return { needsVerification: true };
+    }
+    const idToken = await cred.user.getIdToken();
+    const tokens = await apiFetch<AuthTokens>('/auth/firebase-login', {
+      method: 'POST',
+      body: JSON.stringify({ id_token: idToken }),
+    });
+    sessionStorage.setItem('access_token', tokens.access_token);
+    const me = await apiFetch<MeResponse>('/auth/me');
+    setCurrentUser(me);
+    return { needsVerification: false };
+  };
+
+  const registerWithFirebase = async (
+    email: string,
+    password: string,
+    fullName?: string
+  ): Promise<{ needsVerification: boolean }> => {
+    if (!isFirebaseConfigured() || !auth) {
+      await register(email, password, fullName);
+      return { needsVerification: false };
+    }
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    if (fullName && cred.user) {
+      try {
+        await updateProfile(cred.user, { displayName: fullName });
+      } catch {
+        /* non-fatal */
+      }
+    }
+    await sendEmailVerification(cred.user);
+    return { needsVerification: true };
+  };
+
+  const resendVerification = async () => {
+    if (auth && auth.currentUser) {
+      await sendEmailVerification(auth.currentUser);
+    }
+  };
+
   const logout = async () => {
     try {
       await apiFetch('/auth/logout', {
@@ -115,6 +189,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     } catch {
       // Server-side revocation failed — clear local state regardless.
+    }
+    try {
+      if (auth && auth.currentUser) {
+        await auth.signOut();
+      }
+    } catch {
+      /* ignore */
     }
     clearSession();
     window.location.href = '/login';
@@ -132,6 +213,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         retrySession,
         login,
         register,
+        loginWithGoogle,
+        loginWithFirebase,
+        registerWithFirebase,
+        resendVerification,
         logout,
       }}
     >

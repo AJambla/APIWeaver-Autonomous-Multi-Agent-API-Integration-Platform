@@ -111,7 +111,7 @@ class TestCodeGeneratorAgent:
             )
             mock_llm.return_value = mock_client
 
-            result = await run_code_agent(mock_state, phase_number=1)
+            _ = await run_code_agent(mock_state, phase_number=1)
 
     @pytest.mark.asyncio
     async def test_run_code_agent_fastmcp(self, mock_state):
@@ -431,7 +431,7 @@ class Client:
         merged_1_2 = _merge_python_code(phase1_code, phase2_code, "client.py")
         tree = ast.parse(merged_1_2)
         cls_node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "SwaggerPetstoreClient")
-        methods = {m.name for m in cls_node.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        methods = {m.name for m in cls_node.body if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef)}
         assert "createUsersWithListInput" in methods
         assert "createUser" in methods
         assert "addPet" in methods
@@ -439,9 +439,74 @@ class Client:
         merged_all = _merge_python_code(merged_1_2, phase3_code, "client.py")
         tree_all = ast.parse(merged_all)
         cls_all = next(n for n in tree_all.body if isinstance(n, ast.ClassDef) and n.name == "SwaggerPetstoreClient")
-        all_methods = {m.name for m in cls_all.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        all_methods = {m.name for m in cls_all.body if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef)}
         assert "createUsersWithListInput" in all_methods
         assert "createUser" in all_methods
         assert "addPet" in all_methods
         assert "get_inventory" in all_methods
         assert "place_order" in all_methods
+
+
+@pytest.mark.asyncio
+async def test_run_self_review_incorporates_spec_endpoints_and_guidance() -> None:
+    from app.workflows.agents.code_agent import _run_self_review
+
+    mock_llm = AsyncMock()
+    mock_llm.generate_json.return_value = ({"passed": True, "issues": [], "summary": "Looks good"}, 100)
+
+    state: WorkflowState = {
+        "normalized_spec": {
+            "title": "Petstore",
+            "endpoints": [
+                {"method": "GET", "path": "/pets", "summary": "List all pets"},
+                {"method": "POST", "path": "/pets", "summary": "Create a pet"},
+            ],
+        },
+        "approval_notes": "Enforce bearer token authentication",
+    }
+
+    generated_files = [
+        {"file_path": "client.py", "language": "python", "content_s3_key": "s3://bucket/client.py"}
+    ]
+
+    with patch("app.workflows.agents.code_agent.storage_service.download", AsyncMock(return_value=b"# Python code")):
+        res = await _run_self_review(generated_files, state, mock_llm)
+        assert res["self_review_passed"] is True
+        assert mock_llm.generate_json.called
+        call_kwargs = mock_llm.generate_json.call_args.kwargs
+        prompt = call_kwargs["system_prompt"]
+        assert "GET /pets - List all pets" in prompt
+        assert "POST /pets - Create a pet" in prompt
+        assert "Enforce bearer token authentication" in prompt
+
+
+@pytest.mark.asyncio
+async def test_render_templates_wires_retry_config() -> None:
+    from app.workflows.agents.code_agent import _render_templates
+
+    spec = {
+        "title": "Retry API",
+        "base_url": "https://retry.example.com",
+        "endpoints": [
+            {"method": "GET", "path": "/items", "summary": "Get items"}
+        ],
+    }
+    custom_retry = {
+        "max_attempts": 5,
+        "backoff_base_seconds": 3,
+        "retryable_status_codes": [429, 503],
+    }
+
+    # Python template rendering
+    py_files = await _render_templates("python", spec, None, spec, retry_config=custom_retry)
+    client_py = py_files["client.py"]
+    assert "max_retries: int = 5" in client_py
+    assert "backoff_base_seconds: float = 3" in client_py
+    assert "self.backoff_base_seconds ** attempt" in client_py
+
+    # Node template rendering
+    node_files = await _render_templates("node", spec, None, spec, retry_config=custom_retry)
+    client_ts = node_files["client.ts"]
+    assert "this.maxRetries = config.maxRetries || 5;" in client_ts
+
+

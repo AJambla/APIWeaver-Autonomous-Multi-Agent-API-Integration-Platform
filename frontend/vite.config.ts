@@ -1,9 +1,15 @@
 /// <reference types="vitest" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import fs from 'fs';
 import path from 'path';
 
+// Load .env from root repository if present, otherwise default to current frontend directory
+const parentDir = path.resolve(__dirname, '..');
+const envDir = fs.existsSync(path.resolve(parentDir, '.env')) ? parentDir : __dirname;
+
 export default defineConfig({
+  envDir,
   plugins: [react()],
   resolve: {
     alias: {

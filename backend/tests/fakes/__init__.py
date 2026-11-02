@@ -9,9 +9,9 @@ import math
 import uuid
 from typing import Any
 
+from app.services.crypto_service import validate_vault_path
 from app.services.qdrant_service import DEFAULT_COLLECTION, ScoredChunk
 from app.services.storage_service import validate_storage_key
-from app.services.crypto_service import validate_vault_path
 
 
 class FakeVaultClient:

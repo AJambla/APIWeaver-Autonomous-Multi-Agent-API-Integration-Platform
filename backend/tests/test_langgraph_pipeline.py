@@ -41,7 +41,7 @@ def test_workflow_state_channels_preserved():
     assert "environment" in channels
     assert "spec_persisted" in channels
     assert "endpoints_discovered" in channels
-    assert "github_repo_name" in channels
+    assert "retry_config" in channels
     assert "errors" in channels
 
 

@@ -1,11 +1,9 @@
 """Tests for Weaver AI endpoints and path traversal protections."""
 
 import uuid
+
 import pytest
 from httpx import AsyncClient
-
-from app.models.spec import APISpec
-from app.models.enums import OrgRole
 
 
 async def _setup_project(client: AsyncClient, db) -> tuple[str, dict[str, str]]:

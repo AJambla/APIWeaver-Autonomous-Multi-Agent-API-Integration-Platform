@@ -22,11 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.deps import get_current_principal, get_db, get_object_storage, get_redis
-from app.services.qdrant_service import create_qdrant_client
 from app.core.errors import APIError
 from app.core.logging import get_logger
 from app.rbac.enforce import require_own_org_permission
 from app.rbac.policy import Permission, Principal
+from app.services.qdrant_service import create_qdrant_client
 from app.workflows.llm import LLMClient, active_llm_model
 
 router = APIRouter(tags=["health"])

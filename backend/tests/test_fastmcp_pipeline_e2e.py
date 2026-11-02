@@ -20,7 +20,7 @@ import json
 import uuid
 import zipfile
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient

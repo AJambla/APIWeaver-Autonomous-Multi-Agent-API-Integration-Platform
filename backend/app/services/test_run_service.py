@@ -214,7 +214,10 @@ async def _mark_failed(
         async with session_factory() as session:
             test_run = await session.scalar(
                 select(TestRun)
-                .where(TestRun.workflow_run_id == workflow_run_id)
+                .where(
+                    TestRun.project_id == project_id,
+                    TestRun.workflow_run_id == workflow_run_id,
+                )
                 .order_by(TestRun.started_at.desc())
                 .limit(1)
             )

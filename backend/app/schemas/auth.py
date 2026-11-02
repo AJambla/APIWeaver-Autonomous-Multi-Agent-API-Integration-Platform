@@ -39,6 +39,10 @@ class LoginRequest(StrictModel):
     password: str = Field(max_length=256)
 
 
+class FirebaseLoginRequest(StrictModel):
+    id_token: str = Field(min_length=1)
+
+
 class RefreshRequest(StrictModel):
     refresh_token: str | None = Field(default=None, min_length=1, max_length=512)
 

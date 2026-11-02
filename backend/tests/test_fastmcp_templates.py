@@ -1,7 +1,8 @@
 import ast
 from pathlib import Path
-import pytest
+
 from jinja2 import Environment, FileSystemLoader
+
 from app.services.validation_service import validate_mcp_code_statically
 from app.workflows.source_safety import to_literal, to_py_type
 

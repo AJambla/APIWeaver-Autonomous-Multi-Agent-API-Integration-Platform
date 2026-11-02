@@ -140,6 +140,7 @@ class WorkflowState(TypedDict, total=False):
     approval_notes: str | None
 
     # Code generation & testing outputs
+    retry_config: dict[str, Any] | None
     generated_files: Annotated[list[dict[str, Any]], merge_generated_files]
     test_suite: Annotated[list[dict[str, Any]], merge_test_suite]
     test_run_summary: dict[str, Any] | None
@@ -148,12 +149,6 @@ class WorkflowState(TypedDict, total=False):
     # Export stage
     export_types: list[str] | None
     exports: Annotated[list[dict[str, Any]], merge_exports]
-    github_repo_name: str | None
-    github_org: str | None
-    github_private: bool | None
-    github_branch: str | None
-    github_commit_message: str | None
-    docker_image_name: str | None
     # Set by `/approve` when an owner exports despite exhausted repairs.
     export_override_approved: bool | None
     # Set by `POST /export`, which creates one Export row per type up front and finalizes

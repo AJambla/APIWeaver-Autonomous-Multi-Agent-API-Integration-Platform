@@ -12,13 +12,12 @@ MAX_PDF_PAGES = 100
 MAX_EXTRACTED_CHARS = 500_000
 
 
-def extract_text(content: bytes, filename: str, content_type: str | None = None) -> str:
+def extract_text(content: bytes, filename: str) -> str:
     """Extract text from document content based on file type.
 
     Args:
         content: Raw document bytes
         filename: Original filename (used to determine format)
-        content_type: Optional MIME type
 
     Returns:
         Extracted text content, or UTF-8 decode fallback on failure

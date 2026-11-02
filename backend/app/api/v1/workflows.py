@@ -291,6 +291,8 @@ async def approve_workflow_gate(
         assert latest_checkpoint is not None  # loaded above whenever approved is true
         resume_state = dict(latest_checkpoint.state_snapshot)
         resume_state["plan_approved"] = True
+        if payload.notes:
+            resume_state["approval_notes"] = payload.notes
         if payload.target_languages:
             resume_state["target_languages"] = payload.target_languages
         elif not resume_state.get("target_languages"):

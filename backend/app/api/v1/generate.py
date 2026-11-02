@@ -109,7 +109,6 @@ async def trigger_generate(
 @router.get("/{id}/files", response_model=list[FileResponse])
 async def list_generated_files(
     limit: int = Query(default=200, ge=1, le=500),
-    cursor: str | None = Query(default=None),
     project: Project = Depends(require_project_permission(Permission.CODE_READ)),
     session: AsyncSession = Depends(get_db),
 ) -> list[FileResponse]:

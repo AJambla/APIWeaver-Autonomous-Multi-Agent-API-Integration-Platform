@@ -15,7 +15,7 @@ from app.models.workflow import WorkflowRun
 from app.workflows.agents.doc_agent import run_doc_agent
 from app.workflows.agents.planner_agent import run_planner_agent
 from app.workflows.state import WorkflowState
-from tests.conftest import TEST_PASSWORD
+from tests.conftest import TEST_PASSWORD, FakeRedis
 
 
 async def _setup_project(client: AsyncClient) -> tuple[str, str, dict[str, str]]:
@@ -675,3 +675,66 @@ def test_export_request_rejects_unsafe_git_and_docker_values() -> None:
         with pytest.raises(ValidationError):
             ExportRequest(**bad)
     assert ExportRequest(github_branch="release/v1.2", docker_image_name="acme/sdk:1.0")
+
+
+async def test_workflow_approval_gate_records_notes(client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    from sqlalchemy import select
+
+    from app.models.workflow import WorkflowCheckpoint
+    project_id, _, headers = await _setup_project(client)
+
+    async with session_factory() as session:
+        run = WorkflowRun(
+            project_id=uuid.UUID(project_id),
+            status=WorkflowStatus.PAUSED_FOR_APPROVAL,
+        )
+        session.add(run)
+        await session.flush()
+        cp = WorkflowCheckpoint(
+            workflow_run_id=run.id,
+            node_name="approval_gate",
+            state_snapshot={"workflow_run_id": str(run.id), "project_id": project_id, "stages": ["generate"]},
+        )
+        session.add(cp)
+        await session.commit()
+        run_id = str(run.id)
+
+    res = await client.post(
+        f"/api/v1/workflows/{run_id}/approve",
+        json={"approved": True, "notes": "Approved for Python SDK generation"},
+        headers=headers,
+    )
+    assert res.status_code == 200, res.text
+
+    async with session_factory() as session:
+        latest_cp = await session.scalar(
+            select(WorkflowCheckpoint)
+            .where(WorkflowCheckpoint.workflow_run_id == uuid.UUID(run_id))
+            .order_by(WorkflowCheckpoint.created_at.desc())
+        )
+        assert latest_cp is not None
+        assert latest_cp.state_snapshot.get("approval_notes") == "Approved for Python SDK generation"
+        assert latest_cp.state_snapshot.get("plan_approved") is True
+
+    # Rejection gate test
+    async with session_factory() as session:
+        run2 = WorkflowRun(
+            project_id=uuid.UUID(project_id),
+            status=WorkflowStatus.PAUSED_FOR_APPROVAL,
+        )
+        session.add(run2)
+        await session.commit()
+        run2_id = str(run2.id)
+
+    res2 = await client.post(
+        f"/api/v1/workflows/{run2_id}/approve",
+        json={"approved": False, "notes": "Spec missing required auth details"},
+        headers=headers,
+    )
+    assert res2.status_code == 200, res2.text
+
+    async with session_factory() as session:
+        rejected_run = await session.get(WorkflowRun, uuid.UUID(run2_id))
+        assert rejected_run is not None
+        assert rejected_run.status == WorkflowStatus.FAILED
+

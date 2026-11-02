@@ -246,18 +246,6 @@ export interface LlmTestResult {
   error?: string;
 }
 
-export interface McpToolSummary {
-  name: string;
-  description: string;
-  method?: string;
-  path?: string;
-  risk_level?: 'LOW' | 'MEDIUM' | 'HIGH';
-  safety_badge?: '[SAFE]' | '[STATE-CHANGING]' | '[DESTRUCTIVE ⚠]' | string;
-  requires_confirmation?: boolean;
-  parameters?: Record<string, unknown>;
-  input_schema?: Record<string, unknown>;
-}
-
 export interface VerificationToolOutcome {
   tool_name?: string;
   name?: string;
@@ -302,12 +290,5 @@ export interface GeneratedFileMeta {
   size_bytes: number;
   created_at: string | null;
   code_generation_run_id?: string;
-}
-
-export interface FileContentResult {
-  file_path: string;
-  content: string;
-  language: string;
-  file_type: string;
 }
 

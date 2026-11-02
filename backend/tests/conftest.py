@@ -19,7 +19,6 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings, get_settings
@@ -31,8 +30,8 @@ from app.models.enums import OrgRole, ProjectRole
 from app.models.organization import Organization, OrganizationMember
 from app.models.project import Project, ProjectMember
 from app.models.user import User
-from app.services.qdrant_service import create_qdrant_client
 from app.services.crypto_service import create_vault_client
+from app.services.qdrant_service import create_qdrant_client
 from tests.fakes import FakeQdrantClient, FakeVaultClient
 
 TEST_PASSWORD = "correct-horse-battery-staple"

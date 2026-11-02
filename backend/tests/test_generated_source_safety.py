@@ -9,6 +9,8 @@ carries no call the spec asked for.
 from __future__ import annotations
 
 import ast
+import io
+import zipfile
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -172,9 +174,6 @@ async def test_python_client_template_ordering_and_types_hazards():
     assert "item_id: string" in ts_client
     assert "filter?: string" in ts_client
 
-
-import io
-import zipfile
 
 async def export_server(spec: dict[str, Any]) -> str:
     captured: dict[str, bytes] = {}

@@ -88,13 +88,15 @@ class {{ client_class_name }}:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout: float = 30.0,
-        max_retries: int = 3,
+        max_retries: int = {{ retry_config.max_attempts if retry_config else 3 }},
+        backoff_base_seconds: float = {{ retry_config.backoff_base_seconds if retry_config else 2.0 }},
         **kwargs: Any,
     ) -> None:
         self.base_url = base_url or os.getenv({{ (env_prefix ~ '_BASE_URL') | lit }}, {{ base_url | lit }})
         self.api_key = api_key or os.getenv({{ (env_prefix ~ '_API_KEY') | lit }})
         self.timeout = timeout
         self.max_retries = max_retries
+        self.backoff_base_seconds = backoff_base_seconds
         self._client: Optional[httpx.AsyncClient] = None
 
     @asynccontextmanager
@@ -181,7 +183,7 @@ class {{ client_class_name }}:
                     if 500 <= response.status_code < 600:
                         if attempt < self.max_retries:
                             import asyncio
-                            await asyncio.sleep(2 ** attempt)
+                            await asyncio.sleep(self.backoff_base_seconds ** attempt)
                             continue
                         raise ServerError(f"Server error: {response.status_code}")
 
@@ -191,7 +193,7 @@ class {{ client_class_name }}:
                     last_exception = e
                     if attempt < self.max_retries:
                         import asyncio
-                        await asyncio.sleep(2 ** attempt)
+                        await asyncio.sleep(self.backoff_base_seconds ** attempt)
                         continue
                     raise
 

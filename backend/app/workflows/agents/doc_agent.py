@@ -157,7 +157,7 @@ async def run_doc_agent(
 
     # 3. Freeform document extraction via LLM
     # pypdf / BeautifulSoup over a large upload is pure CPU; keep it off the event loop.
-    text_content = await asyncio.to_thread(extract_text, raw_bytes, filename, None)
+    text_content = await asyncio.to_thread(extract_text, raw_bytes, filename)
     user_prompt = fence_untrusted("DOCUMENT DATA", text_content[:64000])
 
     extracted_json, tokens = await client.generate_json(

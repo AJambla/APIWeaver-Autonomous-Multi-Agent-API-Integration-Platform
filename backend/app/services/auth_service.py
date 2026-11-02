@@ -22,7 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.deps import denylist_jti
-from app.core.errors import ConflictError, ErrorCode, UnauthenticatedError, ValidationError
+from app.core.errors import (
+    ConflictError,
+    ErrorCode,
+    ForbiddenError,
+    UnauthenticatedError,
+    ValidationError,
+)
 from app.core.logging import get_logger
 from app.core.metrics import auth_failure_total, auth_success_total
 from app.core.security import (
@@ -222,6 +228,9 @@ async def login(
     result = await session.execute(select(User).where(User.email == normalized_email))
     user = result.scalar_one_or_none()
 
+    org_id: uuid.UUID | None = None
+    org_role: str | OrgRole | None = None
+
     if user is None:
         # Hash anyway so a nonexistent account takes the same time as a wrong password;
         # otherwise response timing enumerates valid emails.
@@ -341,6 +350,112 @@ async def login(
     return user, tokens
 
 
+async def firebase_login(
+    session: AsyncSession,
+    *,
+    id_token: str,
+    settings: Settings,
+    context: RequestContext,
+) -> tuple[User, IssuedTokens]:
+    """Authenticate or provision user via verified Firebase ID token."""
+    from app.services.firebase_auth_service import verify_firebase_id_token
+
+    payload = verify_firebase_id_token(id_token, project_id=settings.firebase_project_id)
+    email = payload.get("email")
+    if not email:
+        raise UnauthenticatedError("Firebase token missing email claim.")
+
+    email_verified = payload.get("email_verified", False)
+    if not email_verified:
+        raise ForbiddenError("Email address is not verified. Please verify your email before signing in.")
+
+    normalized_email = email.strip().lower()
+    result = await session.execute(select(User).where(User.email == normalized_email))
+    user = result.scalar_one_or_none()
+
+    org_id: uuid.UUID | None = None
+    org_role: str | OrgRole | None = None
+
+    if user is None:
+        name = payload.get("name") or normalized_email.split("@")[0] or "User"
+        base_slug = slugify(f"{name}-workspace")
+        slug = base_slug
+        while True:
+            existing = await session.execute(
+                select(Organization.id).where(Organization.slug == slug)
+            )
+            if existing.scalar_one_or_none() is None:
+                break
+            slug = f"{base_slug[:84]}-{secrets.token_hex(3)}"
+
+        organization = Organization(name=f"{name}'s Workspace", slug=slug)
+        user = User(
+            email=normalized_email,
+            password_hash=None,
+            full_name=name,
+        )
+        session.add_all([organization, user])
+        await session.flush()
+
+        session.add(
+            OrganizationMember(organization_id=organization.id, user_id=user.id, role=OrgRole.OWNER)
+        )
+        org_id = organization.id
+        org_role = OrgRole.OWNER
+        await audit_service.record(
+            session,
+            action=AuditAction.USER_REGISTERED,
+            actor_type=ActorType.USER,
+            organization_id=organization.id,
+            actor_user_id=user.id,
+            resource_type="user",
+            resource_id=str(user.id),
+            ip_address=context.ip_address,
+            user_agent=context.user_agent,
+            metadata={"auth_provider": "firebase"},
+        )
+    else:
+        membership = await _primary_membership(session, user.id)
+        if membership:
+            org_id, org_role = membership
+        else:
+            base_slug = slugify(f"{user.full_name}-workspace")
+            organization = Organization(name=f"{user.full_name}'s Workspace", slug=base_slug)
+            session.add(organization)
+            await session.flush()
+            session.add(
+                OrganizationMember(organization_id=organization.id, user_id=user.id, role=OrgRole.OWNER)
+            )
+            org_id = organization.id
+            org_role = OrgRole.OWNER
+
+        user.failed_login_count = 0
+        user.locked_until = None
+
+    tokens = await _issue_token_pair(
+        session,
+        user=user,
+        organization_id=org_id,
+        org_role=org_role,
+        settings=settings,
+    )
+
+    await audit_service.record(
+        session,
+        action=AuditAction.USER_LOGIN_SUCCEEDED,
+        actor_type=ActorType.USER,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_type="user",
+        resource_id=str(user.id),
+        ip_address=context.ip_address,
+        user_agent=context.user_agent,
+        metadata={"auth_provider": "firebase"},
+    )
+    auth_success_total.inc()
+    return user, tokens
+
+
 async def _revoke_family(session: AsyncSession, family_id: uuid.UUID) -> None:
     """Revoke every unrevoked token in a family."""
     await session.execute(
@@ -407,6 +522,9 @@ async def refresh(
         raise UnauthenticatedError("Refresh token has expired.", code=ErrorCode.TOKEN_EXPIRED)
 
     user = await session.get(User, stored.user_id)
+    org_id: uuid.UUID | None = None
+    org_role: str | OrgRole | None = None
+
     if user is None:
         # The user was deleted while the token was live. The revocation must be
         # committed, not rolled back with the rejection.

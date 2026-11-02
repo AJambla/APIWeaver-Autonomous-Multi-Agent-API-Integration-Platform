@@ -109,12 +109,6 @@ async def trigger_export(
         "test_suite": test_suite,
         "test_run_summary": test_run_summary,
         "export_types": export_types,
-        "github_repo_name": payload.github_repo_name,
-        "github_org": payload.github_org,
-        "github_private": payload.github_private,
-        "github_branch": payload.github_branch,
-        "github_commit_message": payload.github_commit_message,
-        "docker_image_name": payload.docker_image_name,
         "export_rows_managed": True,
         "errors": [],
     }
@@ -284,7 +278,6 @@ async def download_export(
 async def download_mcp_manifest(
     id: uuid.UUID,
     project: Project = Depends(require_project_permission(Permission.EXPORT_READ)),
-    session: AsyncSession = Depends(get_db),
 ):
     """Download the MCP manifest JSON for a project."""
     from fastapi import Response

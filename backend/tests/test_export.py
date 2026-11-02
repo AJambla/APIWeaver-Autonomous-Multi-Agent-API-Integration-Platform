@@ -234,7 +234,7 @@ class TestExportAgent:
             mock_storage.download = AsyncMock(side_effect=fake_download)
 
             agent = ExportAgent()
-            result = await agent._package_mcp(
+            await agent._package_mcp(
                 project_id="test-project",
                 normalized_spec=mock_state["normalized_spec"],
                 test_run_summary=mock_state["test_run_summary"],

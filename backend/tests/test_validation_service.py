@@ -1,6 +1,5 @@
 from app.services.validation_service import validate_mcp_code_statically
 
-
 VALID_FASTMCP_CODE = '''"""Sample FastMCP Tools."""
 from mcp.server.fastmcp import FastMCP
 import httpx

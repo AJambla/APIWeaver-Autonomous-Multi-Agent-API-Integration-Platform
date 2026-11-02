@@ -41,6 +41,9 @@ async function rotateTokens(): Promise<string> {
   }
   const data = (await refreshResponse.json()) as { access_token: string; refresh_token?: string };
   sessionStorage.setItem('access_token', data.access_token);
+  if (data.refresh_token) {
+    sessionStorage.setItem('refresh_token', data.refresh_token);
+  }
   return data.access_token;
 }
 

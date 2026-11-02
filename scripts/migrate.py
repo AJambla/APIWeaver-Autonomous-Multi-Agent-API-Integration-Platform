@@ -41,8 +41,8 @@ def run_migrations(revision: str = "head") -> None:
         from app.core.config import get_settings
 
         settings = get_settings()
-        # Ensure database url is set on config
-        alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
+        # Ensure database url is set on config (escape % for configparser)
+        alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
         logger.info(f"Applying Alembic migration to target: '{revision}'...")
         command.upgrade(alembic_cfg, revision)

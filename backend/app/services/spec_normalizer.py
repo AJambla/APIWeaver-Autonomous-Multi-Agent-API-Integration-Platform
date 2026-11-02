@@ -257,7 +257,7 @@ def _normalize_openapi(data: dict[str, Any], document_format: str) -> Normalized
                 tags=tags_tuple,
             ))
 
-    base_url = _openapi_base_url(data, document_format)
+    base_url = _openapi_base_url(data)
     definitions: dict[str, Any] = _as_dict(data.get("definitions"))
     components: dict[str, Any] = _as_dict(data.get("components"))
     sec_defs: dict[str, Any] = _as_dict(data.get("securityDefinitions"))
@@ -371,7 +371,7 @@ def _response_schemas(operation: dict[str, Any], document_format: str) -> dict[s
     return normalized
 
 
-def _openapi_base_url(data: dict[str, Any], document_format: str) -> str | None:
+def _openapi_base_url(data: dict[str, Any]) -> str | None:
     servers = data.get("servers")
     if isinstance(servers, list) and servers and isinstance(servers[0], dict):
         url = _string_or_none(servers[0].get("url"))

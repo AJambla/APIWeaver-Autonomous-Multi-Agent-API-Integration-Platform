@@ -797,8 +797,8 @@ async def test_mock_sandbox_executor_syntax_error():
 
 
 def test_build_sandbox_executor_with_mock_backend():
-    from app.workflows.agents.test_agent import _build_sandbox_executor
     from app.services.sandbox_service import MockSandboxExecutor
+    from app.workflows.agents.test_agent import _build_sandbox_executor
 
     settings = _make_settings(sandbox_backend="mock")
     executor = _build_sandbox_executor(settings, network_enabled=False)

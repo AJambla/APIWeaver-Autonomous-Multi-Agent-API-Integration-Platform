@@ -1,6 +1,7 @@
-import os
-import pytest
 from pathlib import Path
+
+import pytest
+
 from app.services.crypto_service import CryptoService, validate_secret_path
 
 

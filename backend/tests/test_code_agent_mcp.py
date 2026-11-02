@@ -1,5 +1,7 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from app.workflows.agents.code_agent import run_code_agent
 from app.workflows.llm import LLMClient
 

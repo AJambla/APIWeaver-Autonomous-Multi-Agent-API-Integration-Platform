@@ -28,7 +28,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.deps import get_current_principal, get_db, get_redis, select_client_ip
 from app.core.errors import ErrorCode, RateLimitExceededError, build_error_body
 from app.core.logging import get_logger
@@ -51,6 +51,21 @@ TIER_REQUESTS_PER_MINUTE: dict[str, int] = {
     "pro": 600,
     "enterprise": 3000,
 }
+
+
+def get_tier_requests_per_minute(tier: str | None = None, settings: Settings | None = None) -> int:
+    """Requests/min budget scaled by organization tier (`API.md §3`).
+
+    Dynamically reads from `Settings` (`rate_limit_*_rpm`) so cluster operators
+    can tune tier ceilings via environment variables without code redeployments.
+    """
+    s = settings or get_settings()
+    limits = {
+        "free": s.rate_limit_free_rpm,
+        "pro": s.rate_limit_pro_rpm,
+        "enterprise": s.rate_limit_enterprise_rpm,
+    }
+    return limits.get(tier or "free", s.rate_limit_free_rpm)
 
 TIER_LIMITS: dict[str, dict[str, int]] = {
     "free": {"workflow_triggers_hour": 10},
@@ -280,13 +295,14 @@ async def enforce_org_rate_limit(
     org = await session.scalar(
         select(Organization).where(Organization.id == principal.organization_id)
     )
+    settings = get_settings()
     if org is None:
-        limit = TIER_REQUESTS_PER_MINUTE["free"]
+        limit = get_tier_requests_per_minute("free", settings)
     else:
-        limit = TIER_REQUESTS_PER_MINUTE.get(org.plan_tier or "", TIER_REQUESTS_PER_MINUTE["free"])
+        limit = get_tier_requests_per_minute(org.plan_tier, settings)
         if org.rate_limit_override:
             # Clamped here too, for overrides stored before the ceiling existed.
-            limit = min(org.rate_limit_override, get_settings().rate_limit_override_max_rpm)
+            limit = min(org.rate_limit_override, settings.rate_limit_override_max_rpm)
 
     verdict = await consume(redis_client, f"org:{principal.organization_id}", limit)
 

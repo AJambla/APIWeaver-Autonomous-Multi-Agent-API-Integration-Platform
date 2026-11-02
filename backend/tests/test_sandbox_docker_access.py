@@ -1,8 +1,10 @@
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-from app.services.sandbox_service import DockerSandboxExecutor, MockSandboxExecutor
-from app.workflows.agents.test_agent import _build_sandbox_executor
+
 from app.core.config import get_settings
+from app.services.sandbox_service import DockerSandboxExecutor
+from app.workflows.agents.test_agent import _build_sandbox_executor
 
 
 def test_docker_socket_permission_error_diagnosed():

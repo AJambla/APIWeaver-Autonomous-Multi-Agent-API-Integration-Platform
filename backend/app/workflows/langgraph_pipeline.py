@@ -448,6 +448,9 @@ def create_apiweaver_graph(
             and state.get("project_id")
             and state.get("document_id")
         ):
+            conf_score = doc_updates.get("spec_confidence_score") or state.get("spec_confidence_score")
+            if conf_score is not None and "confidence_score" not in normalized_spec:
+                normalized_spec["confidence_score"] = conf_score
             try:
                 async with session_factory() as session:
                     await persist_normalized_spec(
@@ -742,6 +745,33 @@ def create_apiweaver_graph(
         # Same rule as check_budget: this used to ignore DEFAULT_TOKEN_BUDGET from settings.
         budget = token_budget(state)
 
+        # Load project RetryConfig (or use defaults)
+        retry_cfg = state.get("retry_config")
+        if retry_cfg is None and session_factory and state.get("project_id"):
+            try:
+                async with session_factory() as session:
+                    from app.models.retry import RetryConfig
+                    proj_uuid = uuid.UUID(str(state["project_id"]))
+                    rc = await session.scalar(
+                        select(RetryConfig).where(RetryConfig.project_id == proj_uuid)
+                    )
+                    if rc is not None:
+                        retry_cfg = {
+                            "max_attempts": rc.max_attempts,
+                            "backoff_base_seconds": rc.backoff_base_seconds,
+                            "retryable_status_codes": list(rc.retryable_status_codes),
+                        }
+            except Exception as exc:
+                logger.warning("retry_config_load_failed", error=str(exc))
+
+        if retry_cfg is None:
+            retry_cfg = {
+                "max_attempts": 3,
+                "backoff_base_seconds": 2,
+                "retryable_status_codes": [429, 500, 502, 503, 504],
+            }
+        state = {**state, "retry_config": retry_cfg}
+
         async def _persist_codegen_files(files_to_persist: list[dict[str, Any]]) -> None:
             if not (session_factory and run_id and files_to_persist):
                 return
@@ -912,6 +942,7 @@ def create_apiweaver_graph(
         await _emit_thought(state, "code_agent", f"FastMCP code generation complete: {len(generated_files)} source files generated ({preview_files}).", level="success", action="codegen_complete")
 
         updates: dict[str, Any] = {
+            "retry_config": retry_cfg,
             "generated_files": generated_files,
             "total_tokens_used": total_tokens,
             "progress_percent": 60,

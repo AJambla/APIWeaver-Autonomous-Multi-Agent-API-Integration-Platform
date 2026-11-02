@@ -484,8 +484,9 @@ def test_public_address_classification(address: str, public: bool) -> None:
 
 
 def test_pdf_magic_bytes_validation_rejects_spoofed_files():
-    from app.services.document_parser import extract_text
     import pytest
+
+    from app.services.document_parser import extract_text
 
     # Disguised text file claiming to be a PDF
     with pytest.raises(ValueError, match="missing %PDF- magic bytes signature"):
@@ -493,8 +494,9 @@ def test_pdf_magic_bytes_validation_rejects_spoofed_files():
 
 
 def test_document_parser_rejects_executable_binaries():
-    from app.services.document_parser import extract_text
     import pytest
+
+    from app.services.document_parser import extract_text
 
     # Windows PE executable header
     with pytest.raises(ValueError, match="binary executable or control content detected"):
@@ -506,6 +508,6 @@ def test_document_parser_rejects_executable_binaries():
 
 
 def test_pdf_extraction_limits():
-    from app.services.document_parser import MAX_PDF_PAGES, MAX_EXTRACTED_CHARS
+    from app.services.document_parser import MAX_EXTRACTED_CHARS, MAX_PDF_PAGES
     assert MAX_PDF_PAGES == 100
     assert MAX_EXTRACTED_CHARS == 500_000

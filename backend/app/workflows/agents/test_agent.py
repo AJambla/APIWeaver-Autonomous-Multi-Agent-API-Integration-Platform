@@ -45,9 +45,10 @@ FAILURE_CLASSIFICATION_PROMPT = """Classify this API test failure into exactly o
 [auth_error, schema_mismatch, rate_limited, network_error, server_error,
  validation_error, unknown_api_bug, generated_code_bug]
 
-Base your classification on the status code, response body, and whether the
+Base your classification on the status code, response body, target endpoint contract, and whether the
 same request pattern succeeded for other endpoints in this run.
 
+Target endpoint: {endpoint_info}
 Status: {status_code}
 Response body: {response_body}
 Endpoint history: {endpoint_history}
@@ -86,8 +87,12 @@ class FailureClassifier:
             "RESPONSE DATA", json.dumps(error.get("response_snapshot", {}), indent=2)[:10000]
         )
         endpoint_history = fence_untrusted("HISTORY DATA", json.dumps(history or [], indent=2))
+        endpoint_info = fence_untrusted(
+            "ENDPOINT METADATA", json.dumps(endpoint or {}, indent=2, default=str)[:5000]
+        )
 
         prompt = FAILURE_CLASSIFICATION_PROMPT.format(
+            endpoint_info=endpoint_info,
             status_code=error.get("status_code", 0),
             response_body=response_body,
             endpoint_history=endpoint_history,

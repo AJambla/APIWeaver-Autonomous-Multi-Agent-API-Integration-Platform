@@ -20,6 +20,7 @@ from app.models.organization import Organization, OrganizationMember
 from app.models.user import User
 from app.rbac.policy import Principal
 from app.schemas.auth import (
+    FirebaseLoginRequest,
     ForgotPasswordRequest,
     ForgotPasswordResponse,
     LoginRequest,
@@ -96,6 +97,40 @@ async def login(
         session,
         email=payload.email,
         password=payload.password,
+        settings=settings,
+        context=_context(request, settings),
+    )
+    response.set_cookie(
+        "refresh_token",
+        tokens.refresh_token,
+        max_age=settings.jwt_refresh_token_expire_days * 86400,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="strict",
+        path="/api/v1/auth",
+    )
+    return TokenResponse(
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        expires_in=tokens.expires_in,
+    )
+
+
+@router.post(
+    "/firebase-login",
+    response_model=TokenResponse,
+    summary="Exchange verified Firebase token for an API Weaver session",
+)
+async def firebase_login(
+    response: Response,
+    payload: FirebaseLoginRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> TokenResponse:
+    _, tokens = await auth_service.firebase_login(
+        session,
+        id_token=payload.id_token,
         settings=settings,
         context=_context(request, settings),
     )

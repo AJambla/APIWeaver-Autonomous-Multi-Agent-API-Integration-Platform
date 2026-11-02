@@ -685,7 +685,7 @@ async def test_password_reset_flow_and_session_invalidation(
     reset_keys = [k for k in fake_redis._store.keys() if k.startswith("auth:pwd_reset:")]
     assert len(reset_keys) >= 1
     # We can invoke reset using a valid token directly via auth_service or test token
-    from app.services.auth_service import request_password_reset, RequestContext
+    from app.services.auth_service import RequestContext, request_password_reset
     async with session_factory() as session:
         token = await request_password_reset(
             session, fake_redis, email, RequestContext(ip_address="127.0.0.1", user_agent="test")

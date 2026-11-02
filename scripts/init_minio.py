@@ -25,11 +25,31 @@ except ImportError:
 
 
 def init_buckets() -> None:
-    endpoint_url = os.getenv("S3_ENDPOINT_URL", "http://127.0.0.1:9000")
-    access_key = os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("MINIO_ROOT_USER", "minioadmin")
-    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("MINIO_ROOT_PASSWORD", "minioadmin")
+    endpoint_url = os.getenv("S3_ENDPOINT_URL")
+    access_key = os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("MINIO_ROOT_USER")
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("MINIO_ROOT_PASSWORD")
     uploads_bucket = os.getenv("S3_BUCKET_UPLOADS", "apiweaver-uploads")
     artifacts_bucket = os.getenv("S3_BUCKET_ARTIFACTS", "apiweaver-artifacts")
+
+    # If not in env, attempt loading from app Settings (reads .env)
+    if not (access_key and secret_key):
+        try:
+            sys.path.insert(0, str(ROOT_DIR / "backend"))
+            from app.core.config import get_settings
+            settings = get_settings()
+            access_key = access_key or settings.aws_access_key_id
+            secret_key = secret_key or settings.aws_secret_access_key
+            endpoint_url = endpoint_url or settings.s3_endpoint_url
+            uploads_bucket = settings.s3_bucket_uploads
+            artifacts_bucket = settings.s3_bucket_artifacts
+        except Exception:
+            pass
+
+    endpoint_url = endpoint_url or "http://127.0.0.1:9000"
+
+    if not access_key or not secret_key:
+        print("[init_minio] Error: AWS_ACCESS_KEY_ID (or MINIO_ROOT_USER) and AWS_SECRET_ACCESS_KEY (or MINIO_ROOT_PASSWORD) must be configured.")
+        sys.exit(1)
 
     print(f"[init_minio] Connecting to S3/MinIO at {endpoint_url}...")
     s3 = boto3.client(

@@ -376,7 +376,7 @@ def _extract_ts_class_methods(code: str) -> list[tuple[str, str]]:
     return methods
 
 
-def _merge_ts_code(existing_code: str, new_code: str, file_path: str = "") -> str:
+def _merge_ts_code(existing_code: str, new_code: str) -> str:
     """Merge TypeScript code, injecting new methods into the client class body."""
     if not existing_code.strip():
         return new_code
@@ -499,12 +499,17 @@ SELF_REVIEW_SYSTEM_PROMPT = """You are performing a self-review of generated API
 Files to review:
 {files_json}
 
+Target Endpoints Specification:
+{spec_endpoints_json}
+
 Check for:
 1. Auth correctly wired (credentials read from environment variables, not hardcoded)
 2. No hardcoded secrets, tokens, or API keys
 3. Error handling present (try/except, custom exceptions, retry logic)
 4. Matches target schema (request/response models match the API spec)
 5. No obvious security issues (SSRF, injection, unsafe deserialization)
+6. All target endpoints are covered and implemented
+{review_guidance}
 
 Return a JSON object:
 {{
@@ -516,7 +521,7 @@ Return a JSON object:
 
 
 def _build_endpoint_group(
-    spec: dict[str, Any], phase: dict[str, Any] | None, target_languages: list[str]
+    spec: dict[str, Any], phase: dict[str, Any] | None
 ) -> dict[str, Any]:
     """Filter spec endpoints to those in the current phase."""
     if phase is None:
@@ -620,8 +625,24 @@ async def _run_self_review(
             }
         return {"self_review_passed": True, "self_review_issues": [], "self_review_summary": "No file contents available"}
 
+    spec = state.get("normalized_spec") or {}
+    raw_endpoints = spec.get("endpoints") or []
+    endpoint_summaries = []
+    for ep in raw_endpoints[:50]:
+        if isinstance(ep, dict):
+            m = str(ep.get("method", "GET")).upper()
+            p = str(ep.get("path", "")).strip()
+            summary = ep.get("summary") or ep.get("operation_id") or ""
+            endpoint_summaries.append(f"{m} {p} - {summary}".strip())
+
+    spec_endpoints_text = "\n".join(endpoint_summaries) if endpoint_summaries else "None specified"
+    notes = state.get("approval_notes")
+    review_guidance = f"\nHuman Reviewer Instructions:\n{notes}\n" if notes else ""
+
     review_prompt = SELF_REVIEW_SYSTEM_PROMPT.format(
-        files_json=fence_untrusted("FILE CONTENTS", json.dumps(file_contents, indent=2)[:20000])
+        files_json=fence_untrusted("FILE CONTENTS", json.dumps(file_contents, indent=2)[:20000]),
+        spec_endpoints_json=fence_untrusted("SPEC ENDPOINTS", spec_endpoints_text),
+        review_guidance=review_guidance,
     )
     try:
         review_json, tokens = await llm_client.generate_json(
@@ -647,6 +668,7 @@ async def _render_templates(
     spec: dict[str, Any],
     phase: dict[str, Any] | None,
     endpoint_group: dict[str, Any],
+    retry_config: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Render Jinja2 templates for the given language."""
     from jinja2 import Environment, FileSystemLoader
@@ -722,6 +744,7 @@ async def _render_templates(
         "license": to_text(license_name, fallback="MIT", limit=60),
         "author_name": to_text(author_name, fallback="APIWeaver", limit=80),
         "author_email": to_email(author_email, fallback="support@apiweaver.dev"),
+        "retry_config": retry_config,
     }
 
     template_files = {
@@ -805,7 +828,7 @@ async def run_code_agent(
             }
 
     # Build endpoint group for this phase
-    endpoint_group = _build_endpoint_group(spec, current_phase, target_languages)
+    endpoint_group = _build_endpoint_group(spec, current_phase)
     for ep in endpoint_group.get("endpoints", []):
         if isinstance(ep, dict):
             m = str(ep.get("method") or "GET").upper()
@@ -1029,7 +1052,13 @@ async def run_code_agent(
     # Normal generation mode: process phase or all phases
     for language in target_languages:
         # Render templates
-        template_files = await _render_templates(language, spec, current_phase, endpoint_group)
+        template_files = await _render_templates(
+            language,
+            spec,
+            current_phase,
+            endpoint_group,
+            retry_config=state.get("retry_config"),
+        )
 
         # Also call LLM for complex logic (client methods, etc.)
         llm_prompt = CODE_GENERATOR_SYSTEM_PROMPT.format(
@@ -1106,7 +1135,7 @@ async def run_code_agent(
             elif fp.endswith(".py"):
                 all_files[fp] = _merge_python_code(all_files[fp], tmpl_content, fp)
             elif fp.endswith(".ts"):
-                all_files[fp] = _merge_ts_code(all_files[fp], tmpl_content, fp)
+                all_files[fp] = _merge_ts_code(all_files[fp], tmpl_content)
 
         # Merge LLM-generated files
         for fp, raw_llm_content in llm_files.items():
@@ -1118,7 +1147,7 @@ async def run_code_agent(
             elif fp.endswith(".py"):
                 all_files[fp] = _merge_python_code(all_files[fp], llm_content, fp)
             elif fp.endswith(".ts"):
-                all_files[fp] = _merge_ts_code(all_files[fp], llm_content, fp)
+                all_files[fp] = _merge_ts_code(all_files[fp], llm_content)
             else:
                 all_files[fp] = llm_content
 

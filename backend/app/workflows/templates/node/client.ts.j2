@@ -113,7 +113,7 @@ export class {{ client_class_name }} {
     this.baseUrl = config.baseUrl || process.env[{{ (env_prefix ~ '_BASE_URL') | lit }}] || {{ base_url | lit }};
     this.apiKey = config.apiKey || process.env[{{ (env_prefix ~ '_API_KEY') | lit }}];
     this.timeout = config.timeout || 30000;
-    this.maxRetries = config.maxRetries || 3;
+    this.maxRetries = config.maxRetries || {{ retry_config.max_attempts if retry_config else 3 }};
   }
 
   private async sleep(ms: number): Promise<void> {
