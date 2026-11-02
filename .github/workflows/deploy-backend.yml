@@ -1,0 +1,126 @@
+name: Build ARM64 Images & Deploy Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'agent_worker/**'
+      - 'infra/docker/sweet-spot/**'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    name: Build & Push ARM64 Container Images
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for ARM64 cross-compilation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Downcase repository owner for image tags
+        id: repo_owner
+        run: |
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------------
+      # Build & Push API Image (linux/arm64 for AWS Graviton)
+      # ------------------------------------------------------------------------
+      - name: Build and push Backend API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo_owner.outputs.owner }}/apiweaver-api:latest
+            ${{ env.REGISTRY }}/${{ steps.repo_owner.outputs.owner }}/apiweaver-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ------------------------------------------------------------------------
+      # Build & Push Agent Worker Image (linux/arm64 for AWS Graviton)
+      # Root context required by agent_worker/Dockerfile to import backend code
+      # ------------------------------------------------------------------------
+      - name: Build and push Agent Worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./agent_worker/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo_owner.outputs.owner }}/apiweaver-agent-worker:latest
+            ${{ env.REGISTRY }}/${{ steps.repo_owner.outputs.owner }}/apiweaver-agent-worker:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-ec2:
+    name: Deploy to EC2 via AWS SSM
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Sync compose and Nginx files to EC2 via AWS SSM
+        run: |
+          INSTANCE_ID="${{ secrets.EC2_INSTANCE_ID }}"
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "EC2_INSTANCE_ID secret is not set. Skipping automated EC2 sync."
+            exit 0
+          fi
+
+          echo "Deploying update to EC2 instance: $INSTANCE_ID via AWS SSM..."
+
+          # Command executed remotely on the EC2 host
+          DEPLOY_CMD="cd /opt/apiweaver && \
+            docker compose -f docker-compose.prod.yml pull api agent-worker && \
+            docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head && \
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans"
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"$DEPLOY_CMD\"]" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command dispatched (ID: $COMMAND_ID). Waiting for execution..."
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
+          echo "Deployment successfully executed on EC2!"

@@ -1,0 +1,143 @@
+# ==============================================================================
+# APIWeaver Production Stack (EC2 Graviton ARM64 - Sweet Spot Profile)
+# Architecture: DevSecOps Hardened Sandbox + Ingress Reverse Proxy + Capped Redis
+# ==============================================================================
+
+name: apiweaver-prod
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. DevSecOps Docker Socket Proxy Sidecar
+  # Worker never mounts raw /var/run/docker.sock. Access is strictly mediated
+  # over an internal TCP socket with fine-grained API permission gates.
+  # ----------------------------------------------------------------------------
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: apiweaver-socket-proxy
+    restart: unless-stopped
+    environment:
+      - CONTAINERS=1
+      - IMAGES=1
+      - VOLUMES=1
+      - POST=1
+      - NETWORKS=0
+      - SERVICES=0
+      - TASKS=0
+      - SECRETS=0
+      - SWARM=0
+      - SYSTEM=0
+      - INFO=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - apiweaver-net
+
+  # ----------------------------------------------------------------------------
+  # 2. Redis Cache & Broker (Memory capped at 64MB with LRU eviction)
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7.4-alpine
+    container_name: apiweaver-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru --appendonly no
+    volumes:
+      - redis_data:/data
+    networks:
+      - apiweaver-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
+  # 3. Backend API Service (FastAPI async Python 3.12, Uvicorn x2)
+  # ----------------------------------------------------------------------------
+  api:
+    image: ${API_IMAGE:-ghcr.io/ajambla/apiweaver-api:latest}
+    container_name: apiweaver-api
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - apiweaver-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=5)"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ----------------------------------------------------------------------------
+  # 4. Background Agent Worker (Celery concurrency=2, Sandboxed execution)
+  # ----------------------------------------------------------------------------
+  agent-worker:
+    image: ${WORKER_IMAGE:-ghcr.io/ajambla/apiweaver-agent-worker:latest}
+    container_name: apiweaver-agent-worker
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      # Directs sandbox executor to the secure proxy rather than host socket
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      - SANDBOX_MAX_CPU=1
+      - SANDBOX_MAX_MEMORY=512m
+      - SANDBOX_PIDS_LIMIT=64
+      - CELERY_WORKER_CONCURRENCY=2
+    depends_on:
+      redis:
+        condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
+    networks:
+      - apiweaver-net
+    command: celery -A agent_worker.celery_app worker --loglevel=info --concurrency=2 -Q celery,dlq
+
+  # ----------------------------------------------------------------------------
+  # 5. Nginx Reverse Proxy (TLS termination, SSE streaming, rate limiting)
+  # ----------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: apiweaver-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      - api
+    networks:
+      - apiweaver-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/readyz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ----------------------------------------------------------------------------
+  # 6. Certbot (Automated Let's Encrypt TLS renewal)
+  # ----------------------------------------------------------------------------
+  certbot:
+    image: certbot/certbot:latest
+    container_name: apiweaver-certbot
+    restart: unless-stopped
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: >
+      /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done;'
+    networks:
+      - apiweaver-net
+
+networks:
+  apiweaver-net:
+    driver: bridge
+
+volumes:
+  redis_data:
