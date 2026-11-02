@@ -401,3 +401,26 @@ class TestTestingAPI:
         )
         assert res.status_code == 200, res.text
         assert res.json()["test_run_id"] == str(run_a)
+
+def test_snapshot_redacts_sensitive_auth_headers():
+    from app.services.sandbox_runners.runner import _snapshot
+
+    class DummyResponse:
+        def __init__(self):
+            self.headers = {
+                "Authorization": "Bearer secret-token-123",
+                "Set-Cookie": "session_id=xyz; Secure; HttpOnly",
+                "X-Api-Key": "live_key_abcdef",
+                "Content-Type": "application/json",
+            }
+
+        def json(self):
+            return {"data": "test"}
+
+    snap = _snapshot(DummyResponse(), 200)
+    assert snap["status_code"] == 200
+    assert snap["headers"]["Authorization"] == "[REDACTED]"
+    assert snap["headers"]["Set-Cookie"] == "[REDACTED]"
+    assert snap["headers"]["X-Api-Key"] == "[REDACTED]"
+    assert snap["headers"]["Content-Type"] == "application/json"
+    assert "secret-token-123" not in str(snap)

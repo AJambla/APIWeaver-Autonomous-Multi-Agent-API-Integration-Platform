@@ -216,10 +216,36 @@ def _status_of(response):
     return None
 
 
+_SENSITIVE_HEADERS = {
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
+    "proxy-authorization",
+    "api-key",
+    "x-csrf-token",
+    "x-xsrf-token",
+}
+
+
+def _redact_headers(headers):
+    if not isinstance(headers, dict):
+        return headers
+    sanitized = {}
+    for k, v in headers.items():
+        if str(k).lower() in _SENSITIVE_HEADERS:
+            sanitized[k] = "[REDACTED]"
+        else:
+            sanitized[k] = v
+    return sanitized
+
+
 def _snapshot(response, status_code):
     snapshot = {"status_code": status_code, "headers": {}}
     try:
-        snapshot["headers"] = dict(getattr(response, "headers", {}) or {})
+        raw_headers = dict(getattr(response, "headers", {}) or {})
+        snapshot["headers"] = _redact_headers(raw_headers)
     except Exception:
         pass
     if hasattr(response, "json") and callable(response.json):
