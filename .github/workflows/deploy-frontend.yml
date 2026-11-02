@@ -59,6 +59,7 @@ jobs:
           aws s3 cp dist/index.html s3://${{ secrets.S3_FRONTEND_BUCKET }}/index.html --cache-control "no-cache, no-store, must-revalidate"
 
       - name: Invalidate CloudFront edge cache
+        if: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID != '' && secrets.CLOUDFRONT_DISTRIBUTION_ID != 'pending_aws_cloudfront_verification' }}
         run: |
           aws cloudfront create-invalidation \
             --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
