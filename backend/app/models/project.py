@@ -54,7 +54,10 @@ class ProjectMember(Base):
     """Composite-PK join table carrying the project-level RBAC role (`Security.md §2`)."""
 
     __tablename__ = "project_members"
-    __table_args__ = (CheckConstraint(check_in("role", ProjectRole), name="role_valid"),)
+    __table_args__ = (
+        CheckConstraint(check_in("role", ProjectRole), name="role_valid"),
+        Index("ix_project_members_user_id", "user_id"),
+    )
 
     project_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True

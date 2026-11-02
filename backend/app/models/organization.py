@@ -6,7 +6,7 @@ import datetime
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, ForeignKey, String, text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, TZDateTime, UUIDPrimaryKeyMixin, utcnow
@@ -38,7 +38,10 @@ class OrganizationMember(Base):
     """Composite-PK join table carrying the org-level RBAC role (`Security.md §2`)."""
 
     __tablename__ = "organization_members"
-    __table_args__ = (CheckConstraint(check_in("role", OrgRole), name="role_valid"),)
+    __table_args__ = (
+        CheckConstraint(check_in("role", OrgRole), name="role_valid"),
+        Index("ix_organization_members_user_id", "user_id"),
+    )
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True

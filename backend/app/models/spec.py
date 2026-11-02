@@ -38,6 +38,7 @@ class APISpec(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             name="confidence_score_range",
         ),
         Index("idx_api_specs_project_id", "project_id"),
+        Index("ix_api_specs_source_document_id", "source_document_id"),
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(

@@ -18,6 +18,7 @@ class TestRun(UUIDPrimaryKeyMixin, Base):
     __table_args__ = (
         CheckConstraint(check_in("environment", TestEnvironment), name="environment_valid"),
         Index("idx_test_runs_project_id", "project_id"),
+        Index("ix_test_runs_workflow_run_id", "workflow_run_id"),
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(
