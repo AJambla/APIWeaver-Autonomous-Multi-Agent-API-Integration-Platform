@@ -481,3 +481,31 @@ def test_public_address_classification(address: str, public: bool) -> None:
     from app.services.sandbox_service import _is_public_address
 
     assert _is_public_address(address) is public
+
+
+def test_pdf_magic_bytes_validation_rejects_spoofed_files():
+    from app.services.document_parser import extract_text
+    import pytest
+
+    # Disguised text file claiming to be a PDF
+    with pytest.raises(ValueError, match="missing %PDF- magic bytes signature"):
+        extract_text(b"Hello world, not a real PDF", "spoofed.pdf")
+
+
+def test_document_parser_rejects_executable_binaries():
+    from app.services.document_parser import extract_text
+    import pytest
+
+    # Windows PE executable header
+    with pytest.raises(ValueError, match="binary executable or control content detected"):
+        extract_text(b"MZ\x90\x00\x03\x00\x00\x00", "safe.html")
+
+    # ELF executable header
+    with pytest.raises(ValueError, match="binary executable or control content detected"):
+        extract_text(b"\x7fELF\x02\x01\x01\x00", "safe.txt")
+
+
+def test_pdf_extraction_limits():
+    from app.services.document_parser import MAX_PDF_PAGES, MAX_EXTRACTED_CHARS
+    assert MAX_PDF_PAGES == 100
+    assert MAX_EXTRACTED_CHARS == 500_000

@@ -8,6 +8,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+MAX_PDF_PAGES = 100
+MAX_EXTRACTED_CHARS = 500_000
+
+
 def extract_text(content: bytes, filename: str, content_type: str | None = None) -> str:
     """Extract text from document content based on file type.
 
@@ -20,6 +24,13 @@ def extract_text(content: bytes, filename: str, content_type: str | None = None)
         Extracted text content, or UTF-8 decode fallback on failure
     """
     suffix = Path(filename).suffix.lower()
+
+    if suffix == ".pdf":
+        if not content.startswith(b"%PDF-"):
+            raise ValueError("Invalid PDF: missing %PDF- magic bytes signature")
+    elif suffix in {".html", ".htm", ".md", ".markdown", ".txt", ".text"}:
+        if content.startswith(b"MZ") or content.startswith(b"\x7fELF") or b"\x00" in content[:1024]:
+            raise ValueError("Invalid document: binary executable or control content detected")
 
     try:
         if suffix == ".pdf":
@@ -39,6 +50,7 @@ def extract_text(content: bytes, filename: str, content_type: str | None = None)
         )
         if suffix == ".pdf":
             raise ValueError(f"Failed to extract readable text from PDF: {exc}") from exc
+        raise
 
     # Fallback: try UTF-8 decode for text documents only
     if suffix in {".html", ".htm", ".md", ".markdown", ".txt", ".text"}:
@@ -53,16 +65,30 @@ def _extract_pdf(content: bytes) -> str:
     """Extract text from PDF using pypdf."""
     from io import BytesIO
 
+    if not content.startswith(b"%PDF-"):
+        raise ValueError("Invalid PDF: missing %PDF- magic bytes signature")
+
     try:
         import pypdf
 
         pdf_file = BytesIO(content)
         reader = pypdf.PdfReader(pdf_file)
         text_parts = []
-        for page in reader.pages:
+        total_chars = 0
+        for idx, page in enumerate(reader.pages):
+            if idx >= MAX_PDF_PAGES:
+                logger.warning("pdf_extraction_page_limit_reached, limit=%d", MAX_PDF_PAGES)
+                break
             page_text = page.extract_text()
             if page_text:
+                if total_chars + len(page_text) > MAX_EXTRACTED_CHARS:
+                    remaining = MAX_EXTRACTED_CHARS - total_chars
+                    if remaining > 0:
+                        text_parts.append(page_text[:remaining])
+                    logger.warning("pdf_extraction_char_limit_reached, limit=%d", MAX_EXTRACTED_CHARS)
+                    break
                 text_parts.append(page_text)
+                total_chars += len(page_text)
         return "\n".join(text_parts)
     except Exception as exc:
         logger.warning("pdf_extraction_failed, error=%s", str(exc))
