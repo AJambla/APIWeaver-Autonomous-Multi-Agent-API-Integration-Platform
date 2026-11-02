@@ -29,6 +29,7 @@ from app.schemas.github import (
     GitHubReposResponse,
     GitHubStatusResponse,
 )
+from app.services import audit_service
 from app.services.crypto_service import (
     VaultClient,
     create_vault_client,
@@ -216,6 +217,15 @@ async def github_callback(
     # Clean up OAuth state
     await session.delete(oauth_state)
 
+    await audit_service.record(
+        session,
+        action="github.connected",
+        organization_id=None,
+        actor_user_id=connection.user_id,
+        resource_type="github_connection",
+        resource_id=str(connection.id),
+    )
+
     await session.commit()
     await session.refresh(connection)
     response.delete_cookie(OAUTH_STATE_COOKIE, path=OAUTH_STATE_COOKIE_PATH)
@@ -302,6 +312,14 @@ async def github_disconnect(
             await vault.delete_secret(connection.access_token_vault_path)
         if connection.refresh_token_vault_path:
             await vault.delete_secret(connection.refresh_token_vault_path)
+
+    await audit_service.record(
+        session,
+        action="github.disconnected",
+        **audit_service.actor(principal),
+        organization_id=principal.organization_id if principal else None,
+        resource_type="github_connection",
+    )
 
     await session.commit()
 

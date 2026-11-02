@@ -17,6 +17,7 @@ from app.models.organization import Organization
 from app.rbac.enforce import require_org_permission
 from app.rbac.policy import Permission, Principal
 from app.schemas.organization import RateLimitResponse, RateLimitUpdate
+from app.services import audit_service
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
@@ -61,6 +62,14 @@ async def set_rate_limit_override(
 
     org.rate_limit_override = payload.limit
     await session.flush()
+    await audit_service.record(
+        session,
+        action="organization.rate_limit_override_updated",
+        **audit_service.actor(_principal),
+        organization_id=org_id,
+        resource_type="organization",
+        resource_id=str(org_id),
+    )
 
     return RateLimitResponse(
         limit=org.rate_limit_override or _tier_limit(org.plan_tier),
@@ -83,6 +92,14 @@ async def remove_rate_limit_override(
     org = await _load_org(session, org_id)
     org.rate_limit_override = None
     await session.flush()
+    await audit_service.record(
+        session,
+        action="organization.rate_limit_override_removed",
+        **audit_service.actor(_principal),
+        organization_id=org_id,
+        resource_type="organization",
+        resource_id=str(org_id),
+    )
 
     return RateLimitResponse(
         limit=_tier_limit(org.plan_tier),

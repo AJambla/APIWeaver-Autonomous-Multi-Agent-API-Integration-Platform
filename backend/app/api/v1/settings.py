@@ -6,12 +6,13 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_db
+from app.core.deps import get_current_principal, get_db
 from app.models.project import Project
 from app.models.retry import RetryConfig
 from app.rbac.enforce import require_project_permission
-from app.rbac.policy import Permission
+from app.rbac.policy import Permission, Principal
 from app.schemas.retry import RetryPolicyRequest, RetryPolicyResponse
+from app.services import audit_service
 
 router = APIRouter(prefix="/projects/{id}/settings", tags=["project-settings"])
 
@@ -56,6 +57,7 @@ async def get_retry_policy(
 async def update_retry_policy(
     payload: RetryPolicyRequest,
     project: Project = Depends(require_project_permission(Permission.PROJECT_SETTINGS_WRITE)),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_db),
 ) -> RetryPolicyResponse:
     """Update (upsert) the retry policy for a project."""
@@ -72,6 +74,15 @@ async def update_retry_policy(
     retry_config.retryable_status_codes = payload.retryable_status_codes
 
     await session.flush()
+
+    await audit_service.record(
+        session,
+        action="project.retry_policy_updated",
+        **audit_service.actor(principal),
+        organization_id=project.organization_id,
+        resource_type="project_settings",
+        resource_id=str(project.id),
+    )
 
     return RetryPolicyResponse(
         max_attempts=retry_config.max_attempts,
