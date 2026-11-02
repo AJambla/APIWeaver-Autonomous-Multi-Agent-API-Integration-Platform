@@ -69,9 +69,11 @@ ANONYMOUS_REQUESTS_PER_MINUTE = 120
 # at a time) and invalid X-API-Key values, each of which used to get a fresh bucket.
 AUTH_FAILURES_PER_MINUTE = 30
 
-# Probes are polled constantly by the load balancer and carry no credential to attribute
-# to an org, so they are exempt (`Architecture.md §11`).
-EXEMPT_PATHS = frozenset({"/healthz", "/readyz", "/metrics"})
+# `/healthz` stays exempt: it is the ALB liveness target and touches no dependencies.
+# `/metrics` is exempt from IP limiting because it requires X-Metrics-Token in production.
+# `/readyz` is intentionally NOT exempt: it touches Postgres and Redis, so unauthenticated
+# flooding must be throttled to prevent connection pool exhaustion.
+EXEMPT_PATHS = frozenset({"/healthz", "/metrics"})
 
 
 @dataclass(frozen=True, slots=True)

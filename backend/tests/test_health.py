@@ -54,6 +54,21 @@ async def test_readyz_returns_503_when_a_dependency_is_down(
     assert body["checks"]["postgres"] == "ok"
 
 
+async def test_readyz_is_rate_limited_under_flood(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`/readyz` touches the database and Redis, so it must not be exempt from rate limits."""
+    from app.core.ratelimit import ANONYMOUS_REQUESTS_PER_MINUTE
+
+    monkeypatch.setattr("app.core.ratelimit._clock", lambda: 1_800_000_000.0)
+    statuses = []
+    for _ in range(ANONYMOUS_REQUESTS_PER_MINUTE + 1):
+        res = await client.get("/readyz")
+        statuses.append(res.status_code)
+
+    assert statuses[-1] == 429, statuses[-5:]
+
+
 async def test_request_id_is_generated_and_echoed(client: AsyncClient) -> None:
     response = await client.get("/healthz")
     assert response.headers["X-Request-ID"].startswith("req_")
