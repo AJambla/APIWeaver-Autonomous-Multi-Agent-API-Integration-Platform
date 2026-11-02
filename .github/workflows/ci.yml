@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 # Default to read-only permissions across the workflow (audit M9).
 # Specific jobs override permissions when publishing packages or security events.
