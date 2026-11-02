@@ -126,6 +126,14 @@ class FakeRedis:
     def pipeline(self) -> FakePipeline:
         return FakePipeline(self)
 
+    async def delete(self, *keys: str) -> int:
+        count = 0
+        for k in keys:
+            if k in self._store:
+                del self._store[k]
+                count += 1
+        return count
+
     async def aclose(self) -> None:
         self._store.clear()
 

@@ -134,6 +134,7 @@ async def dispatch_run(
     if uses_celery(settings, requested_mode):
         last_exc: Exception | None = None
         max_attempts = 3
+        celery_task_id = f"run_workflow:{run_id}:{uuid.uuid4().hex[:12]}"
         for attempt in range(max_attempts):
             try:
                 await celery_client.send_task(
@@ -142,8 +143,13 @@ async def dispatch_run(
                     args=[str(run_id), portable_state(state), post_run],
                     # Unique per dispatch: an approval resumes the same run id, and a reused
                     # task id would return the first dispatch's cached result.
-                    task_id=f"run_workflow:{run_id}:{uuid.uuid4().hex[:12]}",
+                    task_id=celery_task_id,
                 )
+                if redis_client is not None:
+                    try:
+                        await redis_client.set(f"workflow:celery_task:{run_id}", celery_task_id, ex=86400)
+                    except Exception:
+                        pass
                 return
             except Exception as exc:
                 last_exc = exc

@@ -361,6 +361,20 @@ async def cancel_workflow_run(
     run.completed_at = datetime.datetime.now(datetime.UTC)
     await session.flush()
 
+    # Revoke active Celery task if present to avoid wasting worker token budget
+    try:
+        task_id = await redis_client.get(f"workflow:celery_task:{run.id}")
+        if task_id:
+            if isinstance(task_id, bytes):
+                task_id = task_id.decode("utf-8")
+            from app.core import celery_client
+            from app.core.config import get_settings
+
+            await celery_client.revoke_task(get_settings(), task_id)
+            await redis_client.delete(f"workflow:celery_task:{run.id}")
+    except Exception as exc:
+        logger.warning("celery_revoke_failed", run_id=str(run.id), error=str(exc))
+
     await audit_service.record(
         session,
         action="workflow.cancelled",

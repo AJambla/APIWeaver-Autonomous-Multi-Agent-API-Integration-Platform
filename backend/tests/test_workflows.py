@@ -86,6 +86,44 @@ async def test_cancel_workflow(
     assert cancel_res.json()["status"] == WorkflowStatus.CANCELLED
 
 
+async def test_cancel_workflow_revokes_celery_task(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    fake_redis: FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id, _, headers = await _setup_project(client)
+    import uuid
+
+    async with session_factory() as session:
+        run = WorkflowRun(
+            project_id=uuid.UUID(project_id),
+            status=WorkflowStatus.RUNNING,
+        )
+        session.add(run)
+        await session.commit()
+        run_id = str(run.id)
+
+    # Seed celery task in redis
+    await fake_redis.set(f"workflow:celery_task:{run_id}", "run_workflow:test_task_123")
+
+    revoked_tasks = []
+    from app.core import celery_client
+
+    async def fake_revoke(settings, task_id):
+        revoked_tasks.append(task_id)
+
+    monkeypatch.setattr(celery_client, "revoke_task", fake_revoke)
+
+    cancel_res = await client.post(f"/api/v1/workflows/{run_id}/cancel", headers=headers)
+    assert cancel_res.status_code == 200
+    assert cancel_res.json()["status"] == WorkflowStatus.CANCELLED
+    assert len(revoked_tasks) == 1
+    assert revoked_tasks[0] == "run_workflow:test_task_123" 
+    # Key should be cleaned up
+    assert await fake_redis.get(f"workflow:celery_task:{run_id}") is None
+
+
 async def test_orchestrator_agent_nodes(
     session_factory: async_sessionmaker[AsyncSession], monkeypatch
 ) -> None:

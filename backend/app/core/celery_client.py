@@ -48,3 +48,11 @@ async def send_task(
     await asyncio.to_thread(
         producer.send_task, name, args=args, task_id=task_id, headers=headers
     )
+
+
+async def revoke_task(settings: Settings, task_id: str) -> None:
+    """Broadcast task revocation and termination to workers."""
+    producer = get_producer(settings.celery_broker_url)
+    await asyncio.to_thread(
+        producer.control.revoke, task_id, terminate=True, signal="SIGTERM"
+    )
