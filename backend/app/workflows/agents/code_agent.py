@@ -856,9 +856,9 @@ async def run_code_agent(
         # Build repair prompt
         repair_prompt = REPAIR_SYSTEM_PROMPT.format(
             file_content=fence_untrusted("FILE CONTENT", file_content),
-            method=failure_diagnosis.get("method", ""),
-            path=failure_diagnosis.get("path", ""),
-            error=failure_diagnosis.get("error", "Unknown test failure"),
+            method=fence_untrusted("METHOD", failure_diagnosis.get("method", "")),
+            path=fence_untrusted("PATH", failure_diagnosis.get("path", "")),
+            error=fence_untrusted("ERROR", failure_diagnosis.get("error", "Unknown test failure")),
             stack_trace=fence_untrusted("STACK TRACE", failure_diagnosis.get("stack_trace") or "None"),
             request_snapshot=fence_untrusted(
                 "REQUEST DATA", json.dumps(failure_diagnosis.get("request_snapshot", {}))

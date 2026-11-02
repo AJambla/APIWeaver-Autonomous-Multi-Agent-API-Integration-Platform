@@ -137,8 +137,8 @@ async def generate_test_fixtures(spec: dict[str, Any] | list[Any], llm_client: L
             params = []
 
         prompt = TEST_FIXTURE_GENERATION_PROMPT.format(
-            method=method,
-            path=path,
+            method=fence_untrusted("METHOD", method),
+            path=fence_untrusted("PATH", path),
             request_schema=fence_untrusted(
                 "REQUEST SCHEMA", json.dumps(req_schema, indent=2)
             ),

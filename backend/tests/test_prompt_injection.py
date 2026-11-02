@@ -272,3 +272,24 @@ async def test_object_replies_still_pass_through(monkeypatch):
 
     assert parsed == {"files": {}}
     assert tokens == 11
+
+
+async def test_test_agent_fixtures_prompt_fences_method_and_path():
+    from app.workflows.agents.test_agent import generate_test_fixtures
+    llm = RecordingLLM({"fixture": {}})
+    spec = {
+        "endpoints": [
+            {
+                "method": "POST",
+                "path": f"/orders/{SENTINEL_DOC}",
+                "operationId": "createOrder",
+                "request_schema": {},
+                "response_schemas": {},
+                "parameters": [],
+            }
+        ]
+    }
+    await generate_test_fixtures(spec, llm)
+    assert len(llm.calls) > 0
+    _, user_prompt = llm.calls[0]
+    assert fenced(user_prompt, SENTINEL_DOC)
