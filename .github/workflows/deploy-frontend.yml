@@ -1,9 +1,10 @@
-name: Deploy Frontend to S3 & CloudFront
+name: Deploy Frontend to Azure Static Web Apps
 
 on:
   push:
     branches: [main]
     paths:
+      - 'Frontend/**'
       - 'frontend/**'
       - '.github/workflows/deploy-frontend.yml'
   workflow_dispatch:
@@ -13,27 +14,22 @@ permissions:
 
 jobs:
   deploy-frontend:
-    name: Build & Deploy Frontend SPA
+    name: Build & Deploy Frontend to Azure SWA
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
+      - name: Build And Deploy to Azure Static Web Apps
+        uses: Azure/static-web-apps-deploy@v1
         with:
-          node-version: 22
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci --legacy-peer-deps
-
-      - name: Build Vite SPA for production
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: "Frontend"
+          output_location: "dist"
+          app_build_command: "npm run build"
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
           VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
@@ -42,26 +38,3 @@ jobs:
           VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
           VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
-        run: npm run build
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
-
-      - name: Sync static assets to S3 Frontend bucket
-        run: |
-          aws s3 sync dist/ s3://${{ secrets.S3_FRONTEND_BUCKET }} --delete --cache-control "public, max-age=31536000, immutable" --exclude "index.html"
-          aws s3 cp dist/index.html s3://${{ secrets.S3_FRONTEND_BUCKET }}/index.html --cache-control "no-cache, no-store, must-revalidate"
-
-      - name: Invalidate CloudFront edge cache
-        env:
-          DIST_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
-        run: |
-          if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "pending_aws_cloudfront_verification" ]; then
-            aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
-          else
-            echo "CloudFront CDN is pending AWS verification or not set. Skipping cache invalidation."
-          fi
