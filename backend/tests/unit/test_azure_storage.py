@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from azure.core.exceptions import ResourceNotFoundError
 
 from app.core.config import Settings
