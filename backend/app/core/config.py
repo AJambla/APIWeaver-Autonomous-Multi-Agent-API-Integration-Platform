@@ -449,6 +449,6 @@ def production_config_problems(settings: Settings) -> list[str]:
         problems.append("METRICS_TOKEN is a placeholder or shorter than 24 characters.")
     if not settings.app_encryption_key or settings.app_encryption_key in _PLACEHOLDER_SECRETS:
         problems.append("APP_ENCRYPTION_KEY is unset or a development placeholder.")
-    if settings.storage_backend == "s3" and settings.aws_access_key_id in _PLACEHOLDER_SECRETS:
+    if settings.aws_access_key_id in _PLACEHOLDER_SECRETS:
         problems.append("AWS_ACCESS_KEY_ID is the MinIO default credential.")
     return problems
