@@ -75,13 +75,18 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     qdrant_collection_name: str = "apiweaver_docs"
 
-    # --- S3 / MinIO (required by §9; unused until Phase 2) --------------------
+    # --- Object Storage (S3 / Azure Blob / Local) -----------------------------
     s3_bucket_uploads: str = "apiweaver-uploads"
     s3_bucket_artifacts: str = "apiweaver-artifacts"
     s3_endpoint_url: str | None = None
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
-    storage_backend: str = "local"  # "local" (default for dev) or "s3" (production)
+    azure_storage_connection_string: str | None = None
+    azure_storage_account_name: str | None = None
+    azure_storage_account_key: str | None = None
+    azure_storage_container_artifacts: str = "artifacts"
+    azure_storage_container_uploads: str = "uploads"
+    storage_backend: str = "local"  # "local" (default for dev), "s3", or "azure"
     storage_local_dir: str = "./storage"
 
     # --- Secrets & Crypto ----------------------------------------------------
