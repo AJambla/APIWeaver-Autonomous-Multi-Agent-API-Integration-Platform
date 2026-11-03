@@ -100,9 +100,9 @@ jobs:
 
           # Command executed remotely on the Azure VM host
           DEPLOY_CMD="cd /opt/apiweaver && \
-            docker compose -f docker-compose.prod.yml pull api agent-worker && \
-            docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head && \
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans"
+            docker compose --env-file .env.prod -f docker-compose.prod.yml pull api agent-worker && \
+            docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm api alembic upgrade head && \
+            docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --remove-orphans"
 
           az vm run-command invoke \
             --resource-group "$RG_NAME" \
