@@ -51,6 +51,27 @@ services:
       retries: 5
 
   # ----------------------------------------------------------------------------
+  # 2b. PostgreSQL 16 Relational Database (Internal network, persistent volume)
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: apiweaver-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-apiweaver}
+      POSTGRES_USER: ${POSTGRES_USER:-apiweaver_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - apiweaver-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-apiweaver_admin} -d $${POSTGRES_DB:-apiweaver}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
   # 3. Backend API Service (FastAPI async Python 3.12, Uvicorn x2)
   # ----------------------------------------------------------------------------
   api:
@@ -63,6 +84,8 @@ services:
       - ./secrets:/app/secrets:ro
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     networks:
       - apiweaver-net
@@ -93,6 +116,8 @@ services:
       - CELERY_WORKER_CONCURRENCY=2
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
       docker-socket-proxy:
         condition: service_started
@@ -146,3 +171,4 @@ networks:
 
 volumes:
   redis_data:
+  pgdata:

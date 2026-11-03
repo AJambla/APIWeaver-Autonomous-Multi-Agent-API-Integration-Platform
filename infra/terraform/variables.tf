@@ -13,7 +13,7 @@ variable "environment" {
 variable "azure_region" {
   description = "Target Azure region for all regional resources"
   type        = string
-  default     = "centralindia"
+  default     = "indiasouthcentral"
 }
 
 variable "vm_size" {

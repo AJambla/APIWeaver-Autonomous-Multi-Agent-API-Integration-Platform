@@ -4,8 +4,8 @@ output "vm_public_ip" {
 }
 
 output "postgres_fqdn" {
-  description = "Fully qualified domain name of the PostgreSQL Flexible Server"
-  value       = azurerm_postgresql_flexible_server.postgres.fqdn
+  description = "Fully qualified domain name or Docker service name of the PostgreSQL server"
+  value       = "postgres"
 }
 
 output "postgres_admin_username" {
@@ -15,7 +15,7 @@ output "postgres_admin_username" {
 
 output "postgres_admin_password" {
   description = "PostgreSQL administrator login password"
-  value       = azurerm_postgresql_flexible_server.postgres.administrator_password
+  value       = var.db_admin_password != "" ? var.db_admin_password : random_password.db_password.result
   sensitive   = true
 }
 

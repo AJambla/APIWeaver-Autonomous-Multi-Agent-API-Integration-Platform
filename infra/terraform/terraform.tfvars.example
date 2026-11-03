@@ -5,8 +5,8 @@
 app_name    = "apiweaver"
 environment = "production"
 
-# Azure region (centralindia, eastus, westeurope, etc.)
-azure_region = "centralindia"
+# Azure region (indiasouthcentral, eastasia, uaenorth, etc.)
+azure_region = "indiasouthcentral"
 
 # VM Size (Standard_B2als_v2 = 2 vCPU, 2 GB RAM AMD64)
 vm_size = "Standard_B2als_v2"

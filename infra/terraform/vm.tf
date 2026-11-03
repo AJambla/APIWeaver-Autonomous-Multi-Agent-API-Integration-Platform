@@ -45,19 +45,3 @@ resource "azurerm_role_assignment" "blob_contributor" {
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_linux_virtual_machine.host.identity[0].principal_id
 }
-
-# Nightly Auto-Shutdown Schedule: Deallocates VM at midnight to save ~50% of student credits
-resource "azurerm_dev_test_global_vm_shutdown_schedule" "auto_shutdown" {
-  virtual_machine_id = azurerm_linux_virtual_machine.host.id
-  location           = azurerm_resource_group.rg.location
-  enabled            = var.auto_shutdown_enabled
-
-  daily_recurrence_time = var.auto_shutdown_time
-  timezone              = var.auto_shutdown_timezone
-
-  notification_settings {
-    enabled = false
-  }
-
-  tags = azurerm_resource_group.rg.tags
-}

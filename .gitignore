@@ -141,8 +141,11 @@ Desktop.ini
 # Terraform
 .terraform/
 *.tfstate
-*.tfstate.backup
+*.tfstate.*
 *.tfplan
+tfplan
+*.tfvars
+!*.tfvars.example
 .terraform.lock.hcl
 
 # Skills & Codebase Intelligence
