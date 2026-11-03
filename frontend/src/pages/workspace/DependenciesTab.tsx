@@ -1103,7 +1103,7 @@ export const DependenciesTab: React.FC<DependenciesTabProps> = ({
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-400">Vault Integration</span>
                     <span className="text-emerald-400 font-medium flex items-center gap-1">
-                      <ShieldCheck className="h-3.5 w-3.5" /> Ready for AWS KMS
+                      <ShieldCheck className="h-3.5 w-3.5" /> Ready for Azure Key Vault
                     </span>
                   </div>
                 </div>

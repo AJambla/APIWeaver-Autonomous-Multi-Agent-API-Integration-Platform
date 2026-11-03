@@ -66,16 +66,19 @@ repair_attempts_total = Counter(
 )
 
 s3_upload_bytes_total = Counter(
-    "apiweaver_s3_upload_bytes_total",
-    "Total bytes uploaded to S3/MinIO",
+    "apiweaver_storage_upload_bytes_total",
+    "Total bytes uploaded to object storage (Azure Blob / S3 / MinIO)",
     registry=registry,
 )
 
 s3_download_bytes_total = Counter(
-    "apiweaver_s3_download_bytes_total",
-    "Total bytes downloaded from S3/MinIO",
+    "apiweaver_storage_download_bytes_total",
+    "Total bytes downloaded from object storage (Azure Blob / S3 / MinIO)",
     registry=registry,
 )
+
+storage_upload_bytes_total = s3_upload_bytes_total
+storage_download_bytes_total = s3_download_bytes_total
 
 llm_tokens_spent_total = Counter(
     "apiweaver_llm_tokens_spent_total",

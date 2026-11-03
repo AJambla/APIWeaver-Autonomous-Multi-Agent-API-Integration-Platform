@@ -279,6 +279,7 @@ class AsyncAzureBlobStorage:
             overwrite=True,
             content_settings=ContentSettings(content_type=content_type),
         )
+        s3_upload_bytes_total.inc(len(content))
 
     @_azure_retry
     async def delete(self, *, key: str, bucket: str | None = None) -> None:
@@ -310,6 +311,7 @@ class AsyncAzureBlobStorage:
         result = await self.get(key=key, bucket=bucket)
         if result is None:
             raise FileNotFoundError(f"Object not found: {key}")
+        s3_download_bytes_total.inc(len(result))
         return result
 
     async def ping(self) -> bool:
@@ -365,6 +367,7 @@ class LocalFileSystemObjectStorage:
         result = await self.get(key=key, bucket=bucket)
         if result is None:
             raise FileNotFoundError(f"Object not found: {key}")
+        s3_download_bytes_total.inc(len(result))
         return result
 
 

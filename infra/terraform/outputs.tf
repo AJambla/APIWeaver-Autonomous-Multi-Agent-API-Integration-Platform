@@ -1,49 +1,47 @@
-output "frontend_cloudfront_url" {
-  description = "Public URL for the APIWeaver React Frontend (CloudFront Edge)"
-  value       = var.enable_cloudfront ? "https://${aws_cloudfront_distribution.frontend[0].domain_name}" : "pending_aws_cloudfront_verification"
+output "vm_public_ip" {
+  description = "Public IP address of the APIWeaver host VM"
+  value       = azurerm_public_ip.vm_ip.ip_address
 }
 
-output "cloudfront_distribution_id" {
-  description = "CloudFront Distribution ID for CI/CD cache invalidation"
-  value       = var.enable_cloudfront ? aws_cloudfront_distribution.frontend[0].id : "pending_aws_cloudfront_verification"
+output "postgres_fqdn" {
+  description = "Fully qualified domain name of the PostgreSQL Flexible Server"
+  value       = azurerm_postgresql_flexible_server.postgres.fqdn
 }
 
-output "frontend_s3_bucket" {
-  description = "S3 bucket name for syncing compiled Frontend static build assets"
-  value       = aws_s3_bucket.frontend.id
+output "postgres_admin_username" {
+  description = "PostgreSQL administrator login username"
+  value       = var.db_admin_username
 }
 
-output "artifacts_s3_bucket" {
-  description = "S3 bucket name for uploaded API specs and generated SDK artifact bundles"
-  value       = aws_s3_bucket.artifacts.id
+output "postgres_admin_password" {
+  description = "PostgreSQL administrator login password"
+  value       = azurerm_postgresql_flexible_server.postgres.administrator_password
+  sensitive   = true
 }
 
-output "api_elastic_ip" {
-  description = "Static Public IP of the API & Worker EC2 host (Point your api.domain.com DNS A record here)"
-  value       = aws_eip.app_ip.public_ip
+output "storage_account_name" {
+  description = "Name of the Azure Storage Account"
+  value       = azurerm_storage_account.sa.name
 }
 
-output "ec2_instance_id" {
-  description = "EC2 Instance ID for AWS SSM commands and CI/CD automated deployments"
-  value       = aws_instance.app_host.id
+output "artifacts_container_name" {
+  description = "Name of the artifacts blob container"
+  value       = azurerm_storage_container.artifacts.name
 }
 
-output "rds_endpoint" {
-  description = "Private RDS PostgreSQL endpoint (accessible only from inside the VPC / EC2 host)"
-  value       = aws_db_instance.postgres.endpoint
+output "static_web_app_url" {
+  description = "Default URL for the Azure Static Web App frontend"
+  value       = "https://${azurerm_static_web_app.frontend.default_host_name}"
 }
 
-output "rds_address" {
-  description = "Private RDS PostgreSQL hostname"
-  value       = aws_db_instance.postgres.address
+output "static_web_app_api_key" {
+  description = "Deployment token for Azure Static Web Apps (Set as AZURE_STATIC_WEB_APPS_API_TOKEN in GitHub Secrets)"
+  value       = azurerm_static_web_app.frontend.api_key
+  sensitive   = true
 }
 
-output "rds_master_secret_arn" {
-  description = "AWS Secrets Manager ARN storing the auto-managed RDS master password"
-  value       = aws_db_instance.postgres.master_user_secret[0].secret_arn
-}
-
-output "ssm_connect_command" {
-  description = "Command to open an interactive secure terminal on the EC2 host without SSH keys or open port 22"
-  value       = "aws ssm start-session --target ${aws_instance.app_host.id}"
+output "ssh_private_key" {
+  description = "Auto-generated private key for SSH access (if no key was provided)"
+  value       = var.ssh_public_key == "" ? tls_private_key.vm_ssh[0].private_key_pem : "User-provided key"
+  sensitive   = true
 }

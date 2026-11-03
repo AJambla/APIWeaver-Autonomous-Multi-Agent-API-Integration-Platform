@@ -1,37 +1,25 @@
 terraform {
   required_version = ">= 1.5.0"
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.5"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
     }
   }
 }
 
-provider "aws" {
-  region = var.aws_region
-
-  default_tags {
-    tags = {
-      Project     = "APIWeaver"
-      Environment = var.environment
-      ManagedBy   = "Terraform"
-      Profile     = "SweetSpot"
-    }
-  }
-}
-
-# CloudFront viewer certificates and WAF must reside in us-east-1
-provider "aws" {
-  alias  = "us_east_1"
-  region = "us-east-1"
-
-  default_tags {
-    tags = {
-      Project     = "APIWeaver"
-      Environment = var.environment
-      ManagedBy   = "Terraform"
-      Profile     = "SweetSpot"
+provider "azurerm" {
+  features {
+    resource_group {
+      prevent_deletion_if_contains_resources = false
     }
   }
 }

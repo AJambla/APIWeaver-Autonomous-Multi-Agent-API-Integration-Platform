@@ -1,71 +1,72 @@
-variable "aws_region" {
-  description = "AWS region for resources (Asia Pacific Mumbai: ap-south-1)"
+variable "app_name" {
+  description = "Base application name used for resource naming"
   type        = string
-  default     = "ap-south-1"
+  default     = "apiweaver"
 }
 
 variable "environment" {
-  description = "Deployment environment name (e.g., production, staging)"
+  description = "Deployment environment (production, staging, dev)"
   type        = string
   default     = "production"
 }
 
-variable "app_name" {
-  description = "Application name prefix"
+variable "azure_region" {
+  description = "Target Azure region for all regional resources"
   type        = string
-  default     = "apiweaver"
+  default     = "centralindia"
 }
 
-variable "ec2_instance_type" {
-  description = "EC2 instance size for Docker Compose host (Graviton ARM64 recommended: t4g.small)"
+variable "vm_size" {
+  description = "Azure VM SKU size (Standard_B2als_v2 recommended for student plan: 2 vCPU, 2 GB RAM AMD64)"
   type        = string
-  default     = "t4g.small"
+  default     = "Standard_B2als_v2"
 }
 
-variable "ec2_volume_size" {
-  description = "Root EBS gp3 volume size in GB"
-  type        = number
-  default     = 25
-}
-
-variable "rds_instance_class" {
-  description = "RDS PostgreSQL instance type (db.t4g.micro is Free Tier eligible)"
+variable "admin_username" {
+  description = "Administrator username for the Linux VM"
   type        = string
-  default     = "db.t4g.micro"
+  default     = "azureuser"
 }
 
-variable "rds_allocated_storage" {
-  description = "RDS allocated storage in GB (Free tier limit is 20 GB)"
-  type        = number
-  default     = 20
+variable "ssh_public_key" {
+  description = "Optional SSH public key for direct VM access. If omitted, an ed25519 key will be generated."
+  type        = string
+  default     = ""
 }
 
 variable "db_name" {
-  description = "Initial PostgreSQL database name"
+  description = "PostgreSQL initial database name"
   type        = string
   default     = "apiweaver"
 }
 
-variable "db_username" {
-  description = "PostgreSQL master username"
+variable "db_admin_username" {
+  description = "PostgreSQL administrator login username"
   type        = string
   default     = "apiweaver_admin"
 }
 
-variable "domain_name" {
-  description = "Optional custom domain name (e.g. yourdomain.com). If empty, default CloudFront URL is used."
+variable "db_admin_password" {
+  description = "PostgreSQL administrator password. If left blank, a random secure password will be generated."
   type        = string
   default     = ""
+  sensitive   = true
 }
 
-variable "acm_certificate_arn" {
-  description = "Optional ACM certificate ARN in us-east-1 for custom domain on CloudFront"
-  type        = string
-  default     = ""
-}
-
-variable "enable_cloudfront" {
-  description = "Enable CloudFront CDN distribution for frontend (set false if AWS account is pending CloudFront verification)"
+variable "auto_shutdown_enabled" {
+  description = "Whether to automatically shut down the VM nightly to save student credits"
   type        = bool
-  default     = false
+  default     = true
+}
+
+variable "auto_shutdown_time" {
+  description = "24-hour time for nightly VM auto-shutdown (HHmm format)"
+  type        = string
+  default     = "0000"
+}
+
+variable "auto_shutdown_timezone" {
+  description = "Timezone for VM auto-shutdown"
+  type        = string
+  default     = "India Standard Time"
 }

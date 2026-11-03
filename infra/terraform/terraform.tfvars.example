@@ -1,22 +1,31 @@
 # ==============================================================================
-# APIWeaver Sweet Spot Deployment - Example Variable Configuration
+# APIWeaver Azure for Students Terraform Variables Example
 # ==============================================================================
 
-aws_region  = "ap-south-1"
-environment = "production"
 app_name    = "apiweaver"
+environment = "production"
 
-# Compute: t4g.small (Graviton ARM64 - 2 vCPU, 2 GB RAM)
-ec2_instance_type = "t4g.small"
-ec2_volume_size   = 25
+# Azure region (centralindia, eastus, westeurope, etc.)
+azure_region = "centralindia"
 
-# Database: db.t4g.micro (PostgreSQL 16 - Free Tier Eligible)
-rds_instance_class    = "db.t4g.micro"
-rds_allocated_storage = 20
-db_name               = "apiweaver"
-db_username           = "apiweaver_admin"
+# VM Size (Standard_B2als_v2 = 2 vCPU, 2 GB RAM AMD64)
+vm_size = "Standard_B2als_v2"
 
-# (Optional) Custom Domain Configuration:
-# Leave domain_name empty to use the default CloudFront URL and Elastic IP directly.
-# domain_name         = "app.yourdomain.com"
-# acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/your-cert-id"
+# VM Admin Username
+admin_username = "azureuser"
+
+# Optional: paste your public SSH key here (e.g., "ssh-ed25519 AAAAC3...").
+# If left blank, Terraform will generate a new ED25519 keypair for you.
+ssh_public_key = ""
+
+# PostgreSQL Flexible Database
+db_name           = "apiweaver"
+db_admin_username = "apiweaver_admin"
+
+# If left blank, a random 24-character secure password is generated
+db_admin_password = ""
+
+# Auto-Shutdown Schedule (Saves ~50% of student credits by pausing VM at night)
+auto_shutdown_enabled  = true
+auto_shutdown_time     = "0000" # Midnight
+auto_shutdown_timezone = "India Standard Time"

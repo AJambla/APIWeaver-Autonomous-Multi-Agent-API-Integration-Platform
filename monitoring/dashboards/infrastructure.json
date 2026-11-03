@@ -33,12 +33,12 @@
       },
       {
         "id": 3,
-        "title": "RDS Connections",
+        "title": "PostgreSQL Database Connections",
         "type": "timeseries",
         "targets": [
           {
-            "expr": "aws_rds_database_connections",
-            "legendFormat": "{{DBInstanceIdentifier}}"
+            "expr": "postgres_database_connections",
+            "legendFormat": "{{server}}"
           }
         ],
         "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
@@ -57,12 +57,12 @@
       },
       {
         "id": 5,
-        "title": "S3 Request Metrics",
+        "title": "Blob Storage Request Metrics",
         "type": "timeseries",
         "targets": [
           {
-            "expr": "sum(rate(aws_s3_requests_total[5m])) by (bucket, type)",
-            "legendFormat": "{{bucket}} {{type}}"
+            "expr": "sum(rate(storage_requests_total[5m])) by (container, type)",
+            "legendFormat": "{{container}} {{type}}"
           }
         ],
         "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 }
