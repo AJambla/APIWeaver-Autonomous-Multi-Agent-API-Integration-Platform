@@ -171,7 +171,6 @@ async function authorizedFetch(endpoint: string, options: RequestInit = {}): Pro
   }
   authorize(sessionStorage.getItem('access_token'));
 
-  const apiOrigin = getApiOrigin();
   const isSameHost = url.startsWith(window.location.origin);
   const response = await fetch(url, { credentials: sameOrigin ? (isSameHost ? 'same-origin' : 'include') : undefined, ...options, headers });
   const isAuthCall = endpoint.includes('/auth/login') || endpoint.includes('/auth/refresh');
