@@ -1,5 +1,13 @@
 const API_PREFIX = (import.meta.env?.VITE_API_URL as string | undefined)?.replace(/\/+$/, '') || '/api/v1';
 
+function getApiOrigin(): string {
+  try {
+    return new URL(API_PREFIX, window.location.origin).origin;
+  } catch {
+    return window.location.origin;
+  }
+}
+
 /** The refresh in flight, shared by every caller in this tab.
  *
  * Refresh tokens are single use, and the backend revokes the whole token family when one
@@ -25,12 +33,16 @@ export class SessionExpiredError extends Error {
 
 async function rotateTokens(): Promise<string> {
   // A network error propagates as-is (not a SessionExpiredError): the session survives it.
-  // Refresh token is maintained securely in HttpOnly cookie to mitigate XSS theft.
+  // Refresh token is maintained securely in HttpOnly cookie to mitigate XSS theft,
+  // with fallback to stored token for cross-origin setups.
+  const apiOrigin = getApiOrigin();
+  const isSameHost = apiOrigin === window.location.origin;
+  const storedRefreshToken = sessionStorage.getItem('refresh_token');
   const refreshResponse = await fetch(`${API_PREFIX}/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({}),
+    credentials: isSameHost ? 'same-origin' : 'include',
+    body: JSON.stringify(storedRefreshToken ? { refresh_token: storedRefreshToken } : {}),
   });
   if ([400, 401, 403].includes(refreshResponse.status)) {
     throw new SessionExpiredError();
@@ -104,7 +116,9 @@ export function resolveEndpoint(endpoint: string): { url: string; sameOrigin: bo
       : `${API_PREFIX}${endpoint}`;
   try {
     const url = new URL(candidate, window.location.origin);
-    return { url: url.href, sameOrigin: url.origin === window.location.origin };
+    const apiOrigin = getApiOrigin();
+    const isTrusted = url.origin === window.location.origin || url.origin === apiOrigin;
+    return { url: url.href, sameOrigin: isTrusted };
   } catch {
     // An address this unparsable is not one to hand a token to.
     return { url: candidate, sameOrigin: false };
@@ -157,14 +171,16 @@ async function authorizedFetch(endpoint: string, options: RequestInit = {}): Pro
   }
   authorize(sessionStorage.getItem('access_token'));
 
-  const response = await fetch(url, { credentials: sameOrigin ? 'same-origin' : undefined, ...options, headers });
+  const apiOrigin = getApiOrigin();
+  const isSameHost = url.startsWith(window.location.origin);
+  const response = await fetch(url, { credentials: sameOrigin ? (isSameHost ? 'same-origin' : 'include') : undefined, ...options, headers });
   const isAuthCall = endpoint.includes('/auth/login') || endpoint.includes('/auth/refresh');
   if (response.status !== 401 || isAuthCall || !sameOrigin) {
     return response;
   }
 
   authorize(await refreshAccessToken());
-  const retry = await fetch(url, { credentials: sameOrigin ? 'same-origin' : undefined, ...options, headers });
+  const retry = await fetch(url, { credentials: sameOrigin ? (isSameHost ? 'same-origin' : 'include') : undefined, ...options, headers });
   if (retry.status === 401) {
     clearSessionAndRedirect();
   }

@@ -90,12 +90,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const retrySession = () => setSessionCheck((n) => n + 1);
 
+  const storeTokens = (tokens: AuthTokens) => {
+    sessionStorage.setItem('access_token', tokens.access_token);
+    if (tokens.refresh_token) {
+      sessionStorage.setItem('refresh_token', tokens.refresh_token);
+    }
+  };
+
   const login = async (email: string, password: string) => {
     const tokens = await apiFetch<AuthTokens>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-    sessionStorage.setItem('access_token', tokens.access_token);
+    storeTokens(tokens);
     const me = await apiFetch<MeResponse>('/auth/me');
     setCurrentUser(me);
   };
@@ -114,7 +121,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         organization_name: resolvedOrgName,
       }),
     });
-    sessionStorage.setItem('access_token', tokens.access_token);
+    storeTokens(tokens);
     const me = await apiFetch<MeResponse>('/auth/me');
     setCurrentUser(me);
   };
@@ -129,7 +136,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       method: 'POST',
       body: JSON.stringify({ id_token: idToken }),
     });
-    sessionStorage.setItem('access_token', tokens.access_token);
+    storeTokens(tokens);
     const me = await apiFetch<MeResponse>('/auth/me');
     setCurrentUser(me);
   };
@@ -148,7 +155,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       method: 'POST',
       body: JSON.stringify({ id_token: idToken }),
     });
-    sessionStorage.setItem('access_token', tokens.access_token);
+    storeTokens(tokens);
     const me = await apiFetch<MeResponse>('/auth/me');
     setCurrentUser(me);
     return { needsVerification: false };
