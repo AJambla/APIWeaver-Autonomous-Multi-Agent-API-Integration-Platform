@@ -166,3 +166,9 @@ Project-docs/
 project-docs/
 .archify/
 
+
+scripts/_run_remote_bootstrap.sh
+
+
+scripts/bootstrap_azure_vm.py
+

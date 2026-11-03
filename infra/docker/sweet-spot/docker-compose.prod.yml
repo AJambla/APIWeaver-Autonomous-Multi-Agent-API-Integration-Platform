@@ -74,6 +74,23 @@ services:
       retries: 5
 
   # ----------------------------------------------------------------------------
+  # 2c. Qdrant Vector Database (Self-hosted RAG/embeddings store in Hyderabad)
+  # ----------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    container_name: apiweaver-qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - apiweaver-net
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
   # 3. Backend API Service (FastAPI async Python 3.12, Uvicorn x2)
   # ----------------------------------------------------------------------------
   api:
@@ -88,6 +105,8 @@ services:
       redis:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     networks:
       - apiweaver-net
@@ -120,6 +139,8 @@ services:
       redis:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
       docker-socket-proxy:
         condition: service_started
@@ -174,3 +195,4 @@ networks:
 volumes:
   redis_data:
   pgdata:
+  qdrant_data:
