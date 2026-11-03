@@ -1,0 +1,52 @@
+#cloud-config
+# APIWeaver Host Bootstrapper (Ubuntu 24.04 LTS AMD64 on Azure Standard_B2als_v2)
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - git
+  - unzip
+  - jq
+
+runcmd:
+  # 1. Configure 3 GB swap file for memory safety on burstable VM
+  - |
+    if [ ! -f /swapfile ]; then
+      fallocate -l 3G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=3072
+      chmod 600 /swapfile
+      mkswap /swapfile
+      swapon /swapfile
+      echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      sysctl vm.swappiness=10
+      echo 'vm.swappiness=10' > /etc/sysctl.d/99-swappiness.conf
+    fi
+
+  # 2. Install official Docker Engine & Docker Compose v2 (AMD64)
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+  - apt-get update -y
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # 3. Configure Docker log rotation to avoid disk fill
+  - |
+    cat <<'EOF' > /etc/docker/daemon.json
+    {
+      "log-driver": "json-file",
+      "log-opts": {
+        "max-size": "10m",
+        "max-file": "3"
+      }
+    }
+    EOF
+  - systemctl restart docker
+  - systemctl enable docker
+
+  # 4. Create application directories
+  - mkdir -p /opt/apiweaver/secrets /opt/apiweaver/nginx
+  - chown -R 1000:1000 /opt/apiweaver
